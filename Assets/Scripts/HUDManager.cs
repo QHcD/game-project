@@ -4,36 +4,65 @@ using TMPro;
 
 public class HUDManager : MonoBehaviour
 {
-    public TextMeshProUGUI scoreText;
-    public TextMeshProUGUI weaponNameText;
-    public TextMeshProUGUI enemiesRemainingText;
-    public TextMeshProUGUI levelText;
-    public Slider healthBar;
-    public PlayerController player;
+    public static HUDManager Instance;
 
-    void Update()
+    public TextMeshProUGUI healthText;
+    public TextMeshProUGUI scoreText;
+    public TextMeshProUGUI levelText;
+    public TextMeshProUGUI weaponText;
+    public TextMeshProUGUI enemyCountText;
+    public TextMeshProUGUI timerText;
+    public Slider healthBar;
+
+    private float elapsed = 0f;
+    private float timeLimit = 120f;
+
+    void Awake()
+    {
+        if (Instance == null) Instance = this;
+        else Destroy(gameObject);
+    }
+
+    void Start()
     {
         if (GameManager.Instance == null) return;
 
-        // Score
-        if (scoreText != null)
-            scoreText.text = "SCORE: " + GameManager.Instance.score;
-
-        // Weapon name
         int level = GameManager.Instance.currentLevel;
-        if (weaponNameText != null && level >= 1 && level <= 20)
-            weaponNameText.text = GameManager.weaponNames[level - 1].ToUpper();
-
-        // Enemies remaining
-        if (enemiesRemainingText != null)
-            enemiesRemainingText.text = "ENEMIES: " + GameManager.Instance.enemiesRemaining;
-
-        // Level
         if (levelText != null)
-            levelText.text = "LEVEL " + level + " / 20";
+            levelText.text = "Level " + level;
 
-        // Health bar
-        if (healthBar != null && player != null)
-            healthBar.value = player.GetHealthPercent();
+        string[] names = GameManager.weaponNames;
+        if (weaponText != null && level <= names.Length)
+            weaponText.text = names[level - 1];
+
+        UpdateScore(GameManager.Instance.score);
+        UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
+    }
+
+    void Update()
+    {
+        elapsed += Time.deltaTime;
+        float remaining = Mathf.Max(0, timeLimit - elapsed);
+        if (timerText != null)
+            timerText.text = "Time: " + Mathf.CeilToInt(remaining);
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.levelTime = elapsed;
+    }
+
+    public void UpdateHealth(float current, float max)
+    {
+        if (healthText != null) healthText.text = "HP: " + Mathf.CeilToInt(current);
+        if (healthBar != null) healthBar.value = current / max;
+    }
+
+    public void UpdateScore(int score)
+    {
+        if (scoreText != null) scoreText.text = "Score: " + score;
+    }
+
+    public void UpdateEnemyCount(int count)
+    {
+        if (enemyCountText != null) enemyCountText.text = "Enemies: " + count;
     }
 }

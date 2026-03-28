@@ -1,146 +1,141 @@
-using UnityEngine;
+﻿using UnityEngine;
+using UnityEngine.InputSystem;
 
+[RequireComponent(typeof(CharacterController))]
 public class PlayerController : MonoBehaviour
 {
-    [Header("Movement")]
-    public float moveSpeed = 5f;
-    public float rotationSpeed = 10f;
+    [Header("Movement Settings")]
+    public float walkSpeed = 3.0f;
+    public float runSpeed = 6.0f;
+    public float jumpHeight = 1.5f;
+    public float gravity = -9.81f;
 
-    [Header("Health")]
+    [Header("Player Stats (Health System)")]
     public float maxHealth = 100f;
-    private float currentHealth;
+    public float currentHealth;
 
-    [Header("Camera")]
+    [Header("Look Settings")]
+    public float mouseSensitivity = 100f;
+    public Transform playerBody;
+    private float xRotation = 0f;
+
+    [Header("Camera System")]
     public Camera firstPersonCam;
     public Camera thirdPersonCam;
     private bool isFirstPerson = false;
 
-    [Header("Attack")]
-    public float attackRange = 2f;
-    public float attackCooldown = 0.5f;
-    private float lastAttackTime;
-    public Animator animator;
-
     private CharacterController controller;
     private Vector3 velocity;
-    private float gravity = -9.81f;
+    private bool isGrounded;
 
     void Start()
     {
         controller = GetComponent<CharacterController>();
+
+        // تعيين الصحة عند البداية
         currentHealth = maxHealth;
 
-        // Default: Third Person
-        SetThirdPerson();
-
+        // إخفاء الماوس داخل اللعبة
         Cursor.lockState = CursorLockMode.Locked;
+
+        // البحث عن الكاميرات تلقائياً بأسماء النظام عندنا
+        if (firstPersonCam == null) firstPersonCam = GameObject.Find("FirstPersonCam")?.GetComponent<Camera>();
+        if (thirdPersonCam == null) thirdPersonCam = GameObject.Find("ThirdPersonCam")?.GetComponent<Camera>();
+
+        UpdateCameraMode();
     }
 
     void Update()
     {
         HandleMovement();
+        HandleLook();
         HandleCameraSwitch();
-        HandleAttack();
     }
 
-    void HandleMovement()
-    {
-        float h = Input.GetAxis("Horizontal");
-        float v = Input.GetAxis("Vertical");
-
-        Vector3 move = transform.right * h + transform.forward * v;
-        controller.Move(move * moveSpeed * Time.deltaTime);
-
-        // Gravity
-        if (!controller.isGrounded)
-            velocity.y += gravity * Time.deltaTime;
-        else
-            velocity.y = -2f;
-
-        controller.Move(velocity * Time.deltaTime);
-
-        // Mouse look
-        float mouseX = Input.GetAxis("Mouse X") * rotationSpeed;
-        transform.Rotate(Vector3.up * mouseX);
-
-        // Animation
-        bool isMoving = h != 0 || v != 0;
-        if (animator != null)
-            animator.SetBool("IsMoving", isMoving);
-    }
-
-    void HandleCameraSwitch()
-    {
-        if (Input.GetKeyDown(KeyCode.V))
-        {
-            isFirstPerson = !isFirstPerson;
-            if (isFirstPerson) SetFirstPerson();
-            else SetThirdPerson();
-        }
-    }
-
-    void SetFirstPerson()
-    {
-        firstPersonCam.gameObject.SetActive(true);
-        thirdPersonCam.gameObject.SetActive(false);
-    }
-
-    void SetThirdPerson()
-    {
-        firstPersonCam.gameObject.SetActive(false);
-        thirdPersonCam.gameObject.SetActive(true);
-    }
-
-    void HandleAttack()
-    {
-        if (Input.GetMouseButtonDown(0) && Time.time >= lastAttackTime + attackCooldown)
-        {
-            lastAttackTime = Time.time;
-
-            if (animator != null)
-                animator.SetTrigger("Attack");
-
-            // Raycast attack
-            RaycastHit hit;
-            Camera activeCam = isFirstPerson ? firstPersonCam : thirdPersonCam;
-            if (Physics.Raycast(activeCam.transform.position, activeCam.transform.forward, out hit, attackRange))
-            {
-                EnemyController enemy = hit.collider.GetComponent<EnemyController>();
-                if (enemy != null)
-                    enemy.TakeDamage(GetWeaponDamage());
-            }
-        }
-    }
-
-    float GetWeaponDamage()
-    {
-        if (GameManager.Instance == null) return 25f;
-        int level = GameManager.Instance.currentLevel;
-        // Guns do more damage
-        return level >= 16 ? 100f : 25f;
-    }
-
+    // --- وظيفة استقبال الضرر (تحل الخطأ الأحمر في EnemyController) ---
     public void TakeDamage(float damage)
     {
         currentHealth -= damage;
+        Debug.Log("PRISM-7 Player Hit! Health: " + currentHealth);
+
         if (currentHealth <= 0)
         {
-            currentHealth = 0;
             Die();
         }
     }
 
     void Die()
     {
-        if (animator != null)
-            animator.SetTrigger("Die");
-
-        if (GameManager.Instance != null)
-            GameManager.Instance.GameOver();
+        Debug.Log("Mission Failed! Player Died.");
+        // لإعادة تشغيل المرحلة عند الموت (اختياري):
+        // UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
     }
 
-    public float GetHealthPercent()
+    void HandleMovement()
     {
-        return currentHealth / maxHealth;
+        isGrounded = controller.isGrounded;
+        if (isGrounded && velocity.y < 0)
+        {
+            velocity.y = -2f;
+        }
+
+        float x = 0;
+        float z = 0;
+
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.wKey.isPressed) z = 1;
+            if (Keyboard.current.sKey.isPressed) z = -1;
+            if (Keyboard.current.aKey.isPressed) x = -1;
+            if (Keyboard.current.dKey.isPressed) x = 1;
+        }
+
+        float currentSpeed = (Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed) ? runSpeed : walkSpeed;
+
+        Vector3 move = transform.right * x + transform.forward * z;
+        controller.Move(move * currentSpeed * Time.deltaTime);
+
+        if (Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame && isGrounded)
+        {
+            velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+        }
+
+        velocity.y += gravity * Time.deltaTime;
+        controller.Move(velocity * Time.deltaTime);
+    }
+
+    void HandleLook()
+    {
+        if (Mouse.current == null) return;
+
+        float mouseX = Mouse.current.delta.x.ReadValue() * mouseSensitivity * Time.deltaTime;
+        float mouseY = Mouse.current.delta.y.ReadValue() * mouseSensitivity * Time.deltaTime;
+
+        if (isFirstPerson && firstPersonCam != null)
+        {
+            xRotation -= mouseY;
+            xRotation = Mathf.Clamp(xRotation, -90f, 90f);
+            firstPersonCam.transform.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
+            transform.Rotate(Vector3.up * mouseX);
+        }
+        else
+        {
+            transform.Rotate(Vector3.up * mouseX);
+        }
+    }
+
+    void HandleCameraSwitch()
+    {
+        if (Keyboard.current != null && Keyboard.current.vKey.wasPressedThisFrame)
+        {
+            isFirstPerson = !isFirstPerson;
+            UpdateCameraMode();
+        }
+    }
+
+    void UpdateCameraMode()
+    {
+        if (firstPersonCam != null) firstPersonCam.gameObject.SetActive(isFirstPerson);
+        if (thirdPersonCam != null) thirdPersonCam.gameObject.SetActive(!isFirstPerson);
     }
 }

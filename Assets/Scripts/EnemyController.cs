@@ -1,107 +1,93 @@
 using UnityEngine;
-using UnityEngine.AI;
 
 public class EnemyController : MonoBehaviour
 {
-    public float health = 50f;
-    public float detectionRange = 15f;
-    public Animator animator;
+    public enum EnemyType { Grunt, Soldier, Elite }
+    public EnemyType enemyType = EnemyType.Grunt;
 
-    private NavMeshAgent agent;
-    private Transform player;
-    private float attackCooldown = 1.5f;
-    private float lastAttackTime;
+    public float maxHealth = 100f;
+    private float currentHealth;
     private float damage;
     private float speed;
+
+    private Transform player;
     private bool isDead = false;
+    private bool isStunned = false;
+    private float attackCooldown = 1.5f;
+    private float nextAttack = 0f;
 
     void Start()
     {
-        agent = GetComponent<NavMeshAgent>();
         player = GameObject.FindGameObjectWithTag("Player")?.transform;
+        currentHealth = maxHealth;
+        SetTypeStats();
+    }
 
-        // Get values from GameManager
-        if (GameManager.Instance != null)
+    void SetTypeStats()
+    {
+        switch (enemyType)
         {
-            damage = GameManager.Instance.GetEnemyDamage();
-            speed = GameManager.Instance.GetEnemySpeed();
-            agent.speed = speed;
+            case EnemyType.Grunt:
+                speed = GameManager.Instance != null ? GameManager.Instance.GetEnemySpeed() * 0.7f : 2f;
+                damage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() * 0.6f : 10f;
+                maxHealth = 60f;
+                break;
+            case EnemyType.Soldier:
+                speed = GameManager.Instance != null ? GameManager.Instance.GetEnemySpeed() : 3.5f;
+                damage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() : 25f;
+                maxHealth = 100f;
+                break;
+            case EnemyType.Elite:
+                speed = GameManager.Instance != null ? GameManager.Instance.GetEnemySpeed() * 1.4f : 5f;
+                damage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() * 1.5f : 40f;
+                maxHealth = 160f;
+                break;
         }
-        else
-        {
-            damage = 25f;
-            agent.speed = 3.5f;
-        }
+        currentHealth = maxHealth;
     }
 
     void Update()
     {
-        if (isDead || player == null) return;
+        if (isDead || isStunned || player == null) return;
 
-        float distanceToPlayer = Vector3.Distance(transform.position, player.position);
+        Vector3 dir = (player.position - transform.position).normalized;
+        dir.y = 0f;
+        transform.position += dir * speed * Time.deltaTime;
+        if (dir != Vector3.zero)
+            transform.rotation = Quaternion.Slerp(transform.rotation,
+                Quaternion.LookRotation(dir), 10f * Time.deltaTime);
 
-        if (distanceToPlayer <= detectionRange)
+        float dist = Vector3.Distance(transform.position, player.position);
+        if (dist <= 1.8f && Time.time >= nextAttack)
         {
-            // Chase player
-            agent.SetDestination(player.position);
-
-            if (animator != null)
-                animator.SetBool("IsWalking", true);
-
-            // Attack if close enough
-            if (distanceToPlayer <= agent.stoppingDistance + 0.5f)
-            {
-                AttackPlayer();
-            }
-        }
-        else
-        {
-            agent.ResetPath();
-            if (animator != null)
-                animator.SetBool("IsWalking", false);
+            nextAttack = Time.time + attackCooldown;
+            player.GetComponent<PlayerController>()?.TakeDamage(damage);
         }
     }
 
-    void AttackPlayer()
-    {
-        if (Time.time >= lastAttackTime + attackCooldown)
-        {
-            lastAttackTime = Time.time;
-
-            if (animator != null)
-                animator.SetTrigger("Attack");
-
-            PlayerController playerCtrl = player.GetComponent<PlayerController>();
-            if (playerCtrl != null)
-                playerCtrl.TakeDamage(damage);
-        }
-    }
-
-    public void TakeDamage(float dmg)
+    public void TakeDamage(float amount)
     {
         if (isDead) return;
-        health -= dmg;
+        currentHealth -= amount;
+        if (currentHealth <= 0) Die();
+    }
 
-        if (animator != null)
-            animator.SetTrigger("Hit");
+    public void Stun(float duration)
+    {
+        if (!isDead) StartCoroutine(StunCoroutine(duration));
+    }
 
-        if (health <= 0)
-            Die();
+    System.Collections.IEnumerator StunCoroutine(float duration)
+    {
+        isStunned = true;
+        yield return new WaitForSeconds(duration);
+        isStunned = false;
     }
 
     void Die()
     {
         isDead = true;
-
-        if (animator != null)
-            animator.SetTrigger("Die");
-
-        if (GameManager.Instance != null)
-            GameManager.Instance.EnemyKilled();
-
-        agent.enabled = false;
-        GetComponent<Collider>().enabled = false;
-
-        Destroy(gameObject, 2f);
+        GameManager.Instance?.EnemyKilled();
+        Destroy(gameObject, 1f);
     }
 }

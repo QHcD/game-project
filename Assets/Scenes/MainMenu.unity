@@ -520,7 +520,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 933502179}
-  - component: {fileID: 933502178}
+  - component: {fileID: 933502180}
   m_Layer: 0
   m_Name: RuntimeMenuBuilder
   m_TagString: Untagged
@@ -528,18 +528,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &933502178
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 933502177}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: af3027716d01b414db45ea4301204e2d, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::RuntimeMainMenu
 --- !u!4 &933502179
 Transform:
   m_ObjectHideFlags: 0
@@ -555,6 +543,20 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &933502180
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 933502177}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f2771e89b79a48945ae1c37d2bf8ef31, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RuntimeMenuBuilder
+  backgroundImage: {fileID: 21300000, guid: c8f30eced01131141b2f685443c5dbbd, type: 3}
+  customFont: {fileID: 11400000, guid: 4a8d0a2907ce9da4dbe19376d96a0c90, type: 2}
 --- !u!1 &1160962371
 GameObject:
   m_ObjectHideFlags: 0
@@ -685,6 +687,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bbeb554a5eaf81041a13be4680b61abe, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MainMenuManager
+  gameTitleText: {fileID: 0}
+  startButton: {fileID: 0}
+  instructionsButton: {fileID: 0}
+  settingsButton: {fileID: 0}
+  creditsButton: {fileID: 0}
+  quitButton: {fileID: 0}
+  gameplaySceneName: GameScene
+  instructionsSceneName: Instructions
+  settingsSceneName: Settings
+  creditsSceneName: Credits
+  operativeModel: {fileID: 0}
 --- !u!4 &1216105372
 Transform:
   m_ObjectHideFlags: 0
@@ -709,7 +722,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 2044644615}
-  - component: {fileID: 2044644614}
+  - component: {fileID: 2044644616}
   m_Layer: 0
   m_Name: GameManager
   m_TagString: Untagged
@@ -717,22 +730,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &2044644614
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2044644613}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 3637e81918d81d84686fea89336c3af8, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::GameManager
-  currentLevel: 1
-  score: 0
-  enemiesRemaining: 0
-  difficulty: Normal
 --- !u!4 &2044644615
 Transform:
   m_ObjectHideFlags: 0
@@ -748,6 +745,23 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2044644616
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2044644613}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3637e81918d81d84686fea89336c3af8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GameManager
+  currentLevel: 1
+  score: 0
+  enemiesRemaining: 0
+  difficulty: Normal
+  levelTime: 0
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

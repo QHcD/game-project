@@ -1,62 +1,70 @@
 using UnityEngine;
-using TMPro;
 
 public class WeaponChest : MonoBehaviour
 {
-    public GameObject weaponPrefab;       // Assign weapon model in Inspector
-    public TextMeshProUGUI promptText;    // "Press E to open"
-    public ParticleSystem openEffect;
+    public bool isHeavyGunCrate = false;
+    public GameObject[] weaponPrefabs;
+    public float interactRange = 2f;
 
-    private bool isOpened = false;
-    private bool playerNearby = false;
+    private bool opened = false;
+    private Transform player;
+
+    void Start()
+    {
+        player = GameObject.FindGameObjectWithTag("Player")?.transform;
+    }
 
     void Update()
     {
-        if (playerNearby && !isOpened && Input.GetKeyDown(KeyCode.E))
+        if (opened || player == null) return;
+
+        float dist = Vector3.Distance(transform.position, player.position);
+        if (dist <= interactRange && Input.GetKeyDown(KeyCode.E))
             OpenChest();
-    }
-
-    void OnTriggerEnter(Collider other)
-    {
-        if (other.CompareTag("Player"))
-        {
-            playerNearby = true;
-            if (promptText != null)
-                promptText.gameObject.SetActive(true);
-        }
-    }
-
-    void OnTriggerExit(Collider other)
-    {
-        if (other.CompareTag("Player"))
-        {
-            playerNearby = false;
-            if (promptText != null)
-                promptText.gameObject.SetActive(false);
-        }
     }
 
     void OpenChest()
     {
-        isOpened = true;
+        opened = true;
 
-        if (promptText != null)
-            promptText.gameObject.SetActive(false);
+        if (weaponPrefabs == null || weaponPrefabs.Length == 0) return;
 
-        if (openEffect != null)
-            openEffect.Play();
+        GameObject weaponPrefab;
+        if (isHeavyGunCrate)
+        {
+            int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+            int index = Mathf.Clamp(level - 16, 0, weaponPrefabs.Length - 1);
+            weaponPrefab = weaponPrefabs[index];
+        }
+        else
+        {
+            weaponPrefab = weaponPrefabs[Random.Range(0, weaponPrefabs.Length)];
+        }
 
-        if (weaponPrefab != null)
-            Instantiate(weaponPrefab, transform.position + Vector3.up * 1.5f, Quaternion.identity);
+        Transform holdPoint = player.Find("WeaponHoldPoint");
+        if (holdPoint == null)
+        {
+            GameObject hp = new GameObject("WeaponHoldPoint");
+            hp.transform.SetParent(player);
+            hp.transform.localPosition = new Vector3(0.5f, 1.2f, 0.8f);
+            holdPoint = hp.transform;
+        }
 
-        // Play animation if available
-        Animator anim = GetComponent<Animator>();
-        if (anim != null)
-            anim.SetTrigger("Open");
+        foreach (Transform child in holdPoint)
+            Destroy(child.gameObject);
 
-        // Spawn enemies after chest is opened
-        EnemySpawner spawner = Object.FindFirstObjectByType<EnemySpawner>();
-        if (spawner != null)
-            spawner.SpawnEnemies();
+        Instantiate(weaponPrefab, holdPoint.position, holdPoint.rotation, holdPoint);
+
+        // Destroy chest after opening
+        GetComponent<Animator>()?.SetTrigger("Open");
+        Invoke(nameof(DestroyChest), 1f);
+    }
+
+    void DestroyChest() => Destroy(gameObject);
+
+    void OnDrawGizmosSelected()
+    {
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, interactRange);
     }
 }
