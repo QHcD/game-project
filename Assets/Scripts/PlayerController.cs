@@ -14,6 +14,11 @@ public class PlayerController : MonoBehaviour
     public float maxHealth = 100f;
     public float currentHealth;
 
+    [Header("Attack Settings")]
+    public float attackRange = 2.5f;      // مسافة الطعنة
+    public float attackDamage = 50f;     // قوة الضربة
+    public LayerMask enemyLayer;         // حدد طبقة الأعداء من المفتش (Inspector)
+
     [Header("Look Settings")]
     public float mouseSensitivity = 100f;
     public Transform playerBody;
@@ -50,9 +55,41 @@ public class PlayerController : MonoBehaviour
         HandleMovement();
         HandleLook();
         HandleCameraSwitch();
+        HandleAttack(); // تفعيل نظام الهجوم في كل فريم
     }
 
-    // --- وظيفة استقبال الضرر (تحل الخطأ الأحمر في EnemyController) ---
+    // --- وظيفة الهجوم بالسكينة ---
+    void HandleAttack()
+    {
+        // التحقق من ضغطة زر الماوس الأيسر
+        if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+        {
+            Debug.Log("PRISM-7: Knife Attack!");
+
+            // تحديد الكاميرا الحالية التي نطلق منها الشعاع
+            Camera activeCam = isFirstPerson ? firstPersonCam : thirdPersonCam;
+
+            RaycastHit hit;
+            // إطلاق شعاع وهمي من وسط الكاميرا للأمام
+            if (Physics.Raycast(activeCam.transform.position, activeCam.transform.forward, out hit, attackRange, enemyLayer))
+            {
+                // إذا لمسنا شيئاً يحمل تاغ "Enemy"
+                if (hit.collider.CompareTag("Enemy"))
+                {
+                    Debug.Log("Direct Hit on: " + hit.collider.name);
+
+                    // محاولة الوصول لسكربت العدو لإنقاص دمه
+                    EnemyController enemy = hit.collider.GetComponent<EnemyController>();
+                    if (enemy != null)
+                    {
+                        enemy.TakeDamage(attackDamage);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- وظيفة استقبال الضرر ---
     public void TakeDamage(float damage)
     {
         currentHealth -= damage;
@@ -67,7 +104,7 @@ public class PlayerController : MonoBehaviour
     void Die()
     {
         Debug.Log("Mission Failed! Player Died.");
-        // لإعادة تشغيل المرحلة عند الموت (اختياري):
+        // لإعادة تشغيل المرحلة (اختياري)
         // UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
     }
 
