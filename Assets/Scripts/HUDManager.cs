@@ -17,6 +17,7 @@ public class HUDManager : MonoBehaviour
     private float elapsed = 0f;
     private float timeLimit = 120f;
     private PlayerHealth playerHealth;
+    private PlayerController playerController;
 
     void Awake()
     {
@@ -30,14 +31,14 @@ public class HUDManager : MonoBehaviour
 
         EnsureRuntimeHud();
         playerHealth = FindFirstObjectByType<PlayerHealth>();
+        playerController = FindFirstObjectByType<PlayerController>();
 
         int level = GameManager.Instance.currentLevel;
         if (levelText != null)
             levelText.text = "Level " + level;
 
-        string[] names = GameManager.weaponNames;
-        if (weaponText != null && level <= names.Length)
-            weaponText.text = names[level - 1];
+        if (weaponText != null)
+            weaponText.text = playerController != null ? playerController.equippedWeaponName : GameManager.Instance.GetWeaponNameForLevel(level);
 
         UpdateScore(GameManager.Instance.score);
         UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
@@ -57,9 +58,13 @@ public class HUDManager : MonoBehaviour
 
         if (playerHealth == null)
             playerHealth = FindFirstObjectByType<PlayerHealth>();
+        if (playerController == null)
+            playerController = FindFirstObjectByType<PlayerController>();
 
         if (playerHealth != null)
             UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth);
+        if (playerController != null && weaponText != null)
+            weaponText.text = playerController.equippedWeaponName;
     }
 
     public void UpdateHealth(float current, float max)

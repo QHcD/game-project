@@ -16,19 +16,40 @@ public class GameManager : MonoBehaviour
 
     public const int TotalLevels = 20;
 
+    private static readonly string[] LevelWeaponNames = {
+        "Combat Knife", "Katana", "Hammer", "Baseball Bat", "Axe",
+        "Wrench", "Tennis Racket", "Shovel", "Crowbar", "Fire Axe",
+        "Machete", "Brass Knuckles", "Nunchucks", "Pipe", "Sickle",
+        "Golden Spork", "Electric Baton", "Saw Blade", "Battle Hammer", "Champion Blade"
+    };
+
+    private static readonly float[] LevelWeaponDamage = {
+        32f, 36f, 40f, 42f, 45f,
+        48f, 50f, 52f, 54f, 56f,
+        58f, 60f, 63f, 66f, 69f,
+        72f, 76f, 80f, 86f, 92f
+    };
+
+    private static readonly float[] LevelWeaponRange = {
+        2.0f, 2.3f, 2.1f, 2.5f, 2.4f,
+        2.2f, 2.8f, 2.6f, 2.3f, 2.5f,
+        2.6f, 1.9f, 2.7f, 2.3f, 2.4f,
+        2.2f, 2.9f, 2.8f, 3.0f, 3.2f
+    };
+
+    private static readonly Color[] LevelWeaponColors = {
+        new Color(0.8f, 0.85f, 0.9f), new Color(0.75f, 0.85f, 1f), new Color(0.95f, 0.75f, 0.4f), new Color(0.7f, 0.5f, 0.35f), new Color(0.85f, 0.45f, 0.3f),
+        new Color(0.7f, 0.8f, 0.9f), new Color(0.95f, 0.95f, 0.95f), new Color(0.85f, 0.7f, 0.45f), new Color(0.6f, 0.65f, 0.75f), new Color(0.95f, 0.4f, 0.25f),
+        new Color(0.8f, 0.9f, 0.7f), new Color(1f, 0.85f, 0.35f), new Color(0.7f, 0.9f, 1f), new Color(0.55f, 0.65f, 0.75f), new Color(0.85f, 0.95f, 0.55f),
+        new Color(1f, 0.85f, 0.3f), new Color(0.45f, 0.9f, 1f), new Color(0.95f, 0.55f, 0.4f), new Color(1f, 0.7f, 0.3f), new Color(1f, 0.95f, 0.5f)
+    };
+
     public int currentLevel = 1;
     public int score = 0;
     public int enemiesRemaining = 0;
     public string difficulty = "Normal";
     public bool playerTookDamage = false;
     public float levelTime = 0f;
-
-    public static readonly string[] weaponNames = {
-        "Combat Knife", "Katana", "Shovel", "Baseball Bat", "Nunchucks",
-        "Brass Knuckles", "Wrench", "Iron Jim", "Hammer", "Axe",
-        "Boxing Gloves", "Electric Stick", "Saw", "Sickle", "Golden Spork",
-        "Bazooka", "RPG", "Flamethrower", "Minigun", "Sniper Rifle"
-    };
 
     void Awake()
     {
@@ -55,14 +76,14 @@ public class GameManager : MonoBehaviour
         score = 0;
         SetCurrentLevel(level);
         PendingMenuScreen = MenuScreen.MainMenu;
-        LoadGameplayScene();
+        SceneManager.LoadScene("GameScene");
     }
 
     public void ReplayCurrentLevel()
     {
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
-        LoadGameplayScene();
+        SceneManager.LoadScene("GameScene");
     }
 
     public void SetCurrentLevel(int level)
@@ -74,35 +95,54 @@ public class GameManager : MonoBehaviour
 
     public int GetEnemyCount()
     {
-        int baseCount = Mathf.Clamp(4 + currentLevel, 5, 18);
         switch (difficulty)
         {
-            case "Easy": return Mathf.Max(4, baseCount - 2);
-            case "Hard": return Mathf.Min(22, baseCount + 3);
-            default: return baseCount;
+            case "Easy": return 8;
+            case "Hard": return 15;
+            default: return 12;
         }
     }
 
     public float GetEnemySpeed()
     {
-        float baseSpeed = 2.8f + ((currentLevel - 1) * 0.08f);
+        float baseSpeed = 2.4f + ((currentLevel - 1) * 0.05f);
         switch (difficulty)
         {
-            case "Easy": return baseSpeed * 0.85f;
-            case "Hard": return baseSpeed * 1.2f;
+            case "Easy": return baseSpeed * 0.9f;
+            case "Hard": return baseSpeed * 1.15f;
             default: return baseSpeed;
         }
     }
 
     public float GetEnemyDamage()
     {
-        float baseDamage = 12f + ((currentLevel - 1) * 1.25f);
+        float baseDamage = 12f + ((currentLevel - 1) * 0.8f);
         switch (difficulty)
         {
-            case "Easy": return baseDamage * 0.75f;
-            case "Hard": return baseDamage * 1.25f;
+            case "Easy": return baseDamage * 0.8f;
+            case "Hard": return baseDamage * 1.2f;
             default: return baseDamage;
         }
+    }
+
+    public string GetWeaponNameForLevel(int level)
+    {
+        return LevelWeaponNames[Mathf.Clamp(level - 1, 0, LevelWeaponNames.Length - 1)];
+    }
+
+    public float GetWeaponDamageForLevel(int level)
+    {
+        return LevelWeaponDamage[Mathf.Clamp(level - 1, 0, LevelWeaponDamage.Length - 1)];
+    }
+
+    public float GetWeaponRangeForLevel(int level)
+    {
+        return LevelWeaponRange[Mathf.Clamp(level - 1, 0, LevelWeaponRange.Length - 1)];
+    }
+
+    public Color GetWeaponColorForLevel(int level)
+    {
+        return LevelWeaponColors[Mathf.Clamp(level - 1, 0, LevelWeaponColors.Length - 1)];
     }
 
     public void AddScore(int points)
@@ -149,7 +189,7 @@ public class GameManager : MonoBehaviour
 
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
-        LoadGameplayScene();
+        SceneManager.LoadScene("GameScene");
     }
 
     public void GameOver()
@@ -162,12 +202,6 @@ public class GameManager : MonoBehaviour
     {
         PendingMenuScreen = MenuScreen.MainMenu;
         SceneManager.LoadScene("MainMenu");
-    }
-
-    public void ResetLevelTimer()
-    {
-        levelTime = 0f;
-        playerTookDamage = false;
     }
 
     public int CalculateStars(float timeLimit)
@@ -186,10 +220,5 @@ public class GameManager : MonoBehaviour
     {
         levelTime = 0f;
         playerTookDamage = false;
-    }
-
-    private void LoadGameplayScene()
-    {
-        SceneManager.LoadScene("GameScene");
     }
 }

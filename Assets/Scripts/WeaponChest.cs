@@ -1,25 +1,43 @@
+using TMPro;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 public class WeaponChest : MonoBehaviour
 {
-    public bool isHeavyGunCrate = false;
-    public GameObject[] weaponPrefabs;
-    public float interactRange = 2f;
+    public float interactRange = 2.5f;
 
     private bool opened = false;
     private Transform player;
+    private TextMeshProUGUI promptText;
 
     void Start()
     {
         player = GameObject.FindGameObjectWithTag("Player")?.transform;
+        CreatePrompt();
     }
 
     void Update()
     {
-        if (opened || player == null) return;
+        if (opened)
+        {
+            if (promptText != null)
+                promptText.gameObject.SetActive(false);
+            return;
+        }
+
+        if (player == null)
+            player = GameObject.FindGameObjectWithTag("Player")?.transform;
+
+        if (player == null) return;
 
         float dist = Vector3.Distance(transform.position, player.position);
-        if (dist <= interactRange && Input.GetKeyDown(KeyCode.E))
+        bool canOpen = dist <= interactRange;
+
+        if (promptText != null)
+            promptText.gameObject.SetActive(canOpen);
+
+        if (canOpen && Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
             OpenChest();
     }
 
@@ -27,40 +45,54 @@ public class WeaponChest : MonoBehaviour
     {
         opened = true;
 
-        if (weaponPrefabs == null || weaponPrefabs.Length == 0) return;
+        PlayerController playerController = player != null ? player.GetComponent<PlayerController>() : null;
+        if (playerController != null && GameManager.Instance != null)
+            playerController.EquipWeaponForLevel(GameManager.Instance.currentLevel);
 
-        GameObject weaponPrefab;
-        if (isHeavyGunCrate)
-        {
-            int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
-            int index = Mathf.Clamp(level - 16, 0, weaponPrefabs.Length - 1);
-            weaponPrefab = weaponPrefabs[index];
-        }
-        else
-        {
-            weaponPrefab = weaponPrefabs[Random.Range(0, weaponPrefabs.Length)];
-        }
+        Renderer renderer = GetComponent<Renderer>();
+        if (renderer != null)
+            renderer.material.color = new Color(0.2f, 1f, 0.6f);
 
-        Transform holdPoint = player.Find("WeaponHoldPoint");
-        if (holdPoint == null)
-        {
-            GameObject hp = new GameObject("WeaponHoldPoint");
-            hp.transform.SetParent(player);
-            hp.transform.localPosition = new Vector3(0.5f, 1.2f, 0.8f);
-            holdPoint = hp.transform;
-        }
-
-        foreach (Transform child in holdPoint)
-            Destroy(child.gameObject);
-
-        Instantiate(weaponPrefab, holdPoint.position, holdPoint.rotation, holdPoint);
-
-        // Destroy chest after opening
-        GetComponent<Animator>()?.SetTrigger("Open");
-        Invoke(nameof(DestroyChest), 1f);
+        Invoke(nameof(DestroyChest), 0.8f);
     }
 
-    void DestroyChest() => Destroy(gameObject);
+    void DestroyChest()
+    {
+        if (promptText != null)
+            Destroy(promptText.transform.parent.gameObject);
+
+        Destroy(gameObject);
+    }
+
+    void CreatePrompt()
+    {
+        GameObject canvasObj = new GameObject("ChestPromptCanvas");
+        canvasObj.transform.SetParent(transform, false);
+        canvasObj.transform.localPosition = new Vector3(0f, 1.8f, 0f);
+
+        Canvas canvas = canvasObj.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvasObj.AddComponent<CanvasScaler>().dynamicPixelsPerUnit = 20f;
+        canvasObj.AddComponent<GraphicRaycaster>();
+
+        RectTransform canvasRect = canvasObj.GetComponent<RectTransform>();
+        canvasRect.sizeDelta = new Vector2(220f, 60f);
+
+        GameObject textObj = new GameObject("Prompt");
+        textObj.transform.SetParent(canvasObj.transform, false);
+        promptText = textObj.AddComponent<TextMeshProUGUI>();
+        promptText.text = "Press E to open chest";
+        promptText.fontSize = 18f;
+        promptText.alignment = TextAlignmentOptions.Center;
+        promptText.color = Color.white;
+
+        RectTransform textRect = textObj.GetComponent<RectTransform>();
+        textRect.anchorMin = Vector2.zero;
+        textRect.anchorMax = Vector2.one;
+        textRect.offsetMin = textRect.offsetMax = Vector2.zero;
+
+        promptText.gameObject.SetActive(false);
+    }
 
     void OnDrawGizmosSelected()
     {
