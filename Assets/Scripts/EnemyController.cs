@@ -7,8 +7,8 @@ public class EnemyController : MonoBehaviour
     public EnemyType enemyType = EnemyType.Grunt;
 
     public float maxHealth = 100f;
-    public float attackRange = 1.8f;
-    public float retargetInterval = 0.5f;
+    public float attackRange = 1.55f;
+    public float retargetInterval = 0.75f;
 
     private float currentHealth;
     private float damage;
@@ -19,7 +19,7 @@ public class EnemyController : MonoBehaviour
     private Transform currentTarget;
     private bool isDead = false;
     private bool isStunned = false;
-    private readonly float attackCooldown = 1.1f;
+    private readonly float attackCooldown = 1.35f;
 
     void Start()
     {
@@ -46,13 +46,15 @@ public class EnemyController : MonoBehaviour
         float dist = Vector3.Distance(transform.position, flatTarget);
 
         if (dist > attackRange)
-            transform.position += dir * speed * Time.deltaTime;
+            transform.position = Vector3.MoveTowards(transform.position, flatTarget, speed * Time.deltaTime);
 
         if (dir != Vector3.zero)
         {
             Quaternion targetRot = Quaternion.LookRotation(dir);
             transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, 10f * Time.deltaTime);
         }
+
+        SnapToGround();
 
         if (dist <= attackRange && Time.time >= nextAttack)
         {
@@ -154,5 +156,12 @@ public class EnemyController : MonoBehaviour
         isDead = true;
         GameManager.Instance?.EnemyKilled();
         Destroy(gameObject);
+    }
+
+    void SnapToGround()
+    {
+        Vector3 rayOrigin = transform.position + Vector3.up * 1.5f;
+        if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, 4f, ~0, QueryTriggerInteraction.Ignore))
+            transform.position = new Vector3(transform.position.x, hit.point.y + 0.05f, transform.position.z);
     }
 }

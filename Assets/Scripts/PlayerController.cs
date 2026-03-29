@@ -45,6 +45,9 @@ public class PlayerController : MonoBehaviour
         controller.radius = 0.35f;
         controller.height = 1.8f;
         controller.center = new Vector3(0f, 0.9f, 0f);
+        controller.stepOffset = 0.35f;
+        controller.skinWidth = 0.03f;
+        controller.minMoveDistance = 0f;
 
         playerHealth = GetComponent<PlayerHealth>();
         if (playerHealth == null)
@@ -61,6 +64,22 @@ public class PlayerController : MonoBehaviour
 
         if (playerBody == null)
             playerBody = transform;
+
+        foreach (Animator animator in GetComponentsInChildren<Animator>(true))
+            animator.applyRootMotion = false;
+
+        Transform playerBase = FindChildRecursive(transform, "Player_Base");
+        if (playerBase != null)
+        {
+            playerBase.localPosition = Vector3.zero;
+            playerBase.localRotation = Quaternion.identity;
+            playerBase.localScale = Vector3.one;
+        }
+
+        if (thirdPersonCam != null)
+            thirdPersonCam.transform.localScale = Vector3.one;
+        if (firstPersonCam != null)
+            firstPersonCam.transform.localScale = Vector3.one;
 
         equippedWeaponName = "Starter Knife";
         equippedWeaponDamage = 28f;
@@ -133,6 +152,7 @@ public class PlayerController : MonoBehaviour
         isGrounded = controller.isGrounded;
         if (isGrounded && velocity.y < 0)
             velocity.y = -2f;
+        SnapToGround();
 
         float x = 0f;
         float z = 0f;
@@ -232,5 +252,31 @@ public class PlayerController : MonoBehaviour
     {
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position + Vector3.up * 1.1f + transform.forward, equippedWeaponRange);
+    }
+
+    void SnapToGround()
+    {
+        Vector3 rayOrigin = transform.position + Vector3.up * 1.5f;
+        if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, 4f, ~0, QueryTriggerInteraction.Ignore))
+        {
+            float desiredY = hit.point.y + 0.05f;
+            if (isGrounded && Mathf.Abs(transform.position.y - desiredY) > 0.02f)
+                transform.position = new Vector3(transform.position.x, desiredY, transform.position.z);
+        }
+        else if (transform.position.y < -2f)
+        {
+            transform.position = new Vector3(transform.position.x, 1f, transform.position.z);
+        }
+    }
+
+    Transform FindChildRecursive(Transform root, string childName)
+    {
+        foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
+        {
+            if (child.name == childName)
+                return child;
+        }
+
+        return null;
     }
 }

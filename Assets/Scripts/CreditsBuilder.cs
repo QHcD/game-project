@@ -21,55 +21,54 @@ public class CreditsBuilder : MonoBehaviour
         CanvasScaler scaler = canvasObj.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
         scaler.referenceResolution = new Vector2(1920, 1080);
-
         canvasObj.AddComponent<GraphicRaycaster>();
 
         Image bg = new GameObject("Background").AddComponent<Image>();
         bg.transform.SetParent(canvasObj.transform, false);
         Stretch(bg.GetComponent<RectTransform>());
-        bg.color = new Color(0.03f, 0.03f, 0.08f, 1f);
+        bg.color = new Color(0.03f, 0.04f, 0.08f, 1f);
         if (prismBackground != null)
         {
             bg.sprite = prismBackground;
             bg.color = Color.white;
         }
 
-        Image panel = new GameObject("Panel").AddComponent<Image>();
-        panel.transform.SetParent(canvasObj.transform, false);
-        panel.color = new Color(0.03f, 0.05f, 0.09f, 0.82f);
-        RectTransform panelRect = panel.GetComponent<RectTransform>();
-        panelRect.anchorMin = new Vector2(0.17f, 0.18f);
-        panelRect.anchorMax = new Vector2(0.83f, 0.78f);
-        panelRect.offsetMin = panelRect.offsetMax = Vector2.zero;
+        Image overlay = new GameObject("Overlay").AddComponent<Image>();
+        overlay.transform.SetParent(canvasObj.transform, false);
+        Stretch(overlay.GetComponent<RectTransform>());
+        overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.48f);
 
-        MakeText(canvasObj.transform, "PRISM-7 CREDITS", 62, new Color(0.7f, 0.9f, 1f, 1f),
-            new Vector2(0.1f, 0.82f), new Vector2(0.9f, 0.92f), true, TextAlignmentOptions.Center);
+        MakeText(canvasObj.transform, "PRISM-7", 118, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.18f, 0.64f), new Vector2(0.82f, 0.84f), true, TextAlignmentOptions.Center);
+        MakeText(canvasObj.transform, "CREDITS", 54, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.30f, 0.54f), new Vector2(0.70f, 0.63f), true, TextAlignmentOptions.Center);
 
         string roles =
-            "UI / MENUS\n" +
+            "UI MENUS\n" +
             "WEAPON SYSTEM\n" +
             "LEVEL DESIGN & CORE\n" +
             "AI & ENEMIES\n" +
-            "AUDIO & VFX";
+            "AUDIO & VFX\n" +
+            "SUPERVISOR";
 
         string names =
-            "MOHAMED AMAN\n" +
+            "HAMED AHMED\n" +
             "MURTADHA SARHAN\n" +
             "MOHAMED ALTAJER\n" +
             "ALI ALHAWAJ\n" +
-            "HAMED AHMED";
+            "MOHAMED AMAN\n" +
+            "DR. HAETHAM ALHADDAD";
 
-        MakeText(panel.transform, roles, 28, new Color(0.72f, 0.55f, 1f, 1f),
-            new Vector2(0.08f, 0.12f), new Vector2(0.46f, 0.86f), false, TextAlignmentOptions.MidlineRight);
+        MakeText(canvasObj.transform, roles, 34, new Color(0.95f, 0.95f, 1f, 1f),
+            new Vector2(0.23f, 0.18f), new Vector2(0.47f, 0.50f), false, TextAlignmentOptions.MidlineRight);
+        MakeText(canvasObj.transform, names, 34, new Color(0.95f, 0.95f, 1f, 1f),
+            new Vector2(0.52f, 0.18f), new Vector2(0.80f, 0.50f), false, TextAlignmentOptions.MidlineLeft);
 
-        MakeText(panel.transform, names, 28, new Color(0.35f, 0.85f, 1f, 1f),
-            new Vector2(0.54f, 0.12f), new Vector2(0.92f, 0.86f), false, TextAlignmentOptions.MidlineLeft);
-
-        MakeButton(canvasObj.transform, "RETURN", new Vector2(0.06f, 0.05f), new Vector2(0.20f, 0.11f),
+        MakeButton(canvasObj.transform, "RETURN", new Vector2(0.04f, 0.06f), new Vector2(0.14f, 0.11f),
             () => SceneManager.LoadScene("MainMenu"));
     }
 
-    void MakeText(Transform parent, string text, float size, Color color, Vector2 aMin, Vector2 aMax, bool isTitle, TextAlignmentOptions align)
+    void MakeText(Transform parent, string text, float size, Color color, Vector2 aMin, Vector2 aMax, bool addOutline, TextAlignmentOptions align)
     {
         GameObject obj = new GameObject("Txt");
         obj.transform.SetParent(parent, false);
@@ -78,13 +77,13 @@ public class CreditsBuilder : MonoBehaviour
         tmp.fontSize = size;
         tmp.color = color;
         tmp.alignment = align;
-        tmp.lineSpacing = 8f;
+        tmp.lineSpacing = 14f;
         if (prismFont != null)
             tmp.font = prismFont;
-        if (isTitle)
+        if (addOutline)
         {
             tmp.fontStyle = FontStyles.Bold;
-            obj.AddComponent<Outline>().effectColor = Color.white;
+            obj.AddComponent<Outline>().effectColor = new Color(0.30f, 0.12f, 0.62f, 1f);
         }
 
         RectTransform rect = obj.GetComponent<RectTransform>();
@@ -98,7 +97,7 @@ public class CreditsBuilder : MonoBehaviour
         GameObject obj = new GameObject("Btn_" + label);
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
-        img.color = new Color(0.94f, 0.96f, 1f, 1f);
+        img.color = new Color(0.94f, 0.94f, 0.96f, 1f);
         Button btn = obj.AddComponent<Button>();
         btn.onClick.AddListener(action);
 
@@ -106,8 +105,8 @@ public class CreditsBuilder : MonoBehaviour
         txt.transform.SetParent(obj.transform, false);
         TextMeshProUGUI tmp = txt.AddComponent<TextMeshProUGUI>();
         tmp.text = label;
-        tmp.fontSize = 28;
-        tmp.color = new Color(0.08f, 0.12f, 0.24f, 1f);
+        tmp.fontSize = 22;
+        tmp.color = new Color(0.24f, 0.22f, 0.38f, 1f);
         tmp.alignment = TextAlignmentOptions.Center;
         if (prismFont != null)
             tmp.font = prismFont;
@@ -119,10 +118,10 @@ public class CreditsBuilder : MonoBehaviour
         rect.offsetMin = rect.offsetMax = Vector2.zero;
     }
 
-    void Stretch(RectTransform r)
+    void Stretch(RectTransform rect)
     {
-        r.anchorMin = Vector2.zero;
-        r.anchorMax = Vector2.one;
-        r.offsetMin = r.offsetMax = Vector2.zero;
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
     }
 }

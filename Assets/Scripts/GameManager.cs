@@ -97,30 +97,30 @@ public class GameManager : MonoBehaviour
     {
         switch (difficulty)
         {
-            case "Easy": return 8;
-            case "Hard": return 15;
+            case "Easy": return 10;
+            case "Hard": return 12;
             default: return 12;
         }
     }
 
     public float GetEnemySpeed()
     {
-        float baseSpeed = 2.4f + ((currentLevel - 1) * 0.05f);
+        float baseSpeed = 1.85f + ((currentLevel - 1) * 0.045f);
         switch (difficulty)
         {
-            case "Easy": return baseSpeed * 0.9f;
-            case "Hard": return baseSpeed * 1.15f;
+            case "Easy": return baseSpeed * 0.88f;
+            case "Hard": return baseSpeed * 1.05f;
             default: return baseSpeed;
         }
     }
 
     public float GetEnemyDamage()
     {
-        float baseDamage = 12f + ((currentLevel - 1) * 0.8f);
+        float baseDamage = 7.5f + ((currentLevel - 1) * 0.45f);
         switch (difficulty)
         {
-            case "Easy": return baseDamage * 0.8f;
-            case "Hard": return baseDamage * 1.2f;
+            case "Easy": return baseDamage * 0.82f;
+            case "Hard": return baseDamage * 1.15f;
             default: return baseDamage;
         }
     }

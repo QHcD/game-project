@@ -10,7 +10,7 @@ public class EnemyPrefabBuilder : MonoBehaviour
 
     void CreateEnemyPrefabs()
     {
-        EnemySpawner spawner = FindObjectOfType<EnemySpawner>();
+        EnemySpawner spawner = FindFirstObjectByType<EnemySpawner>();
         if (spawner == null) return;
 
         spawner.gruntPrefab = BuildEnemy("Grunt", Color.green, 60f);
@@ -22,19 +22,16 @@ public class EnemyPrefabBuilder : MonoBehaviour
     {
         GameObject root = new GameObject(enemyName);
 
-        // Body
         GameObject body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
         body.name = "Body";
         body.transform.SetParent(root.transform);
         body.transform.localPosition = new Vector3(0, 1, 0);
         body.transform.localScale = new Vector3(0.8f, 1f, 0.8f);
-        // Remove collider from child — root has its own
         Destroy(body.GetComponent<CapsuleCollider>());
         Material mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
         mat.color = color;
         body.GetComponent<Renderer>().material = mat;
 
-        // Head
         GameObject head = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         head.name = "Head";
         head.transform.SetParent(root.transform);
@@ -43,19 +40,15 @@ public class EnemyPrefabBuilder : MonoBehaviour
         Destroy(head.GetComponent<SphereCollider>());
         head.GetComponent<Renderer>().material = mat;
 
-        // Root collider
         CapsuleCollider col = root.AddComponent<CapsuleCollider>();
         col.height = 2f;
         col.radius = 0.4f;
         col.center = new Vector3(0, 1, 0);
 
-        // Rigidbody — no rotation freeze on Y so enemy can turn
         Rigidbody rb = root.AddComponent<Rigidbody>();
-        rb.constraints = RigidbodyConstraints.FreezeRotationX |
-                         RigidbodyConstraints.FreezeRotationZ;
+        rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
         rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
 
-        // Enemy script
         EnemyController ec = root.AddComponent<EnemyController>();
         ec.maxHealth = health;
         switch (enemyName)
@@ -65,14 +58,12 @@ public class EnemyPrefabBuilder : MonoBehaviour
             case "Elite": ec.enemyType = EnemyController.EnemyType.Elite; break;
         }
 
-        root.tag = "Enemy";
         root.SetActive(false);
         return root;
     }
 
     void CreateHUD()
     {
-        // Don't create if already exists
         if (GameObject.Find("HUDCanvas") != null) return;
 
         GameObject canvasObj = new GameObject("HUDCanvas");
@@ -85,13 +76,11 @@ public class EnemyPrefabBuilder : MonoBehaviour
         scaler.referenceResolution = new Vector2(1920, 1080);
         canvasObj.AddComponent<UnityEngine.UI.GraphicRaycaster>();
 
-        // Health bar BG
         GameObject healthBg = MakeImage(canvasObj.transform, "HealthBg",
             new Color(0.1f, 0.1f, 0.1f, 0.8f),
             new Vector2(0f, 0f), new Vector2(0f, 0f),
             new Vector2(20f, 20f), new Vector2(320f, 40f));
 
-        // Health fill
         GameObject healthFill = MakeImage(healthBg.transform, "HealthFill",
             new Color(0.2f, 0.8f, 0.2f, 1f),
             new Vector2(0f, 0f), new Vector2(1f, 1f),
@@ -110,15 +99,14 @@ public class EnemyPrefabBuilder : MonoBehaviour
             new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(20f, -45f), new Vector2(250f, 30f));
         var levelText = MakeText(canvasObj.transform, "LevelText", "Level 1",
             new Vector2(.5f, 1f), new Vector2(.5f, 1f), new Vector2(-100f, -45f), new Vector2(200f, 30f));
-        var weaponText = MakeText(canvasObj.transform, "WeaponText", "Combat Knife",
+        var weaponText = MakeText(canvasObj.transform, "WeaponText", "Starter Knife",
             new Vector2(.5f, 1f), new Vector2(.5f, 1f), new Vector2(-150f, -80f), new Vector2(300f, 26f));
         var enemyText = MakeText(canvasObj.transform, "EnemyText", "Enemies: 0",
             new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-220f, -45f), new Vector2(200f, 30f));
         var timerText = MakeText(canvasObj.transform, "TimerText", "Time: 120",
             new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-220f, -80f), new Vector2(200f, 26f));
 
-        // Wire HUDManager
-        HUDManager hud = FindObjectOfType<HUDManager>();
+        HUDManager hud = FindFirstObjectByType<HUDManager>();
         if (hud != null)
         {
             hud.healthBar = healthSlider;
