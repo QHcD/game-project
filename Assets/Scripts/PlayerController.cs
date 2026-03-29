@@ -260,12 +260,13 @@ public class PlayerController : MonoBehaviour
         if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, 4f, ~0, QueryTriggerInteraction.Ignore))
         {
             float desiredY = hit.point.y + 0.05f;
-            if (isGrounded && Mathf.Abs(transform.position.y - desiredY) > 0.02f)
+            if (transform.position.y < desiredY - 0.02f || transform.position.y > desiredY + 1.2f ||
+                (isGrounded && Mathf.Abs(transform.position.y - desiredY) > 0.02f))
                 transform.position = new Vector3(transform.position.x, desiredY, transform.position.z);
         }
-        else if (transform.position.y < -2f)
+        else if (transform.position.y < -0.5f)
         {
-            transform.position = new Vector3(transform.position.x, 1f, transform.position.z);
+            transform.position = new Vector3(transform.position.x, 0.15f, transform.position.z);
         }
     }
 

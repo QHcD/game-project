@@ -11,6 +11,13 @@ public class GameManager : MonoBehaviour
         Victory
     }
 
+    public enum ArenaMap
+    {
+        BlacksiteFacility,
+        CyberRuinsNeon,
+        ContainerPortYard
+    }
+
     public static GameManager Instance;
     public static MenuScreen PendingMenuScreen { get; private set; } = MenuScreen.MainMenu;
 
@@ -50,6 +57,7 @@ public class GameManager : MonoBehaviour
     public string difficulty = "Normal";
     public bool playerTookDamage = false;
     public float levelTime = 0f;
+    public ArenaMap selectedMap = ArenaMap.BlacksiteFacility;
 
     void Awake()
     {
@@ -58,6 +66,8 @@ public class GameManager : MonoBehaviour
             Instance = this;
             DontDestroyOnLoad(gameObject);
             difficulty = PlayerPrefs.GetString("Difficulty", difficulty);
+            selectedMap = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", 0), 0, 2);
+            currentLevel = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
         }
         else
         {
@@ -69,6 +79,23 @@ public class GameManager : MonoBehaviour
     {
         difficulty = diff;
         PlayerPrefs.SetString("Difficulty", diff);
+    }
+
+    public void SetSelectedMap(ArenaMap map)
+    {
+        selectedMap = map;
+        PlayerPrefs.SetInt("SelectedMap", (int)map);
+        PlayerPrefs.Save();
+    }
+
+    public ArenaMap GetSelectedMap()
+    {
+        return selectedMap;
+    }
+
+    public int GetContinueLevel()
+    {
+        return Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
     }
 
     public void StartRun(int level = 1)
@@ -90,6 +117,7 @@ public class GameManager : MonoBehaviour
     {
         currentLevel = Mathf.Clamp(level, 1, TotalLevels);
         enemiesRemaining = 0;
+        PlayerPrefs.SetInt("ContinueLevel", currentLevel);
         ResetLevelState();
     }
 
@@ -170,6 +198,8 @@ public class GameManager : MonoBehaviour
         int unlocked = PlayerPrefs.GetInt("UnlockedLevels", 1);
         if (currentLevel >= unlocked)
             PlayerPrefs.SetInt("UnlockedLevels", Mathf.Min(TotalLevels, currentLevel + 1));
+
+        PlayerPrefs.SetInt("ContinueLevel", Mathf.Min(TotalLevels, currentLevel + 1));
 
         PlayerPrefs.Save();
         PendingMenuScreen = MenuScreen.LevelComplete;

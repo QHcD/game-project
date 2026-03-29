@@ -133,6 +133,15 @@ public class HUDManager : MonoBehaviour
             new Vector2(-220f, -40f), new Vector2(200f, 30f));
         timerText ??= CreateText(canvasObj.transform, "TimerText", new Vector2(1f, 1f), new Vector2(1f, 1f),
             new Vector2(-220f, -76f), new Vector2(200f, 26f));
+
+        healthText.fontSize = 24;
+        scoreText.fontSize = 28;
+        scoreText.fontStyle = FontStyles.Bold;
+        levelText.fontSize = 30;
+        levelText.fontStyle = FontStyles.Bold;
+        weaponText.fontSize = 24;
+        enemyCountText.fontSize = 26;
+        timerText.fontSize = 24;
     }
 
     private GameObject CreateImage(Transform parent, string name, Color color,

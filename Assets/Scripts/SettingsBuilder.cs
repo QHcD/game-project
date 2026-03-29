@@ -1,5 +1,8 @@
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.InputSystem.UI;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -8,33 +11,67 @@ public class SettingsBuilder : MonoBehaviour
     public Sprite prismBackground;
     public TMP_FontAsset prismFont;
 
-    private int currentQualityIndex;
-    private bool isFullscreen;
-    private Resolution[] resolutions;
-    private int currentResIndex;
+    readonly string[] graphicsOptions = { "LOW", "MEDIUM", "HIGH" };
 
-    private TextMeshProUGUI resText;
-    private TextMeshProUGUI gfxText;
-    private Toggle fullscreenToggle;
+    Vector2Int[] resolutionOptions;
+    int currentResIndex;
+    int currentGraphicsIndex;
+    bool isFullscreen;
+
+    TMP_Dropdown resolutionDropdown;
+    TMP_Dropdown graphicsDropdown;
+    Toggle fullscreenToggle;
+    Slider masterSlider;
+    Slider musicSlider;
+    Slider sfxSlider;
 
     void Start()
     {
+        EnsureEventSystem();
         LoadSettingsData();
         BuildSettingsMenu();
     }
 
+    void EnsureEventSystem()
+    {
+        if (FindFirstObjectByType<EventSystem>() != null)
+            return;
+
+        GameObject eventSystemObj = new GameObject("EventSystem");
+        eventSystemObj.AddComponent<EventSystem>();
+        eventSystemObj.AddComponent<InputSystemUIInputModule>();
+    }
+
     void LoadSettingsData()
     {
-        resolutions = Screen.resolutions;
-        if (resolutions == null || resolutions.Length == 0)
-            resolutions = new[] { Screen.currentResolution };
-
-        currentResIndex = Mathf.Clamp(PlayerPrefs.GetInt("ResIndex", resolutions.Length - 1), 0, resolutions.Length - 1);
-        currentQualityIndex = Mathf.Clamp(PlayerPrefs.GetInt("QualityIndex", QualitySettings.GetQualityLevel()), 0, QualitySettings.names.Length - 1);
+        resolutionOptions = BuildResolutionOptions();
+        currentResIndex = Mathf.Clamp(PlayerPrefs.GetInt("ResIndex", resolutionOptions.Length - 1), 0, resolutionOptions.Length - 1);
+        currentGraphicsIndex = Mathf.Clamp(PlayerPrefs.GetInt("GraphicsTier", 2), 0, graphicsOptions.Length - 1);
         isFullscreen = PlayerPrefs.GetInt("Fullscreen", 1) == 1;
 
-        QualitySettings.SetQualityLevel(currentQualityIndex);
+        ApplyGraphicsQuality();
         Screen.fullScreen = isFullscreen;
+        AudioListener.volume = PlayerPrefs.GetFloat("MasterVol", 0.8f);
+    }
+
+    Vector2Int[] BuildResolutionOptions()
+    {
+        List<Vector2Int> options = new List<Vector2Int>
+        {
+            new Vector2Int(640, 480),
+            new Vector2Int(800, 600),
+            new Vector2Int(1024, 768),
+            new Vector2Int(1280, 720),
+            new Vector2Int(1366, 768),
+            new Vector2Int(1600, 900),
+            new Vector2Int(1920, 1080)
+        };
+
+        Vector2Int current = new Vector2Int(Screen.currentResolution.width, Screen.currentResolution.height);
+        if (!options.Contains(current))
+            options.Add(current);
+
+        return options.ToArray();
     }
 
     void BuildSettingsMenu()
@@ -66,69 +103,113 @@ public class SettingsBuilder : MonoBehaviour
         Image overlay = new GameObject("Overlay").AddComponent<Image>();
         overlay.transform.SetParent(canvasObj.transform, false);
         Stretch(overlay.GetComponent<RectTransform>());
-        overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.42f);
+        overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.22f);
 
         MakeText(canvasObj.transform, "SETTINGS", 62, new Color(0.78f, 0.84f, 1f, 1f),
-            new Vector2(0f, 355f), new Vector2(720f, 84f), true, TextAlignmentOptions.Center);
+            new Vector2(0f, 300f), new Vector2(720f, 84f), true, TextAlignmentOptions.Center);
 
         GameObject panelObj = new GameObject("CentralPanel");
         panelObj.transform.SetParent(canvasObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        panel.color = new Color(0.05f, 0.07f, 0.12f, 0.32f);
+        panel.color = new Color(0.16f, 0.20f, 0.30f, 0.30f);
         Outline outline = panelObj.AddComponent<Outline>();
-        outline.effectColor = new Color(0.40f, 0.18f, 0.75f, 0.35f);
-        outline.effectDistance = new Vector2(3f, -3f);
-        SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 520f), new Vector2(0f, 10f));
+        outline.effectColor = new Color(0.26f, 0.42f, 0.68f, 0.18f);
+        outline.effectDistance = new Vector2(2f, -2f);
+        SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 520f), new Vector2(0f, -10f));
 
-        MakeSliderRow(panel.transform, "MASTER VOLUME:", 150f, "MasterVol");
-        MakeSliderRow(panel.transform, "MUSIC VOLUME:", 75f, "MusicVol");
-        MakeSliderRow(panel.transform, "SFX VOLUME:", 0f, "SFXVol");
+        masterSlider = MakeSliderRow(panel.transform, "MASTER VOLUME:", 150f, "MasterVol", value =>
+        {
+            AudioListener.volume = value;
+        });
+        musicSlider = MakeSliderRow(panel.transform, "MUSIC VOLUME:", 75f, "MusicVol", null);
+        sfxSlider = MakeSliderRow(panel.transform, "SFX VOLUME:", 0f, "SFXVol", null);
 
-        resText = MakeCycleRow(panel.transform, "RESOLUTION:", ResolutionLabel(resolutions[currentResIndex]), -80f, CycleResolution);
-        gfxText = MakeCycleRow(panel.transform, "GRAPHICS:", QualitySettings.names[currentQualityIndex].ToUpper(), -155f, CycleGraphics);
+        resolutionDropdown = MakeDropdownRow(panel.transform, "RESOLUTION:", BuildResolutionLabels(), currentResIndex, -80f, OnResolutionChanged);
+        graphicsDropdown = MakeDropdownRow(panel.transform, "GRAPHICS:", new List<string>(graphicsOptions), currentGraphicsIndex, -155f, OnGraphicsChanged);
         fullscreenToggle = MakeFullscreenRow(panel.transform, -230f);
 
         MakePrismButton(canvasObj.transform, "RETURN", new Vector2(-150f, -325f), () => SceneManager.LoadScene("MainMenu"));
         MakePrismButton(canvasObj.transform, "RESET", new Vector2(150f, -325f), ResetSettings);
     }
 
-    void CycleResolution()
+    List<string> BuildResolutionLabels()
     {
-        currentResIndex = (currentResIndex + 1) % resolutions.Length;
-        resText.text = ResolutionLabel(resolutions[currentResIndex]);
+        List<string> labels = new List<string>(resolutionOptions.Length);
+        for (int i = 0; i < resolutionOptions.Length; i++)
+            labels.Add(ResolutionLabel(resolutionOptions[i]));
+        return labels;
     }
 
-    void CycleGraphics()
+    void OnResolutionChanged(int selectedIndex)
     {
-        currentQualityIndex = (currentQualityIndex + 1) % QualitySettings.names.Length;
-        gfxText.text = QualitySettings.names[currentQualityIndex].ToUpper();
+        currentResIndex = Mathf.Clamp(selectedIndex, 0, resolutionOptions.Length - 1);
+        ApplySettings();
+    }
+
+    void OnGraphicsChanged(int selectedIndex)
+    {
+        currentGraphicsIndex = Mathf.Clamp(selectedIndex, 0, graphicsOptions.Length - 1);
+        ApplySettings();
     }
 
     void ResetSettings()
     {
-        currentResIndex = resolutions.Length - 1;
-        currentQualityIndex = Mathf.Clamp(QualitySettings.names.Length - 1, 0, QualitySettings.names.Length - 1);
+        currentResIndex = resolutionOptions.Length - 1;
+        currentGraphicsIndex = 2;
         isFullscreen = true;
 
-        resText.text = ResolutionLabel(resolutions[currentResIndex]);
-        gfxText.text = QualitySettings.names[currentQualityIndex].ToUpper();
-        fullscreenToggle.isOn = isFullscreen;
-        ApplySettings();
+        if (masterSlider != null)
+            masterSlider.SetValueWithoutNotify(0.8f);
+        if (musicSlider != null)
+            musicSlider.SetValueWithoutNotify(0.8f);
+        if (sfxSlider != null)
+            sfxSlider.SetValueWithoutNotify(0.8f);
+
+        PlayerPrefs.SetFloat("MasterVol", 0.8f);
+        PlayerPrefs.SetFloat("MusicVol", 0.8f);
+        PlayerPrefs.SetFloat("SFXVol", 0.8f);
+        AudioListener.volume = 0.8f;
+
+        if (resolutionDropdown != null)
+        {
+            resolutionDropdown.SetValueWithoutNotify(currentResIndex);
+            resolutionDropdown.RefreshShownValue();
+        }
+
+        if (graphicsDropdown != null)
+        {
+            graphicsDropdown.SetValueWithoutNotify(currentGraphicsIndex);
+            graphicsDropdown.RefreshShownValue();
+        }
+
+        if (fullscreenToggle != null)
+            fullscreenToggle.isOn = isFullscreen;
+        else
+            ApplySettings();
     }
 
     void ApplySettings()
     {
-        Resolution res = resolutions[currentResIndex];
-        Screen.SetResolution(res.width, res.height, isFullscreen);
-        QualitySettings.SetQualityLevel(currentQualityIndex);
+        Vector2Int resolution = resolutionOptions[currentResIndex];
+        Screen.SetResolution(resolution.x, resolution.y, isFullscreen);
+        ApplyGraphicsQuality();
 
         PlayerPrefs.SetInt("ResIndex", currentResIndex);
-        PlayerPrefs.SetInt("QualityIndex", currentQualityIndex);
+        PlayerPrefs.SetInt("GraphicsTier", currentGraphicsIndex);
         PlayerPrefs.SetInt("Fullscreen", isFullscreen ? 1 : 0);
         PlayerPrefs.Save();
     }
 
-    void MakeSliderRow(Transform parent, string label, float yPos, string prefKey)
+    void ApplyGraphicsQuality()
+    {
+        int targetQuality = currentGraphicsIndex == 0 ? 0 :
+            currentGraphicsIndex == 1 ? Mathf.Max(0, (QualitySettings.names.Length - 1) / 2) :
+            Mathf.Max(0, QualitySettings.names.Length - 1);
+
+        QualitySettings.SetQualityLevel(targetQuality);
+    }
+
+    Slider MakeSliderRow(Transform parent, string label, float yPos, string prefKey, UnityEngine.Events.UnityAction<float> onChanged)
     {
         GameObject row = CreateRow(parent, "Row_" + label, yPos);
         MakeText(row.transform, label, 25, new Color(0.95f, 0.95f, 1f, 1f), new Vector2(-210f, 0f), new Vector2(340f, 42f), false, TextAlignmentOptions.MidlineRight);
@@ -136,8 +217,8 @@ public class SettingsBuilder : MonoBehaviour
         GameObject barObj = new GameObject("SliderBar");
         barObj.transform.SetParent(row.transform, false);
         Image barBg = barObj.AddComponent<Image>();
-        barBg.color = new Color(0.62f, 0.62f, 0.62f, 0.95f);
-        SetRect(barObj.GetComponent<RectTransform>(), new Vector2(310f, 18f), new Vector2(165f, 0f));
+        barBg.color = new Color(0.74f, 0.74f, 0.74f, 0.95f);
+        SetRect(barObj.GetComponent<RectTransform>(), new Vector2(360f, 18f), new Vector2(175f, 0f));
 
         Slider slider = barObj.AddComponent<Slider>();
         slider.direction = Slider.Direction.LeftToRight;
@@ -149,13 +230,13 @@ public class SettingsBuilder : MonoBehaviour
         RectTransform fillAreaRect = fillArea.AddComponent<RectTransform>();
         fillAreaRect.anchorMin = Vector2.zero;
         fillAreaRect.anchorMax = Vector2.one;
-        fillAreaRect.offsetMin = new Vector2(0f, 0f);
+        fillAreaRect.offsetMin = Vector2.zero;
         fillAreaRect.offsetMax = new Vector2(-18f, 0f);
 
         GameObject fill = new GameObject("Fill");
         fill.transform.SetParent(fillArea.transform, false);
         Image fillImage = fill.AddComponent<Image>();
-        fillImage.color = new Color(0.55f, 0.35f, 0.95f, 1f);
+        fillImage.color = new Color(0.58f, 0.32f, 0.94f, 1f);
         RectTransform fillRect = fill.GetComponent<RectTransform>();
         fillRect.anchorMin = Vector2.zero;
         fillRect.anchorMax = Vector2.one;
@@ -166,39 +247,144 @@ public class SettingsBuilder : MonoBehaviour
         Image handleImage = handle.AddComponent<Image>();
         handleImage.color = Color.white;
         RectTransform handleRect = handle.GetComponent<RectTransform>();
-        handleRect.sizeDelta = new Vector2(16f, 26f);
+        handleRect.sizeDelta = new Vector2(18f, 30f);
 
         slider.fillRect = fillRect;
         slider.handleRect = handleRect;
         slider.targetGraphic = handleImage;
         slider.value = PlayerPrefs.GetFloat(prefKey, 0.8f);
-        slider.onValueChanged.AddListener(val => PlayerPrefs.SetFloat(prefKey, val));
+        slider.onValueChanged.AddListener(val =>
+        {
+            PlayerPrefs.SetFloat(prefKey, val);
+            PlayerPrefs.Save();
+            onChanged?.Invoke(val);
+        });
+
+        return slider;
     }
 
-    TextMeshProUGUI MakeCycleRow(Transform parent, string label, string value, float yPos, UnityEngine.Events.UnityAction action)
+    TMP_Dropdown MakeDropdownRow(Transform parent, string label, IList<string> options, int selectedIndex, float yPos, UnityEngine.Events.UnityAction<int> onChanged)
     {
         GameObject row = CreateRow(parent, "Row_" + label, yPos);
         MakeText(row.transform, label, 25, new Color(0.95f, 0.95f, 1f, 1f), new Vector2(-210f, 0f), new Vector2(340f, 42f), false, TextAlignmentOptions.MidlineRight);
+        return CreateDropdown(row.transform, options, selectedIndex, new Vector2(175f, 0f), onChanged);
+    }
 
-        GameObject buttonObj = new GameObject("ValueButton");
-        buttonObj.transform.SetParent(row.transform, false);
-        Image box = buttonObj.AddComponent<Image>();
-        box.color = new Color(0.92f, 0.92f, 0.94f, 1f);
-        SetRect(buttonObj.GetComponent<RectTransform>(), new Vector2(310f, 52f), new Vector2(165f, 0f));
-        Button button = buttonObj.AddComponent<Button>();
-        button.onClick.AddListener(() =>
-        {
-            action.Invoke();
-            ApplySettings();
-        });
+    TMP_Dropdown CreateDropdown(Transform parent, IList<string> options, int selectedIndex, Vector2 pos, UnityEngine.Events.UnityAction<int> onChanged)
+    {
+        GameObject dropdownObj = new GameObject("Dropdown");
+        dropdownObj.transform.SetParent(parent, false);
+        Image bg = dropdownObj.AddComponent<Image>();
+        bg.color = new Color(0.94f, 0.94f, 0.96f, 1f);
+        SetRect(dropdownObj.GetComponent<RectTransform>(), new Vector2(360f, 52f), pos);
 
-        return MakeText(buttonObj.transform, value, 24, new Color(0.22f, 0.22f, 0.35f, 1f), Vector2.zero, new Vector2(280f, 40f), false, TextAlignmentOptions.Center);
+        TMP_Dropdown dropdown = dropdownObj.AddComponent<TMP_Dropdown>();
+        dropdown.targetGraphic = bg;
+
+        TextMeshProUGUI caption = MakeDropdownText(dropdownObj.transform, "Caption", TextAlignmentOptions.Center, new Vector2(16f, 0f), new Vector2(-40f, 0f));
+        dropdown.captionText = caption;
+
+        TextMeshProUGUI arrow = MakeDropdownText(dropdownObj.transform, "Arrow", TextAlignmentOptions.Center, new Vector2(320f, 0f), new Vector2(-8f, 0f));
+        arrow.text = "v";
+        arrow.fontSize = 18f;
+
+        RectTransform templateRect = CreateDropdownTemplate(dropdownObj.transform, out TextMeshProUGUI itemLabel);
+        dropdown.template = templateRect;
+        dropdown.itemText = itemLabel;
+
+        List<TMP_Dropdown.OptionData> dropdownOptions = new List<TMP_Dropdown.OptionData>(options.Count);
+        for (int i = 0; i < options.Count; i++)
+            dropdownOptions.Add(new TMP_Dropdown.OptionData(options[i]));
+
+        dropdown.options = dropdownOptions;
+        dropdown.SetValueWithoutNotify(Mathf.Clamp(selectedIndex, 0, options.Count - 1));
+        dropdown.RefreshShownValue();
+        dropdown.onValueChanged.AddListener(onChanged);
+        return dropdown;
+    }
+
+    RectTransform CreateDropdownTemplate(Transform parent, out TextMeshProUGUI itemLabel)
+    {
+        GameObject templateObj = new GameObject("Template");
+        templateObj.transform.SetParent(parent, false);
+        Image templateBg = templateObj.AddComponent<Image>();
+        templateBg.color = new Color(0.94f, 0.94f, 0.98f, 0.98f);
+        ScrollRect scrollRect = templateObj.AddComponent<ScrollRect>();
+        RectTransform templateRect = templateObj.GetComponent<RectTransform>();
+        templateRect.anchorMin = new Vector2(0f, 0f);
+        templateRect.anchorMax = new Vector2(1f, 0f);
+        templateRect.pivot = new Vector2(0.5f, 1f);
+        templateRect.anchoredPosition = new Vector2(0f, -56f);
+        templateRect.sizeDelta = new Vector2(0f, 136f);
+        templateObj.SetActive(false);
+
+        GameObject viewportObj = new GameObject("Viewport");
+        viewportObj.transform.SetParent(templateObj.transform, false);
+        Image viewportBg = viewportObj.AddComponent<Image>();
+        viewportBg.color = new Color(1f, 1f, 1f, 0.02f);
+        viewportObj.AddComponent<RectMask2D>();
+        RectTransform viewportRect = viewportObj.GetComponent<RectTransform>();
+        Stretch(viewportRect);
+
+        GameObject contentObj = new GameObject("Content");
+        contentObj.transform.SetParent(viewportObj.transform, false);
+        RectTransform contentRect = contentObj.AddComponent<RectTransform>();
+        contentRect.anchorMin = new Vector2(0f, 1f);
+        contentRect.anchorMax = new Vector2(1f, 1f);
+        contentRect.pivot = new Vector2(0.5f, 1f);
+        contentRect.anchoredPosition = Vector2.zero;
+        contentRect.sizeDelta = Vector2.zero;
+
+        VerticalLayoutGroup layout = contentObj.AddComponent<VerticalLayoutGroup>();
+        layout.childControlHeight = true;
+        layout.childControlWidth = true;
+        layout.childForceExpandHeight = false;
+        layout.childForceExpandWidth = true;
+        layout.spacing = 2f;
+
+        ContentSizeFitter fitter = contentObj.AddComponent<ContentSizeFitter>();
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        GameObject itemObj = new GameObject("Item");
+        itemObj.transform.SetParent(contentObj.transform, false);
+        LayoutElement element = itemObj.AddComponent<LayoutElement>();
+        element.preferredHeight = 42f;
+        Image itemBg = itemObj.AddComponent<Image>();
+        itemBg.color = new Color(1f, 1f, 1f, 0.98f);
+        Toggle itemToggle = itemObj.AddComponent<Toggle>();
+        itemToggle.targetGraphic = itemBg;
+
+        GameObject checkmarkObj = new GameObject("Item Checkmark");
+        checkmarkObj.transform.SetParent(itemObj.transform, false);
+        TextMeshProUGUI checkmark = checkmarkObj.AddComponent<TextMeshProUGUI>();
+        checkmark.text = "✓";
+        checkmark.fontSize = 20f;
+        checkmark.color = new Color(0.24f, 0.22f, 0.38f, 1f);
+        checkmark.alignment = TextAlignmentOptions.Center;
+        if (prismFont != null)
+            checkmark.font = prismFont;
+        RectTransform checkRect = checkmark.GetComponent<RectTransform>();
+        checkRect.anchorMin = new Vector2(0f, 0f);
+        checkRect.anchorMax = new Vector2(0f, 1f);
+        checkRect.pivot = new Vector2(0.5f, 0.5f);
+        checkRect.sizeDelta = new Vector2(28f, 0f);
+        checkRect.anchoredPosition = new Vector2(18f, 0f);
+        itemToggle.graphic = checkmark;
+
+        itemLabel = MakeDropdownText(itemObj.transform, "Item Label", TextAlignmentOptions.MidlineLeft, new Vector2(40f, 0f), new Vector2(-12f, 0f));
+
+        scrollRect.content = contentRect;
+        scrollRect.viewport = viewportRect;
+        scrollRect.horizontal = false;
+        scrollRect.movementType = ScrollRect.MovementType.Clamped;
+
+        return templateRect;
     }
 
     Toggle MakeFullscreenRow(Transform parent, float yPos)
     {
         GameObject row = CreateRow(parent, "Row_FULLSCREEN", yPos);
-        MakeText(row.transform, "FULLSCREEN", 25, new Color(0.95f, 0.95f, 1f, 1f), new Vector2(-20f, 0f), new Vector2(260f, 42f), false, TextAlignmentOptions.Center);
+        MakeText(row.transform, "FULLSCREEN", 25, new Color(0.95f, 0.95f, 1f, 1f), new Vector2(-40f, 0f), new Vector2(260f, 42f), false, TextAlignmentOptions.Center);
 
         GameObject toggleObj = new GameObject("Toggle");
         toggleObj.transform.SetParent(row.transform, false);
@@ -212,10 +398,12 @@ public class SettingsBuilder : MonoBehaviour
         GameObject checkmarkObj = new GameObject("Checkmark");
         checkmarkObj.transform.SetParent(toggleObj.transform, false);
         TextMeshProUGUI mark = checkmarkObj.AddComponent<TextMeshProUGUI>();
-        mark.text = "X";
+        mark.text = "✓";
         mark.fontSize = 24f;
         mark.alignment = TextAlignmentOptions.Center;
         mark.color = new Color(0.18f, 0.22f, 0.34f, 1f);
+        if (prismFont != null)
+            mark.font = prismFont;
         Stretch(checkmarkObj.GetComponent<RectTransform>());
 
         toggle.graphic = mark;
@@ -233,7 +421,7 @@ public class SettingsBuilder : MonoBehaviour
     {
         GameObject row = new GameObject(name);
         row.transform.SetParent(parent, false);
-        SetRect(row.AddComponent<RectTransform>(), new Vector2(760f, 56f), new Vector2(0f, yPos));
+        SetRect(row.AddComponent<RectTransform>(), new Vector2(820f, 56f), new Vector2(0f, yPos));
         return row;
     }
 
@@ -257,20 +445,53 @@ public class SettingsBuilder : MonoBehaviour
         return tmp;
     }
 
+    TextMeshProUGUI MakeDropdownText(Transform parent, string name, TextAlignmentOptions alignment, Vector2 leftOffset, Vector2 rightOffset)
+    {
+        GameObject textObj = new GameObject(name);
+        textObj.transform.SetParent(parent, false);
+        TextMeshProUGUI tmp = textObj.AddComponent<TextMeshProUGUI>();
+        tmp.fontSize = 24f;
+        tmp.color = new Color(0.23f, 0.22f, 0.38f, 1f);
+        tmp.alignment = alignment;
+        if (prismFont != null)
+            tmp.font = prismFont;
+
+        RectTransform rect = tmp.GetComponent<RectTransform>();
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = leftOffset;
+        rect.offsetMax = rightOffset;
+        return tmp;
+    }
+
     void MakePrismButton(Transform parent, string label, Vector2 pos, UnityEngine.Events.UnityAction action)
     {
         Image buttonImage = new GameObject("Btn_" + label).AddComponent<Image>();
         buttonImage.transform.SetParent(parent, false);
         buttonImage.color = new Color(0.94f, 0.94f, 0.96f, 1f);
-        SetRect(buttonImage.GetComponent<RectTransform>(), new Vector2(180f, 56f), pos);
+        SetRect(buttonImage.GetComponent<RectTransform>(), new Vector2(190f, 58f), pos);
+
         Button button = buttonImage.gameObject.AddComponent<Button>();
         button.onClick.AddListener(action);
-        MakeText(buttonImage.transform, label, 22, new Color(0.23f, 0.22f, 0.38f, 1f), Vector2.zero, new Vector2(180f, 56f), false, TextAlignmentOptions.Center);
+        TextMeshProUGUI labelText = MakeText(buttonImage.transform, label, 22, new Color(0.10f, 0.10f, 0.14f, 1f), Vector2.zero, new Vector2(190f, 58f), false, TextAlignmentOptions.Center);
+        labelText.fontStyle = FontStyles.Bold;
+        AttachHoverEffect(buttonImage.gameObject, labelText, buttonImage);
     }
 
-    string ResolutionLabel(Resolution resolution)
+    void AttachHoverEffect(GameObject target, TextMeshProUGUI label, Image image)
     {
-        return resolution.width + " x " + resolution.height;
+        MenuButtonHoverEffect hover = target.AddComponent<MenuButtonHoverEffect>();
+        hover.label = label;
+        hover.background = image;
+        hover.normalTextColor = label.color;
+        hover.hoverTextColor = new Color(0.10f, 0.10f, 0.14f, 1f);
+        hover.normalBackgroundColor = image.color;
+        hover.hoverBackgroundColor = new Color(0.98f, 0.98f, 1f, 1f);
+    }
+
+    string ResolutionLabel(Vector2Int resolution)
+    {
+        return resolution.x + " x " + resolution.y;
     }
 
     void SetRect(RectTransform rect, Vector2 size, Vector2 pos)

@@ -26,10 +26,18 @@ public class LevelBuilder : MonoBehaviour
 
     ArenaTheme GetTheme()
     {
-        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
-        if (level <= 7) return ArenaTheme.BlacksiteFacility;
-        if (level <= 14) return ArenaTheme.CyberRuinsNeon;
-        return ArenaTheme.ContainerPortYard;
+        if (GameManager.Instance == null)
+            return ArenaTheme.BlacksiteFacility;
+
+        switch (GameManager.Instance.GetSelectedMap())
+        {
+            case GameManager.ArenaMap.CyberRuinsNeon:
+                return ArenaTheme.CyberRuinsNeon;
+            case GameManager.ArenaMap.ContainerPortYard:
+                return ArenaTheme.ContainerPortYard;
+            default:
+                return ArenaTheme.BlacksiteFacility;
+        }
     }
 
     void BuildGround()

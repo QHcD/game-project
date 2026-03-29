@@ -1,5 +1,7 @@
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.InputSystem.UI;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -10,6 +12,8 @@ public class CreditsBuilder : MonoBehaviour
 
     void Start()
     {
+        EnsureEventSystem();
+
         GameObject existing = GameObject.Find("CreditsCanvas");
         if (existing != null)
             Destroy(existing);
@@ -38,10 +42,10 @@ public class CreditsBuilder : MonoBehaviour
         Stretch(overlay.GetComponent<RectTransform>());
         overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.48f);
 
-        MakeText(canvasObj.transform, "PRISM-7", 118, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.18f, 0.64f), new Vector2(0.82f, 0.84f), true, TextAlignmentOptions.Center);
-        MakeText(canvasObj.transform, "CREDITS", 54, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.30f, 0.54f), new Vector2(0.70f, 0.63f), true, TextAlignmentOptions.Center);
+        MakeText(canvasObj.transform, "PRISM-7", 122, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.18f, 0.65f), new Vector2(0.82f, 0.85f), true, TextAlignmentOptions.Center);
+        MakeText(canvasObj.transform, "CREDITS", 56, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.31f, 0.54f), new Vector2(0.69f, 0.63f), true, TextAlignmentOptions.Center);
 
         string roles =
             "UI MENUS\n" +
@@ -60,12 +64,22 @@ public class CreditsBuilder : MonoBehaviour
             "DR. HAETHAM ALHADDAD";
 
         MakeText(canvasObj.transform, roles, 34, new Color(0.95f, 0.95f, 1f, 1f),
-            new Vector2(0.23f, 0.18f), new Vector2(0.47f, 0.50f), false, TextAlignmentOptions.MidlineRight);
+            new Vector2(0.19f, 0.17f), new Vector2(0.47f, 0.49f), false, TextAlignmentOptions.MidlineRight);
         MakeText(canvasObj.transform, names, 34, new Color(0.95f, 0.95f, 1f, 1f),
-            new Vector2(0.52f, 0.18f), new Vector2(0.80f, 0.50f), false, TextAlignmentOptions.MidlineLeft);
+            new Vector2(0.52f, 0.17f), new Vector2(0.81f, 0.49f), false, TextAlignmentOptions.MidlineLeft);
 
-        MakeButton(canvasObj.transform, "RETURN", new Vector2(0.04f, 0.06f), new Vector2(0.14f, 0.11f),
+        MakeButton(canvasObj.transform, "RETURN", new Vector2(0.025f, 0.045f), new Vector2(0.14f, 0.105f),
             () => SceneManager.LoadScene("MainMenu"));
+    }
+
+    void EnsureEventSystem()
+    {
+        if (FindFirstObjectByType<EventSystem>() != null)
+            return;
+
+        GameObject eventSystemObj = new GameObject("EventSystem");
+        eventSystemObj.AddComponent<EventSystem>();
+        eventSystemObj.AddComponent<InputSystemUIInputModule>();
     }
 
     void MakeText(Transform parent, string text, float size, Color color, Vector2 aMin, Vector2 aMax, bool addOutline, TextAlignmentOptions align)
@@ -77,7 +91,8 @@ public class CreditsBuilder : MonoBehaviour
         tmp.fontSize = size;
         tmp.color = color;
         tmp.alignment = align;
-        tmp.lineSpacing = 14f;
+        tmp.lineSpacing = 6f;
+        tmp.textWrappingMode = TextWrappingModes.NoWrap;
         if (prismFont != null)
             tmp.font = prismFont;
         if (addOutline)
@@ -106,6 +121,7 @@ public class CreditsBuilder : MonoBehaviour
         TextMeshProUGUI tmp = txt.AddComponent<TextMeshProUGUI>();
         tmp.text = label;
         tmp.fontSize = 22;
+        tmp.fontStyle = FontStyles.Bold;
         tmp.color = new Color(0.24f, 0.22f, 0.38f, 1f);
         tmp.alignment = TextAlignmentOptions.Center;
         if (prismFont != null)
