@@ -60,10 +60,13 @@
     <Analyzer Include="C:\Program Files\Unity\Hub\Editor\6000.3.9f1\Editor\Data\Tools\BuildPipeline\Unity.SourceGenerators\Unity.UIToolkit.SourceGenerator.dll" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Assets\Scripts\EnemyAI.cs" />
     <Compile Include="Assets\Scripts\HUDManager.cs" />
+    <Compile Include="Assets\Scripts\PlayerHealth.cs" />
     <Compile Include="Assets\Scripts\PlayerController.cs" />
     <Compile Include="Assets\Scripts\LevelSelectBuilder.cs" />
     <Compile Include="Assets\Scripts\LevelCompleteManager.cs" />
+    <Compile Include="Assets\Scripts\EnemyWeaponAttach.cs" />
     <Compile Include="Assets\Scripts\WeaponBase.cs" />
     <Compile Include="Assets\Scripts\WeaponSpecialEffects.cs" />
     <Compile Include="Assets\Scripts\RuntimeMenuBuilder.cs" />

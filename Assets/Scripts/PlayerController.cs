@@ -12,7 +12,6 @@ public class PlayerController : MonoBehaviour
 
     [Header("Player Stats (Health System)")]
     public float maxHealth = 100f;
-    public float currentHealth;
 
     [Header("Attack Settings")]
     public float attackRange = 2.5f;      // مسافة الطعنة
@@ -30,15 +29,17 @@ public class PlayerController : MonoBehaviour
     private bool isFirstPerson = false;
 
     private CharacterController controller;
+    private PlayerHealth playerHealth;
     private Vector3 velocity;
     private bool isGrounded;
 
     void Start()
     {
         controller = GetComponent<CharacterController>();
-
-        // تعيين الصحة عند البداية
-        currentHealth = maxHealth;
+        playerHealth = GetComponent<PlayerHealth>();
+        if (playerHealth == null)
+            playerHealth = gameObject.AddComponent<PlayerHealth>();
+        playerHealth.SetMaxHealth(maxHealth, true);
 
         // إخفاء الماوس داخل اللعبة
         Cursor.lockState = CursorLockMode.Locked;
@@ -92,20 +93,13 @@ public class PlayerController : MonoBehaviour
     // --- وظيفة استقبال الضرر ---
     public void TakeDamage(float damage)
     {
-        currentHealth -= damage;
-        Debug.Log("PRISM-7 Player Hit! Health: " + currentHealth);
-
-        if (currentHealth <= 0)
-        {
-            Die();
-        }
+        playerHealth?.TakeDamage(damage);
     }
 
     void Die()
     {
         Debug.Log("Mission Failed! Player Died.");
-        // لإعادة تشغيل المرحلة (اختياري)
-        // UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
+        GameManager.Instance?.GameOver();
     }
 
     void HandleMovement()

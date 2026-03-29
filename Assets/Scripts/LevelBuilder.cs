@@ -39,8 +39,12 @@ public class LevelBuilder : MonoBehaviour
 
     void CreateWall(string name, Vector3 pos, Vector3 scale)
     {
-        GameObject wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        wall.name = name;
+        GameObject wall = GameObject.Find(name);
+        if (wall == null)
+        {
+            wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            wall.name = name;
+        }
         wall.transform.position = pos;
         wall.transform.localScale = scale;
         Material mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
@@ -64,8 +68,13 @@ public class LevelBuilder : MonoBehaviour
         };
         for (int i = 0; i < positions.Length; i++)
         {
-            GameObject cover = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            cover.name = "Cover_" + (i + 1);
+            string coverName = "Cover_" + (i + 1);
+            GameObject cover = GameObject.Find(coverName);
+            if (cover == null)
+            {
+                cover = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                cover.name = coverName;
+            }
             cover.transform.position = positions[i];
             cover.transform.localScale = scales[i];
             Material mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
@@ -89,7 +98,10 @@ public class LevelBuilder : MonoBehaviour
 
         for (int i = 0; i < points.Length; i++)
         {
-            GameObject sp = new GameObject("SpawnPoint_" + (i + 1));
+            string pointName = "SpawnPoint_" + (i + 1);
+            GameObject sp = GameObject.Find(pointName);
+            if (sp == null)
+                sp = new GameObject(pointName);
             sp.transform.position = points[i];
             spawnTransforms[i] = sp.transform;
         }
@@ -100,14 +112,19 @@ public class LevelBuilder : MonoBehaviour
 
     void BuildChest()
     {
-        GameObject chest = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        chest.name = "Chest";
+        GameObject chest = GameObject.Find("Chest");
+        if (chest == null)
+        {
+            chest = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            chest.name = "Chest";
+        }
         chest.transform.position = new Vector3(5, 0.5f, 5);
         chest.transform.localScale = Vector3.one;
         Material mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
         mat.color = new Color(1f, 0.8f, 0f);
         chest.GetComponent<Renderer>().material = mat;
-        chest.AddComponent<WeaponChest>();
+        if (chest.GetComponent<WeaponChest>() == null)
+            chest.AddComponent<WeaponChest>();
     }
 
     void SetupPlayer()
@@ -160,15 +177,21 @@ public class LevelBuilder : MonoBehaviour
     void SetupManagers()
     {
         GameObject gm = GameObject.Find("GameManager");
-        if (gm != null && gm.GetComponent<GameManager>() == null)
+        if (gm == null)
+            gm = new GameObject("GameManager");
+        if (gm.GetComponent<GameManager>() == null)
             gm.AddComponent<GameManager>();
 
         GameObject es = GameObject.Find("EnemySpawner");
-        if (es != null && es.GetComponent<EnemySpawner>() == null)
+        if (es == null)
+            es = new GameObject("EnemySpawner");
+        if (es.GetComponent<EnemySpawner>() == null)
             es.AddComponent<EnemySpawner>();
 
         GameObject hud = GameObject.Find("HUDManager");
-        if (hud != null && hud.GetComponent<HUDManager>() == null)
+        if (hud == null)
+            hud = new GameObject("HUDManager");
+        if (hud.GetComponent<HUDManager>() == null)
             hud.AddComponent<HUDManager>();
     }
 }

@@ -22,12 +22,6 @@ public class SettingsBuilder : MonoBehaviour
 
     void Start()
     {
-        if (prismBackground == null || prismFont == null)
-        {
-            Debug.LogError("PRISM-7: Missing Background or Font asset! Check Inspector.");
-            return;
-        }
-
         LoadSettingsData();
         BuildPrism7SettingsMenu();
     }
@@ -47,6 +41,10 @@ public class SettingsBuilder : MonoBehaviour
     // --- 2. بناء الواجهة الشفافة الفخمة ---
     void BuildPrism7SettingsMenu()
     {
+        GameObject existing = GameObject.Find("Prism7Canvas_Settings");
+        if (existing != null)
+            Destroy(existing);
+
         GameObject canvasObj = new GameObject("Prism7Canvas_Settings");
         Canvas canvas = canvasObj.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
@@ -59,7 +57,15 @@ public class SettingsBuilder : MonoBehaviour
         Image bg = new GameObject("Background").AddComponent<Image>();
         bg.transform.SetParent(canvasObj.transform, false);
         Stretch(bg.GetComponent<RectTransform>());
-        bg.sprite = prismBackground;
+        if (prismBackground != null)
+        {
+            bg.sprite = prismBackground;
+            bg.color = Color.white;
+        }
+        else
+        {
+            bg.color = new Color(0.03f, 0.03f, 0.08f, 1f);
+        }
 
         MakeText(canvasObj.transform, "SETTINGS", 50, new Color(0.6f, 0.2f, 1f, 1f), new Vector2(0, 380), new Vector2(800, 100), true);
 

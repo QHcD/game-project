@@ -3,17 +3,27 @@ using UnityEngine.SceneManagement;
 
 public class GameManager : MonoBehaviour
 {
+    public enum MenuScreen
+    {
+        MainMenu,
+        LevelComplete,
+        GameOver,
+        Victory
+    }
+
     public static GameManager Instance;
+    public static MenuScreen PendingMenuScreen { get; private set; } = MenuScreen.MainMenu;
+
+    public const int TotalLevels = 20;
 
     public int currentLevel = 1;
     public int score = 0;
     public int enemiesRemaining = 0;
     public string difficulty = "Normal";
-
+    public bool playerTookDamage = false;
     public float levelTime = 0f;
 
-    // Weapon progression for the 20 levels
-    public static string[] weaponNames = {
+    public static readonly string[] weaponNames = {
         "Combat Knife", "Katana", "Shovel", "Baseball Bat", "Nunchucks",
         "Brass Knuckles", "Wrench", "Iron Jim", "Hammer", "Axe",
         "Boxing Gloves", "Electric Stick", "Saw", "Sickle", "Golden Spork",
@@ -22,11 +32,11 @@ public class GameManager : MonoBehaviour
 
     void Awake()
     {
-        // Singleton pattern to persist across scenes
         if (Instance == null)
         {
             Instance = this;
             DontDestroyOnLoad(gameObject);
+            difficulty = PlayerPrefs.GetString("Difficulty", difficulty);
         }
         else
         {
@@ -40,34 +50,58 @@ public class GameManager : MonoBehaviour
         PlayerPrefs.SetString("Difficulty", diff);
     }
 
-    // Difficulty scaling based on Proposal specs
+    public void StartRun(int level = 1)
+    {
+        score = 0;
+        SetCurrentLevel(level);
+        PendingMenuScreen = MenuScreen.MainMenu;
+        LoadGameplayScene();
+    }
+
+    public void ReplayCurrentLevel()
+    {
+        ResetLevelState();
+        PendingMenuScreen = MenuScreen.MainMenu;
+        LoadGameplayScene();
+    }
+
+    public void SetCurrentLevel(int level)
+    {
+        currentLevel = Mathf.Clamp(level, 1, TotalLevels);
+        enemiesRemaining = 0;
+        ResetLevelState();
+    }
+
     public int GetEnemyCount()
     {
+        int baseCount = Mathf.Clamp(4 + currentLevel, 5, 18);
         switch (difficulty)
         {
-            case "Easy": return 5;
-            case "Hard": return 15;
-            default: return 10;
+            case "Easy": return Mathf.Max(4, baseCount - 2);
+            case "Hard": return Mathf.Min(22, baseCount + 3);
+            default: return baseCount;
         }
     }
 
     public float GetEnemySpeed()
     {
+        float baseSpeed = 2.8f + ((currentLevel - 1) * 0.08f);
         switch (difficulty)
         {
-            case "Easy": return 2f;
-            case "Hard": return 5f;
-            default: return 3.5f;
+            case "Easy": return baseSpeed * 0.85f;
+            case "Hard": return baseSpeed * 1.2f;
+            default: return baseSpeed;
         }
     }
 
     public float GetEnemyDamage()
     {
+        float baseDamage = 12f + ((currentLevel - 1) * 1.25f);
         switch (difficulty)
         {
-            case "Easy": return 10f;
-            case "Hard": return 40f;
-            default: return 25f;
+            case "Easy": return baseDamage * 0.75f;
+            case "Hard": return baseDamage * 1.25f;
+            default: return baseDamage;
         }
     }
 
@@ -78,10 +112,9 @@ public class GameManager : MonoBehaviour
 
     public void EnemyKilled()
     {
-        enemiesRemaining--;
+        enemiesRemaining = Mathf.Max(0, enemiesRemaining - 1);
         AddScore(100);
 
-        // Update HUD if it exists
         if (HUDManager.Instance != null)
         {
             HUDManager.Instance.UpdateEnemyCount(enemiesRemaining);
@@ -96,51 +129,67 @@ public class GameManager : MonoBehaviour
     {
         int unlocked = PlayerPrefs.GetInt("UnlockedLevels", 1);
         if (currentLevel >= unlocked)
-            PlayerPrefs.SetInt("UnlockedLevels", currentLevel + 1);
+            PlayerPrefs.SetInt("UnlockedLevels", Mathf.Min(TotalLevels, currentLevel + 1));
 
-        SceneManager.LoadScene("LevelComplete"); // Loads the Level Complete UI
+        PlayerPrefs.Save();
+        PendingMenuScreen = MenuScreen.LevelComplete;
+        SceneManager.LoadScene("MainMenu");
     }
 
     public void LoadNextLevel()
     {
         currentLevel++;
-        if (currentLevel > 20)
+        if (currentLevel > TotalLevels)
         {
-            SceneManager.LoadScene("Victory");
+            currentLevel = TotalLevels;
+            PendingMenuScreen = MenuScreen.Victory;
+            SceneManager.LoadScene("MainMenu");
+            return;
         }
-        else
-        {
-            // Reset timer and reload the main gameplay loop
-            levelTime = 0f;
-            SceneManager.LoadScene("GameScene");
-        }
+
+        ResetLevelState();
+        PendingMenuScreen = MenuScreen.MainMenu;
+        LoadGameplayScene();
     }
 
     public void GameOver()
     {
-        SceneManager.LoadScene("GameOver"); // Assume you have a death screen
+        PendingMenuScreen = MenuScreen.GameOver;
+        SceneManager.LoadScene("MainMenu");
     }
 
     public void GoToMainMenu()
     {
+        PendingMenuScreen = MenuScreen.MainMenu;
         SceneManager.LoadScene("MainMenu");
     }
 
     public void ResetLevelTimer()
     {
         levelTime = 0f;
+        playerTookDamage = false;
     }
 
-    // Star rating system based on Proposal conditions
     public int CalculateStars(float timeLimit)
     {
-        // Player gets 3 stars if completed within time limit without damage (damage logic can be added later)
-        if (levelTime <= timeLimit) return 3;
+        if (levelTime <= timeLimit && !playerTookDamage) return 3;
+        if (levelTime <= timeLimit) return 2;
+        return 1;
+    }
 
-        // 2 Stars if completed within time limit but took damage
-        // 1 Star if exceeded time limit
-        if (levelTime > timeLimit) return 1;
+    public int GetUnlockedLevelCount()
+    {
+        return Mathf.Clamp(PlayerPrefs.GetInt("UnlockedLevels", 1), 1, TotalLevels);
+    }
 
-        return 2;
+    private void ResetLevelState()
+    {
+        levelTime = 0f;
+        playerTookDamage = false;
+    }
+
+    private void LoadGameplayScene()
+    {
+        SceneManager.LoadScene("GameScene");
     }
 }
