@@ -140,4 +140,5 @@ public class CreditsBuilder : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = rect.offsetMax = Vector2.zero;
     }
+
 }

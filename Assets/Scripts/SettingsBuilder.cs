@@ -468,13 +468,19 @@ public class SettingsBuilder : MonoBehaviour
     {
         Image buttonImage = new GameObject("Btn_" + label).AddComponent<Image>();
         buttonImage.transform.SetParent(parent, false);
-        buttonImage.color = new Color(0.94f, 0.94f, 0.96f, 1f);
+        buttonImage.color = Color.white;
         SetRect(buttonImage.GetComponent<RectTransform>(), new Vector2(190f, 58f), pos);
+
+        Outline outline = buttonImage.gameObject.AddComponent<Outline>();
+        outline.effectColor = new Color(0.20f, 0.24f, 0.38f, 0.30f);
+        outline.effectDistance = new Vector2(2f, -2f);
 
         Button button = buttonImage.gameObject.AddComponent<Button>();
         button.onClick.AddListener(action);
         TextMeshProUGUI labelText = MakeText(buttonImage.transform, label, 22, new Color(0.10f, 0.10f, 0.14f, 1f), Vector2.zero, new Vector2(190f, 58f), false, TextAlignmentOptions.Center);
         labelText.fontStyle = FontStyles.Bold;
+        labelText.fontSize = 24f;
+        labelText.color = new Color(0.10f, 0.10f, 0.14f, 1f);
         AttachHoverEffect(buttonImage.gameObject, labelText, buttonImage);
     }
 
@@ -483,9 +489,9 @@ public class SettingsBuilder : MonoBehaviour
         MenuButtonHoverEffect hover = target.AddComponent<MenuButtonHoverEffect>();
         hover.label = label;
         hover.background = image;
-        hover.normalTextColor = label.color;
+        hover.normalTextColor = new Color(0.10f, 0.10f, 0.14f, 1f);
         hover.hoverTextColor = new Color(0.10f, 0.10f, 0.14f, 1f);
-        hover.normalBackgroundColor = image.color;
+        hover.normalBackgroundColor = Color.white;
         hover.hoverBackgroundColor = new Color(0.98f, 0.98f, 1f, 1f);
     }
 
@@ -509,4 +515,5 @@ public class SettingsBuilder : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = rect.offsetMax = Vector2.zero;
     }
+
 }

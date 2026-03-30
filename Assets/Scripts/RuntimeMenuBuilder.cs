@@ -20,10 +20,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
     {
         if (FindFirstObjectByType<EventSystem>() != null)
             return;
-
-        GameObject eventSystemObj = new GameObject("EventSystem");
-        eventSystemObj.AddComponent<EventSystem>();
-        eventSystemObj.AddComponent<InputSystemUIInputModule>();
+        GameObject es = new GameObject("EventSystem");
+        es.AddComponent<EventSystem>();
+        es.AddComponent<InputSystemUIInputModule>();
     }
 
     void BuildCurrentScreen()
@@ -62,15 +61,16 @@ public class RuntimeMenuBuilder : MonoBehaviour
             BuildMainMenu(canvasObj.transform);
             return;
         }
-
         BuildResultsMenu(canvasObj.transform);
     }
 
-    // ── ORIGINAL MAIN MENU — NOT TOUCHED ─────────────────────────────────────────
+    // ─── MAIN MENU ────────────────────────────────────────────────────────────────
     void BuildMainMenu(Transform root)
     {
-        MakeText(root, "PRISM-7", 120, new Color(0.92f, 0.92f, 1f, 1f), new Vector2(0.18f, 0.66f), new Vector2(0.82f, 0.88f), true);
-        MakeText(root, "WEAPON TRIALS", 74, new Color(0.45f, 0.20f, 0.75f, 0.24f), new Vector2(0.14f, 0.54f), new Vector2(0.86f, 0.74f), true);
+        MakeText(root, "PRISM-7", 120, new Color(0.92f, 0.92f, 1f, 1f),
+            new Vector2(0.18f, 0.66f), new Vector2(0.82f, 0.88f), true);
+        MakeText(root, "WEAPON TRIALS", 74, new Color(0.45f, 0.20f, 0.75f, 0.24f),
+            new Vector2(0.14f, 0.54f), new Vector2(0.86f, 0.74f), true);
 
         int continueLevel = GameManager.Instance != null ? GameManager.Instance.GetContinueLevel() : 1;
         MakeMenuButton(root, "CONTINUE", new Vector2(0.34f, 0.45f), new Vector2(0.66f, 0.52f), () => GameManager.Instance?.StartRun(continueLevel));
@@ -80,21 +80,19 @@ public class RuntimeMenuBuilder : MonoBehaviour
         MakeMenuButton(root, "QUIT", new Vector2(0.34f, 0.09f), new Vector2(0.66f, 0.16f), Application.Quit);
     }
 
-    // ── RESULTS MENU — NOT TOUCHED ────────────────────────────────────────────────
+    // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
     void BuildResultsMenu(Transform root)
     {
-        string title = "MISSION RESULT";
-        string subtitle = "Back to the Prism.";
-        string primaryButton = "MAIN MENU";
+        string title = "MISSION RESULT", subtitle = "Back to the Prism.", primaryButton = "MAIN MENU";
         UnityEngine.Events.UnityAction primaryAction = () => GameManager.Instance?.GoToMainMenu();
 
         if (GameManager.PendingMenuScreen == GameManager.MenuScreen.LevelComplete)
         {
             int stars = GameManager.Instance.CalculateStars(120f);
             title = "LEVEL COMPLETE";
-            subtitle = "Stars: " + new string('*', stars) + new string('-', 3 - stars) +
-                "\nScore: " + GameManager.Instance.score +
-                "\nLevel: " + GameManager.Instance.currentLevel;
+            subtitle = "Stars: " + new string('*', stars) + new string('-', 3 - stars)
+                     + "\nScore: " + GameManager.Instance.score
+                     + "\nLevel: " + GameManager.Instance.currentLevel;
             primaryButton = "NEXT LEVEL";
             primaryAction = () => GameManager.Instance?.LoadNextLevel();
         }
@@ -113,119 +111,195 @@ public class RuntimeMenuBuilder : MonoBehaviour
             primaryAction = () => GameManager.Instance?.StartRun(1);
         }
 
-        MakeText(root, title, 92, new Color(0.92f, 0.92f, 1f, 1f), new Vector2(0.20f, 0.62f), new Vector2(0.80f, 0.82f), true);
-        MakeText(root, subtitle, 42, Color.white, new Vector2(0.20f, 0.42f), new Vector2(0.80f, 0.58f));
+        MakeText(root, title, 92, new Color(0.92f, 0.92f, 1f, 1f),
+            new Vector2(0.20f, 0.62f), new Vector2(0.80f, 0.82f), true);
+        MakeText(root, subtitle, 42, Color.white,
+            new Vector2(0.20f, 0.42f), new Vector2(0.80f, 0.58f));
         MakePanelButton(root, primaryButton, new Vector2(0.39f, 0.21f), new Vector2(0.61f, 0.28f), primaryAction);
-        MakePanelButton(root, "MAIN MENU", new Vector2(0.39f, 0.11f), new Vector2(0.61f, 0.18f), () => GameManager.Instance?.GoToMainMenu());
+        MakePanelButton(root, "MAIN MENU", new Vector2(0.39f, 0.11f), new Vector2(0.61f, 0.18f),
+            () => GameManager.Instance?.GoToMainMenu());
     }
 
-    // ── LEVEL SELECT — 6 columns grid (left) + Map Choice panel (right) ──────────
     void ToggleLevelSelect(Transform root)
     {
         Transform existing = root.Find("LevelSelectOverlay");
         if (existing != null)
         {
             Destroy(existing.gameObject);
+            SetMainMenuElementsVisible(root, true);
             return;
         }
 
-        // Full-screen dark backdrop
+        SetMainMenuElementsVisible(root, false);
+
         GameObject overlayObj = new GameObject("LevelSelectOverlay");
         overlayObj.transform.SetParent(root, false);
-        Image backdrop = overlayObj.AddComponent<Image>();
-        backdrop.color = new Color(0.02f, 0.01f, 0.06f, 0.95f);
-        Stretch(backdrop.rectTransform);
+        Image overlay = overlayObj.AddComponent<Image>();
+        Stretch(overlay.rectTransform);
+        overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.10f);
 
-        // ── "SELECT LEVEL" title — above the grid ──
-        MakeText(overlayObj.transform, "SELECT LEVEL", 72, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.02f, 0.87f), new Vector2(0.72f, 0.98f), true);
+        GameObject panelObj = new GameObject("LevelSelectPanel");
+        panelObj.transform.SetParent(overlayObj.transform, false);
+        Image panel = panelObj.AddComponent<Image>();
+        panel.color = new Color(0.16f, 0.20f, 0.30f, 0.30f);
+        Outline panelOutline = panelObj.AddComponent<Outline>();
+        panelOutline.effectColor = new Color(0.26f, 0.42f, 0.68f, 0.18f);
+        panelOutline.effectDistance = new Vector2(2f, -2f);
 
-        // ── "MAP CHOICE" title — above the map panel ──
-        MakeText(overlayObj.transform, "MAP CHOICE", 36, new Color(0.94f, 0.94f, 1f, 0.85f),
-            new Vector2(0.74f, 0.87f), new Vector2(0.98f, 0.98f), false);
+        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1140f, 760f), new Vector2(0f, -6f));
 
-        // ── Level Grid — 6 columns, no background panel ──
+        MakeText(panelObj.transform, "SELECT LEVEL", 64, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
+
+        MakeText(panelObj.transform, "MAP CHOICE", 30, new Color(0.94f, 0.94f, 1f, 0.90f),
+            new Vector2(0.72f, 0.72f), new Vector2(0.95f, 0.82f), false);
+
         GameObject gridObj = new GameObject("Grid");
-        gridObj.transform.SetParent(overlayObj.transform, false);
-        RectTransform gridRect = gridObj.AddComponent<RectTransform>();
-        gridRect.anchorMin = new Vector2(0.02f, 0.10f);
-        gridRect.anchorMax = new Vector2(0.72f, 0.86f);
-        gridRect.offsetMin = gridRect.offsetMax = Vector2.zero;
+        gridObj.transform.SetParent(panelObj.transform, false);
+        RectTransform gridRT = gridObj.AddComponent<RectTransform>();
+        gridRT.anchorMin = new Vector2(0.05f, 0.22f);
+        gridRT.anchorMax = new Vector2(0.66f, 0.82f);
+        gridRT.offsetMin = gridRT.offsetMax = Vector2.zero;
 
         GridLayoutGroup grid = gridObj.AddComponent<GridLayoutGroup>();
-        grid.cellSize = new Vector2(178f, 148f);
+        grid.cellSize = new Vector2(140f, 108f);
         grid.spacing = new Vector2(16f, 16f);
-        grid.padding = new RectOffset(8, 8, 8, 8);
+        grid.padding = new RectOffset(6, 6, 6, 6);
         grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
-        grid.constraintCount = 6;
-        grid.childAlignment = TextAnchor.UpperLeft;
+        grid.constraintCount = 5;
+        grid.childAlignment = TextAnchor.UpperCenter;
 
         int unlockedLevels = GameManager.Instance != null ? GameManager.Instance.GetUnlockedLevelCount() : 1;
-
         for (int i = 1; i <= GameManager.TotalLevels; i++)
         {
             int level = i;
             bool isUnlocked = level <= unlockedLevels;
             bool isCurrent = GameManager.Instance != null && level == GameManager.Instance.currentLevel;
-            MakeLevelButton(gridObj.transform, level, isUnlocked, isCurrent,
+            MakeLevelTile(gridObj.transform, level, isUnlocked, isCurrent,
                 () => GameManager.Instance?.StartRun(level));
         }
 
-        // ── Map Choice Panel — right side ──
-        GameObject mapPanel = new GameObject("MapChoicePanel");
-        mapPanel.transform.SetParent(overlayObj.transform, false);
-        Image mapPanelImg = mapPanel.AddComponent<Image>();
-        mapPanelImg.color = new Color(0.10f, 0.06f, 0.18f, 0.60f);
-        RectTransform mapPanelRect = mapPanel.GetComponent<RectTransform>();
-        mapPanelRect.anchorMin = new Vector2(0.74f, 0.10f);
-        mapPanelRect.anchorMax = new Vector2(0.98f, 0.86f);
-        mapPanelRect.offsetMin = mapPanelRect.offsetMax = Vector2.zero;
+        GameObject mapLayoutObj = new GameObject("MapLayout");
+        mapLayoutObj.transform.SetParent(panelObj.transform, false);
+        RectTransform mapLayoutRect = mapLayoutObj.AddComponent<RectTransform>();
+        mapLayoutRect.anchorMin = new Vector2(0.72f, 0.22f);
+        mapLayoutRect.anchorMax = new Vector2(0.95f, 0.77f);
+        mapLayoutRect.offsetMin = mapLayoutRect.offsetMax = Vector2.zero;
 
-        Outline mapOutline = mapPanel.AddComponent<Outline>();
-        mapOutline.effectColor = new Color(0.70f, 0.20f, 0.90f, 0.50f);
-        mapOutline.effectDistance = new Vector2(3f, -3f);
-
-        // Map tiles
         string[] mapNames = { "BLACKSITE\nFACILITY", "CYBERRUINS\nNEON", "CONTAINER\nPORT YARD" };
-        float[] minY = { 0.66f, 0.35f, 0.04f };
-        float[] maxY = { 0.94f, 0.63f, 0.32f };
+
+        float[] btnMinY = { 0.72f, 0.42f, 0.12f };
+        float[] btnMaxY = { 0.88f, 0.58f, 0.28f };
+
+        Image[] mapImages = new Image[3];
+        TextMeshProUGUI[] mapLabels = new TextMeshProUGUI[3];
+        MenuButtonHoverEffect[] mapHovers = new MenuButtonHoverEffect[3];
+
+        int selectedMapIndex = PlayerPrefs.GetInt("SelectedMap", 0);
 
         for (int m = 0; m < mapNames.Length; m++)
         {
-            GameObject mapBtn = new GameObject("MapBtn_" + m);
-            mapBtn.transform.SetParent(mapPanel.transform, false);
+            int currentIndex = m;
 
-            Image mapBtnImg = mapBtn.AddComponent<Image>();
-            mapBtnImg.color = m == 0
-                ? new Color(0.90f, 0.40f, 0.90f, 1f)  // selected — pink
-                : new Color(0.94f, 0.94f, 0.96f, 1f);  // unselected — white
+            GameObject mapBtn = new GameObject("MapBtn_" + m);
+            mapBtn.transform.SetParent(mapLayoutObj.transform, false);
+
+            mapImages[m] = mapBtn.AddComponent<Image>();
+            mapImages[m].color = m == selectedMapIndex
+                ? new Color(0.90f, 0.40f, 0.90f, 1f)
+                : Color.white; // تم تغيير الخلفية إلى الأبيض كما طلبت
 
             Button mapBtnComp = mapBtn.AddComponent<Button>();
-            mapBtnComp.targetGraphic = mapBtnImg;
+            mapBtnComp.targetGraphic = mapImages[m];
 
             RectTransform mapBtnRect = mapBtn.GetComponent<RectTransform>();
-            mapBtnRect.anchorMin = new Vector2(0.07f, minY[m]);
-            mapBtnRect.anchorMax = new Vector2(0.93f, maxY[m]);
+            mapBtnRect.anchorMin = new Vector2(0.00f, btnMinY[m]);
+            mapBtnRect.anchorMax = new Vector2(1.00f, btnMaxY[m]);
             mapBtnRect.offsetMin = mapBtnRect.offsetMax = Vector2.zero;
 
-            Color txtColor = m == 0
-                ? new Color(0.15f, 0.08f, 0.24f, 1f)   // dark on pink
-                : new Color(0.45f, 0.44f, 0.55f, 1f);  // muted on white
+            Color txtColor = m == selectedMapIndex
+                ? new Color(0.15f, 0.08f, 0.24f, 1f)
+                : new Color(0.15f, 0.12f, 0.22f, 1f); // خط داكن ليكون واضح على الأبيض
 
-            TextMeshProUGUI lbl = CreateCenteredLabel(mapBtn.transform, mapNames[m], 22, txtColor, true);
-            AttachHoverEffect(mapBtn, lbl, mapBtnImg,
-                mapBtnImg.color,
-                new Color(1f, 0.80f, 1f, 1f),
-                new Color(0.15f, 0.08f, 0.24f, 1f));
+            mapLabels[m] = CreateCenteredLabel(mapBtn.transform, mapNames[m], 21, txtColor, true);
+
+            mapHovers[m] = mapBtn.AddComponent<MenuButtonHoverEffect>();
+            mapHovers[m].label = mapLabels[m];
+            mapHovers[m].background = mapImages[m];
+            mapHovers[m].normalTextColor = mapLabels[m].color;
+            mapHovers[m].hoverTextColor = new Color(0.15f, 0.08f, 0.24f, 1f);
+            mapHovers[m].normalBackgroundColor = mapImages[m].color;
+            mapHovers[m].hoverBackgroundColor = new Color(1f, 0.80f, 1f, 1f);
+
+            mapBtnComp.onClick.AddListener(() =>
+            {
+                PlayerPrefs.SetInt("SelectedMap", currentIndex);
+                PlayerPrefs.Save();
+
+                for (int i = 0; i < mapNames.Length; i++)
+                {
+                    bool isSelected = (i == currentIndex);
+                    mapImages[i].color = isSelected ? new Color(0.90f, 0.40f, 0.90f, 1f) : Color.white;
+                    mapLabels[i].color = isSelected ? new Color(0.15f, 0.08f, 0.24f, 1f) : new Color(0.15f, 0.12f, 0.22f, 1f);
+
+                    mapHovers[i].normalBackgroundColor = mapImages[i].color;
+                    mapHovers[i].normalTextColor = mapLabels[i].color;
+                }
+            });
         }
 
-        // ── RETURN button — bottom left, white bg with DARK text ──
-        MakePanelButton(overlayObj.transform, "RETURN",
-            new Vector2(0.02f, 0.02f), new Vector2(0.14f, 0.09f),
-            () => Destroy(overlayObj));
+        // تم إضافة <b> حول كلمة RETURN لتكون عريضة (Bold) إجبارياً
+        MakePanelButton(panelObj.transform, "<b>RETURN</b>",
+            new Vector2(0.40f, 0.03f), new Vector2(0.60f, 0.13f),
+            () =>
+            {
+                Destroy(overlayObj);
+                SetMainMenuElementsVisible(root, true);
+            });
     }
 
-    // ── SHARED HELPERS ────────────────────────────────────────────────────────────
+    // ─── LEVEL TILE ───────────────────────────────────────────────────────────────
+    void MakeLevelTile(Transform parent, int level, bool isUnlocked, bool isCurrent,
+        UnityEngine.Events.UnityAction action)
+    {
+        GameObject obj = new GameObject("Level_" + level);
+        obj.transform.SetParent(parent, false);
+
+        Image img = obj.AddComponent<Image>();
+        img.color = isCurrent
+            ? new Color(0.84f, 0.29f, 0.82f, 1f)
+            : isUnlocked
+                ? new Color(0.94f, 0.94f, 0.96f, 1f)
+                : new Color(0.22f, 0.18f, 0.30f, 0.55f);
+
+        Button btn = obj.AddComponent<Button>();
+        btn.interactable = isUnlocked;
+        if (isUnlocked) btn.onClick.AddListener(action);
+
+        Outline glow = obj.AddComponent<Outline>();
+        glow.effectColor = isCurrent
+            ? new Color(0.86f, 0.32f, 0.86f, 0.50f)
+            : isUnlocked
+                ? new Color(0.60f, 0.18f, 0.88f, 0.22f)
+                : new Color(0f, 0f, 0f, 0.12f);
+        glow.effectDistance = new Vector2(2f, -2f);
+
+        Color numColor = isCurrent
+            ? new Color(0.20f, 0.16f, 0.32f, 1f)
+            : isUnlocked
+                ? new Color(0.28f, 0.26f, 0.38f, 1f)
+                : new Color(0.50f, 0.48f, 0.58f, 0.50f);
+
+        TextMeshProUGUI lbl = CreateCenteredLabel(obj.transform, level.ToString(), 44, numColor, true);
+
+        if (isUnlocked)
+            AttachHoverEffect(obj, lbl, img,
+                img.color,
+                new Color(0.76f, 0.18f, 0.95f, 0.85f),
+                Color.white);
+    }
+
+    // ─── SHARED HELPERS ───────────────────────────────────────────────────────────
 
     void MakeText(Transform parent, string text, float size, Color color,
         Vector2 anchorMin, Vector2 anchorMax, bool isTitle = false)
@@ -293,48 +367,15 @@ public class RuntimeMenuBuilder : MonoBehaviour
         rect.anchorMax = anchorMax;
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
-        // Dark text — visible on the light button background
-        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 24, new Color(0.10f, 0.10f, 0.14f, 1f), true);
+        // تم إضافة FontStyles.Bold هنا لضمان أن الخط يكون عريض
+        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 26,
+            new Color(0.10f, 0.10f, 0.14f, 1f), true);
+        labelText.fontStyle = FontStyles.Bold;
+
         AttachHoverEffect(obj, labelText, img,
             new Color(0.94f, 0.94f, 0.96f, 1f),
             new Color(1f, 0.88f, 1f, 1f),
             new Color(0.10f, 0.10f, 0.14f, 1f));
-    }
-
-    void MakeLevelButton(Transform parent, int level, bool isUnlocked, bool isCurrent,
-        UnityEngine.Events.UnityAction action)
-    {
-        GameObject obj = new GameObject("Level_" + level);
-        obj.transform.SetParent(parent, false);
-
-        Image img = obj.AddComponent<Image>();
-        img.color = isCurrent
-            ? new Color(0.84f, 0.29f, 0.82f, 1f)
-            : isUnlocked
-                ? new Color(0.94f, 0.94f, 0.96f, 1f)
-                : new Color(0.94f, 0.94f, 0.96f, 0.72f);
-
-        Button btn = obj.AddComponent<Button>();
-        btn.interactable = isUnlocked;
-        if (isUnlocked) btn.onClick.AddListener(action);
-
-        Outline glow = obj.AddComponent<Outline>();
-        glow.effectColor = isCurrent
-            ? new Color(0.86f, 0.32f, 0.86f, 0.45f)
-            : new Color(0f, 0f, 0f, 0.18f);
-        glow.effectDistance = new Vector2(2f, -2f);
-
-        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, level.ToString(), 48,
-            isCurrent ? new Color(0.24f, 0.22f, 0.38f, 1f)
-            : isUnlocked ? new Color(0.32f, 0.32f, 0.40f, 1f)
-                         : new Color(0.32f, 0.32f, 0.40f, 0.58f),
-            false);
-
-        if (isUnlocked)
-            AttachHoverEffect(obj, labelText, img,
-                img.color,
-                new Color(1f, 0.82f, 1f, 1f),
-                new Color(0.18f, 0.18f, 0.24f, 1f));
     }
 
     TextMeshProUGUI CreateCenteredLabel(Transform parent, string text,
@@ -371,4 +412,27 @@ public class RuntimeMenuBuilder : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = rect.offsetMax = Vector2.zero;
     }
+
+    void SetCenteredRect(RectTransform rect, Vector2 size, Vector2 anchoredPosition)
+    {
+        rect.anchorMin = new Vector2(0.5f, 0.5f);
+        rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.sizeDelta = size;
+        rect.anchoredPosition = anchoredPosition;
+    }
+
+    void SetMainMenuElementsVisible(Transform root, bool isVisible)
+    {
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform child = root.GetChild(i);
+            string childName = child.name;
+            if (childName == "Background" || childName == "Overlay" || childName == "LevelSelectOverlay")
+                continue;
+
+            child.gameObject.SetActive(isVisible);
+        }
+    }
+
 }
