@@ -3,42 +3,47 @@ using UnityEngine;
 public class PlayerHealth : MonoBehaviour
 {
     public float maxHealth = 100f;
-    public float currentHealth;
+    public float currentHealth = 100f;
 
     private void Awake()
     {
-        currentHealth = maxHealth;
+        currentHealth = Mathf.Clamp(currentHealth, 0f, maxHealth);
+        if (currentHealth <= 0f)
+        {
+            currentHealth = maxHealth;
+        }
     }
 
-    private void Start()
+    public void TakeDamage(float amount)
     {
-        HUDManager.Instance?.UpdateHealth(currentHealth, maxHealth);
-    }
+        currentHealth = Mathf.Max(0f, currentHealth - Mathf.Abs(amount));
 
-    public void SetMaxHealth(float newMaxHealth, bool resetCurrentHealth)
-    {
-        maxHealth = Mathf.Max(1f, newMaxHealth);
-        currentHealth = resetCurrentHealth ? maxHealth : Mathf.Min(currentHealth, maxHealth);
-        HUDManager.Instance?.UpdateHealth(currentHealth, maxHealth);
-    }
-
-    public void TakeDamage(float damage)
-    {
-        currentHealth = Mathf.Max(0f, currentHealth - damage);
-
-        if (GameManager.Instance != null)
-            GameManager.Instance.playerTookDamage = true;
-
-        HUDManager.Instance?.UpdateHealth(currentHealth, maxHealth);
-        Debug.Log($"Player took {damage} damage. HP = {currentHealth}");
+        if (HUDManager.Instance != null)
+        {
+            HUDManager.Instance.UpdateHealth(currentHealth, maxHealth);
+        }
 
         if (currentHealth <= 0f)
-            Die();
+        {
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.playerTookDamage = true;
+                GameManager.Instance.GameOver();
+            }
+        }
+        else if (GameManager.Instance != null)
+        {
+            GameManager.Instance.playerTookDamage = true;
+        }
     }
 
-    private void Die()
+    public void Heal(float amount)
     {
-        Debug.Log("Player Died");
-        GameManager.Instance?.GameOver();
+        currentHealth = Mathf.Min(maxHealth, currentHealth + Mathf.Abs(amount));
+
+        if (HUDManager.Instance != null)
+        {
+            HUDManager.Instance.UpdateHealth(currentHealth, maxHealth);
+        }
     }
 }

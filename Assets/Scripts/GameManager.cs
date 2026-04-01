@@ -18,6 +18,18 @@ public class GameManager : MonoBehaviour
         ContainerPortYard
     }
 
+    public enum PerspectiveMode
+    {
+        FirstPerson,
+        ThirdPerson
+    }
+
+    public enum MovementScheme
+    {
+        Wasd,
+        ArrowKeys
+    }
+
     public static GameManager Instance;
     public static MenuScreen PendingMenuScreen { get; private set; } = MenuScreen.MainMenu;
 
@@ -58,6 +70,8 @@ public class GameManager : MonoBehaviour
     public bool playerTookDamage = false;
     public float levelTime = 0f;
     public ArenaMap selectedMap = ArenaMap.BlacksiteFacility;
+    public PerspectiveMode perspectiveMode = PerspectiveMode.FirstPerson;
+    public MovementScheme movementScheme = MovementScheme.Wasd;
 
     void Awake()
     {
@@ -67,6 +81,8 @@ public class GameManager : MonoBehaviour
             DontDestroyOnLoad(gameObject);
             difficulty = PlayerPrefs.GetString("Difficulty", difficulty);
             selectedMap = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", 0), 0, 2);
+            perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", 0), 0, 1);
+            movementScheme = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", 0), 0, 1);
             currentLevel = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
         }
         else
@@ -86,6 +102,30 @@ public class GameManager : MonoBehaviour
         selectedMap = map;
         PlayerPrefs.SetInt("SelectedMap", (int)map);
         PlayerPrefs.Save();
+    }
+
+    public void SetPerspectiveMode(PerspectiveMode mode)
+    {
+        perspectiveMode = mode;
+        PlayerPrefs.SetInt("PerspectiveMode", (int)mode);
+        PlayerPrefs.Save();
+    }
+
+    public PerspectiveMode GetPerspectiveMode()
+    {
+        return perspectiveMode;
+    }
+
+    public void SetMovementScheme(MovementScheme scheme)
+    {
+        movementScheme = scheme;
+        PlayerPrefs.SetInt("MovementScheme", (int)scheme);
+        PlayerPrefs.Save();
+    }
+
+    public MovementScheme GetMovementScheme()
+    {
+        return movementScheme;
     }
 
     public ArenaMap GetSelectedMap()

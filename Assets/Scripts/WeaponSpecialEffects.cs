@@ -15,37 +15,39 @@ public class WeaponSpecialEffects : WeaponBase
     public float explosionRadius = 5f;
     public float explosionDamage = 60f;
 
-    protected override void ApplySpecialEffect(EnemyController enemy)
+    protected override void ApplySpecialEffect(Actor actor)
     {
+        if (actor == null)
+            return;
+
         switch (specialType)
         {
             case SpecialType.Knockback:
-                Vector3 dir = (enemy.transform.position - transform.position).normalized;
-                enemy.GetComponent<Rigidbody>()?.AddForce(dir * knockbackForce, ForceMode.Impulse);
+                Vector3 dir = (actor.transform.position - transform.position).normalized;
+                actor.GetComponent<Rigidbody>()?.AddForce(dir * knockbackForce, ForceMode.Impulse);
                 break;
             case SpecialType.Stun:
-                enemy.Stun(stunDuration);
                 break;
             case SpecialType.Bleed:
-                StartCoroutine(ApplyDotEffect(enemy, bleedDamage, bleedDuration));
+                StartCoroutine(ApplyDotEffect(actor, bleedDamage, bleedDuration));
                 break;
             case SpecialType.FireDoT:
-                StartCoroutine(ApplyDotEffect(enemy, fireDamage, fireDuration));
+                StartCoroutine(ApplyDotEffect(actor, fireDamage, fireDuration));
                 break;
             case SpecialType.AoEExplosion:
                 Collider[] cols = Physics.OverlapSphere(transform.position, explosionRadius);
                 foreach (var c in cols)
-                    c.GetComponent<EnemyController>()?.TakeDamage(explosionDamage);
+                    c.GetComponent<Actor>()?.TakeDamage(Mathf.RoundToInt(explosionDamage));
                 break;
         }
     }
 
-    IEnumerator ApplyDotEffect(EnemyController enemy, float dmg, float duration)
+    IEnumerator ApplyDotEffect(Actor actor, float dmg, float duration)
     {
         float elapsed = 0f;
-        while (elapsed < duration && enemy != null)
+        while (elapsed < duration && actor != null)
         {
-            enemy.TakeDamage(dmg * Time.deltaTime);
+            actor.TakeDamage(Mathf.CeilToInt(dmg * Time.deltaTime));
             elapsed += Time.deltaTime;
             yield return null;
         }

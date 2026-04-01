@@ -35,17 +35,17 @@ public class WeaponBase : MonoBehaviour
         Collider[] hits = Physics.OverlapSphere(transform.position, attackRange);
         foreach (var col in hits)
         {
-            EnemyController enemy = col.GetComponent<EnemyController>();
-            if (enemy != null)
+            Actor actor = col.GetComponent<Actor>();
+            if (actor != null)
             {
-                enemy.TakeDamage(damage);
-                ApplySpecialEffect(enemy);
+                actor.TakeDamage(Mathf.RoundToInt(damage));
+                ApplySpecialEffect(actor);
                 if (hitEffect != null) hitEffect.Play();
             }
         }
     }
 
-    protected virtual void ApplySpecialEffect(EnemyController enemy) { }
+    protected virtual void ApplySpecialEffect(Actor actor) { }
 
     void OnDrawGizmosSelected()
     {

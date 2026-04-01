@@ -73,11 +73,12 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Vector2(0.14f, 0.54f), new Vector2(0.86f, 0.74f), true);
 
         int continueLevel = GameManager.Instance != null ? GameManager.Instance.GetContinueLevel() : 1;
-        MakeMenuButton(root, "CONTINUE", new Vector2(0.34f, 0.45f), new Vector2(0.66f, 0.52f), () => GameManager.Instance?.StartRun(continueLevel));
-        MakeMenuButton(root, "SELECT LEVEL", new Vector2(0.34f, 0.36f), new Vector2(0.66f, 0.43f), () => ToggleLevelSelect(root));
-        MakeMenuButton(root, "SETTINGS", new Vector2(0.34f, 0.27f), new Vector2(0.66f, 0.34f), () => SceneManager.LoadScene("Settings"));
-        MakeMenuButton(root, "CREDITS", new Vector2(0.34f, 0.18f), new Vector2(0.66f, 0.25f), () => SceneManager.LoadScene("Credits"));
-        MakeMenuButton(root, "QUIT", new Vector2(0.34f, 0.09f), new Vector2(0.66f, 0.16f), Application.Quit);
+        MakeMenuButton(root, "CONTINUE", new Vector2(0.34f, 0.49f), new Vector2(0.66f, 0.56f), () => GameManager.Instance?.StartRun(continueLevel));
+        MakeMenuButton(root, "SELECT LEVEL", new Vector2(0.34f, 0.40f), new Vector2(0.66f, 0.47f), () => ToggleLevelSelect(root));
+        MakeMenuButton(root, "OPTIONS", new Vector2(0.34f, 0.31f), new Vector2(0.66f, 0.38f), () => SceneManager.LoadScene("Options"));
+        MakeMenuButton(root, "SETTINGS", new Vector2(0.34f, 0.22f), new Vector2(0.66f, 0.29f), () => SceneManager.LoadScene("Settings"));
+        MakeMenuButton(root, "CREDITS", new Vector2(0.34f, 0.13f), new Vector2(0.66f, 0.20f), () => SceneManager.LoadScene("Credits"));
+        MakeMenuButton(root, "QUIT", new Vector2(0.34f, 0.04f), new Vector2(0.66f, 0.11f), Application.Quit);
     }
 
     // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
@@ -273,6 +274,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
                 : new Color(0.22f, 0.18f, 0.30f, 0.55f);
 
         Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
         btn.interactable = isUnlocked;
         if (isUnlocked) btn.onClick.AddListener(action);
 
@@ -360,6 +362,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Image img = obj.AddComponent<Image>();
         img.color = new Color(0.94f, 0.94f, 0.96f, 1f);
         Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
         btn.onClick.AddListener(action);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
@@ -371,6 +374,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
         TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 26,
             new Color(0.10f, 0.10f, 0.14f, 1f), true);
         labelText.fontStyle = FontStyles.Bold;
+        labelText.fontSize = 30f;
+        labelText.color = new Color(0.05f, 0.05f, 0.08f, 1f);
 
         AttachHoverEffect(obj, labelText, img,
             new Color(0.94f, 0.94f, 0.96f, 1f),
@@ -390,6 +395,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         label.alignment = TextAlignmentOptions.Center;
         if (bold) label.fontStyle = FontStyles.Bold;
         if (customFont != null) label.font = customFont;
+        label.raycastTarget = false;
         Stretch(label.GetComponent<RectTransform>());
         return label;
     }
