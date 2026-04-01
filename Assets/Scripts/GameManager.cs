@@ -46,7 +46,7 @@ public class GameManager : MonoBehaviour
 
     // Levels 1-15: melee progression. Levels 16-20: special weapons.
     private static readonly string[] LevelWeaponNames = {
-        "Combat Knife", "Katana", "Dumbbell", "Boxing Gloves", "Wrench",
+        "Combat Knife", "Knuckle Duster", "Dumbbell", "Boxing Gloves", "Wrench",
         "Tennis Racket", "Baseball Bat", "Crowbar", "Axe", "Fire Axe",
         "Machete", "Brass Knuckles", "Nunchucks", "Shovel", "Sledgehammer",
         "Flamethrower", "Sniper Rifle", "Bazooka", "RPG", "Champion Blade"
@@ -266,6 +266,7 @@ public class GameManager : MonoBehaviour
         {
             HUDManager.Instance.UpdateEnemyCount(enemiesRemaining);
             HUDManager.Instance.UpdateScore(score);
+            HUDManager.Instance.RegisterKill();
         }
 
         if (enemiesRemaining <= 0)

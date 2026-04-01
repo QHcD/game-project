@@ -619,22 +619,22 @@ public class PlayerController : MonoBehaviour
             Animator ch33Animator = thirdPersonBody.GetComponentInChildren<Animator>(true);
             if (ch33Animator != null)
             {
-                // Pull the embedded attack clip from the FBX
-                AnimationClip attackClip = Resources.Load<AnimationClip>("Player/Ch33Player");
+                // Load humanoid-retargetable animation clips
+                AnimationClip idleClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
+                AnimationClip attackClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
+
+                // If knight clips not available, try embedded FBX animation
                 if (attackClip == null)
                 {
-                    // Fallback: first clip available in the animator's runtime controller
                     RuntimeAnimatorController rac = ch33Animator.runtimeAnimatorController;
                     if (rac != null && rac.animationClips.Length > 0)
                         attackClip = rac.animationClips[0];
                 }
 
-                AnimationClip idleClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
                 CharacterVisualAnimationPlayer animPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
                 animPlayer.Setup(ch33Animator, idleClip, attackClip);
             }
 
-            thirdPersonBody.AddComponent<CharacterVisualGrounder>();
             AttachWeaponToHand(thirdPersonBody);
             return;
         }
@@ -687,7 +687,7 @@ public class PlayerController : MonoBehaviour
         AttachWeaponToHand(thirdPersonBody);
     }
 
-    // Find the right-hand bone (Mixamo and knight both exposed) and attach correct weapon
+    // Find the right-hand bone and attach the correct weapon model
     private void AttachWeaponToHand(GameObject body)
     {
         if (body == null) return;
@@ -701,13 +701,24 @@ public class PlayerController : MonoBehaviour
 
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
 
-        // Find hand bone — try multiple naming conventions
-        Transform handBone = FindBone(body.transform, "mixamorig:RightHand")
-                          ?? FindBone(body.transform, "RightHand")
-                          ?? FindBone(body.transform, "Hand_R")
-                          ?? FindBone(body.transform, "right_hand");
+        // Primary method: use Animator humanoid bone mapping (works for all humanoid rigs)
+        Transform handBone = null;
+        Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
+        if (bodyAnimator != null && bodyAnimator.isHuman)
+        {
+            handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+        }
 
-        // If no named bone found, attach to the body root
+        // Fallback: search by name
+        if (handBone == null)
+        {
+            handBone = FindBone(body.transform, "mixamorig:RightHand")
+                    ?? FindBone(body.transform, "RightHand")
+                    ?? FindBone(body.transform, "Hand_R")
+                    ?? FindBone(body.transform, "right_hand");
+        }
+
+        // Last resort: attach to the body root
         Transform attachPoint = handBone != null ? handBone : body.transform;
 
         equippedWeaponObject = BuildWeaponModel(level, attachPoint);
@@ -735,9 +746,9 @@ public class PlayerController : MonoBehaviour
             {
                 GameObject kd = Instantiate(kdPrefab, attachPoint);
                 kd.name = "WeaponModel";
-                kd.transform.localPosition = new Vector3(0f, 0f, 0.08f);
-                kd.transform.localRotation = Quaternion.Euler(0f, 0f, 0f);
-                kd.transform.localScale = new Vector3(0.012f, 0.012f, 0.012f);
+                kd.transform.localPosition = new Vector3(0f, 0.05f, 0f);
+                kd.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
+                kd.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
                 return kd;
             }
         }
@@ -750,8 +761,8 @@ public class PlayerController : MonoBehaviour
     {
         GameObject root = new GameObject("WeaponModel");
         root.transform.SetParent(attachPoint, false);
-        root.transform.localPosition = new Vector3(0f, 0.02f, 0.12f);
-        root.transform.localRotation = Quaternion.Euler(-10f, 0f, 0f);
+        root.transform.localPosition = new Vector3(0f, 0.08f, 0.02f);
+        root.transform.localRotation = Quaternion.Euler(0f, 0f, -90f);
 
         Color metalSilver = new Color(0.80f, 0.82f, 0.88f);
         Color darkMetal   = new Color(0.28f, 0.28f, 0.32f);
@@ -1032,10 +1043,19 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
     private Animator targetAnimator;
     private AnimationClip idleClip;
     private AnimationClip attackClip;
+    private AnimationClip walkClip;
     private PlayableGraph graph;
     private AnimationPlayableOutput output;
-    private AnimationClipPlayable currentPlayable;
-    private string currentState;
+    private AnimationClipPlayable idlePlayable;
+    private AnimationClipPlayable walkPlayable;
+    private AnimationClipPlayable attackPlayable;
+    private AnimationMixerPlayable mixer;
+    private bool isAttacking;
+    private bool isInitialized;
+
+    // Track parent movement for walk detection
+    private Transform parentRoot;
+    private float currentWalkWeight;
 
     public void Setup(Animator animator, AnimationClip idle, AnimationClip attack)
     {
@@ -1043,30 +1063,107 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         idleClip = idle;
         attackClip = attack;
 
+        // Use Block as walk-blend clip — no AnimationEvents, loops well as a combat stride
+        walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Block");
+        if (walkClip == null)
+        {
+            walkClip = idle; // fallback: use idle with speed variation
+        }
+
         if (targetAnimator == null || idleClip == null)
         {
             return;
         }
 
+        parentRoot = transform.parent;
+
         targetAnimator.runtimeAnimatorController = null;
         graph = PlayableGraph.Create("CharacterVisualAnimationPlayer");
         output = AnimationPlayableOutput.Create(graph, "Animation", targetAnimator);
-        currentPlayable = AnimationClipPlayable.Create(graph, idleClip);
-        currentPlayable.SetApplyFootIK(false);
-        currentPlayable.SetDuration(idleClip.length);
-        output.SetSourcePlayable(currentPlayable);
+
+        // Create a 3-input mixer: idle(0), walk(1), attack(2)
+        mixer = AnimationMixerPlayable.Create(graph, 3);
+
+        idlePlayable = AnimationClipPlayable.Create(graph, idleClip);
+        idlePlayable.SetApplyFootIK(false);
+        graph.Connect(idlePlayable, 0, mixer, 0);
+
+        walkPlayable = AnimationClipPlayable.Create(graph, walkClip);
+        walkPlayable.SetApplyFootIK(false);
+        graph.Connect(walkPlayable, 0, mixer, 1);
+
+        if (attackClip != null)
+        {
+            attackPlayable = AnimationClipPlayable.Create(graph, attackClip);
+            attackPlayable.SetApplyFootIK(false);
+            graph.Connect(attackPlayable, 0, mixer, 2);
+        }
+
+        // Start in idle
+        mixer.SetInputWeight(0, 1f);
+        mixer.SetInputWeight(1, 0f);
+        mixer.SetInputWeight(2, 0f);
+
+        output.SetSourcePlayable(mixer);
         graph.Play();
-        currentState = "Idle";
+        isInitialized = true;
     }
 
-    public void PlayAttack()
+    private void Update()
     {
-        if (attackClip == null || targetAnimator == null)
+        if (!isInitialized || !graph.IsValid() || isAttacking)
         {
             return;
         }
 
-        PlayClip(attackClip, false);
+        // Detect movement from parent's CharacterController velocity
+        float speed = 0f;
+        if (parentRoot != null)
+        {
+            CharacterController cc = parentRoot.GetComponent<CharacterController>();
+            if (cc != null)
+            {
+                speed = new Vector2(cc.velocity.x, cc.velocity.z).magnitude;
+            }
+        }
+
+        // Blend between idle and walk based on movement speed
+        float targetWalk = speed > 0.5f ? 1f : 0f;
+        currentWalkWeight = Mathf.MoveTowards(currentWalkWeight, targetWalk, 6f * Time.deltaTime);
+
+        float idleWeight = 1f - currentWalkWeight;
+        mixer.SetInputWeight(0, idleWeight);
+        mixer.SetInputWeight(1, currentWalkWeight);
+        mixer.SetInputWeight(2, 0f);
+
+        // Speed up walk animation based on actual speed for natural feel
+        if (walkPlayable.IsValid() && speed > 0.5f)
+        {
+            walkPlayable.SetSpeed(Mathf.Clamp(speed / 4f, 0.8f, 2f));
+        }
+    }
+
+    public void PlayAttack()
+    {
+        if (attackClip == null || !isInitialized || !graph.IsValid())
+        {
+            return;
+        }
+
+        isAttacking = true;
+
+        // Full weight on attack
+        mixer.SetInputWeight(0, 0f);
+        mixer.SetInputWeight(1, 0f);
+        mixer.SetInputWeight(2, 1f);
+
+        // Reset attack playable to start
+        if (attackPlayable.IsValid())
+        {
+            attackPlayable.SetTime(0d);
+            attackPlayable.SetDone(false);
+        }
+
         CancelInvoke(nameof(ReturnToIdle));
         Invoke(nameof(ReturnToIdle), Mathf.Max(0.2f, attackClip.length));
     }
@@ -1078,35 +1175,8 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
 
     private void ReturnToIdle()
     {
-        if (idleClip != null)
-        {
-            PlayClip(idleClip, true);
-        }
-    }
-
-    private void PlayClip(AnimationClip clip, bool loop)
-    {
-        if (!graph.IsValid())
-        {
-            return;
-        }
-
-        if (currentPlayable.IsValid())
-        {
-            currentPlayable.Destroy();
-        }
-
-        currentPlayable = AnimationClipPlayable.Create(graph, clip);
-        currentPlayable.SetApplyFootIK(false);
-        currentPlayable.SetDuration(clip.length);
-        currentPlayable.SetTime(0d);
-        if (!loop)
-        {
-            currentPlayable.SetDone(false);
-        }
-
-        output.SetSourcePlayable(currentPlayable);
-        currentState = clip == idleClip ? "Idle" : "Attack";
+        isAttacking = false;
+        // Update() will smoothly blend back to idle/walk
     }
 
     private void OnDestroy()

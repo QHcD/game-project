@@ -30,7 +30,7 @@ public class LevelCompleteManager : MonoBehaviour
             ? GameManager.Instance.CalculateStars(120f)
             : 3;
 
-        string starStr = stars == 3 ? "★★★" : stars == 2 ? "★★☆" : "★☆☆";
+        string starStr = "STARS  " + stars + " / 3";
         MakeText(canvasObj.transform, starStr, 90, Color.yellow,
             new Vector2(0.2f, 0.55f), new Vector2(0.8f, 0.75f));
 

@@ -26,6 +26,12 @@ public class HUDManager : MonoBehaviour
     private TMP_FontAsset prismFont;
     private Image healthFillVisual;
 
+    // Kill counter (CoD-style)
+    private TextMeshProUGUI killCountText;
+    private int killCount;
+    private float killFeedTimer;
+    private TextMeshProUGUI killFeedText;
+
     // Damage flash
     private Image damageFlashImage;
     private float damageFlashAlpha;
@@ -129,6 +135,7 @@ public class HUDManager : MonoBehaviour
         }
 
         UpdateMinimap();
+        TickKillFeed();
     }
 
     public void UpdateHealth(float current, float max)
@@ -167,6 +174,39 @@ public class HUDManager : MonoBehaviour
         if (enemyCountText != null)
         {
             enemyCountText.text = "ENEMIES  " + count;
+        }
+    }
+
+    public void RegisterKill()
+    {
+        killCount++;
+
+        if (killCountText != null)
+        {
+            killCountText.text = "KILLS  " + killCount;
+        }
+
+        // Show kill feed popup
+        if (killFeedText != null)
+        {
+            string[] messages = { "ENEMY DOWN", "ELIMINATED", "NEUTRALIZED", "TARGET DOWN", "HOSTILE KILLED" };
+            killFeedText.text = messages[killCount % messages.Length];
+            killFeedText.alpha = 1f;
+            killFeedTimer = 2f;
+        }
+    }
+
+    private void TickKillFeed()
+    {
+        if (killFeedText == null || killFeedTimer <= 0f)
+        {
+            return;
+        }
+
+        killFeedTimer -= Time.deltaTime;
+        if (killFeedTimer <= 0.5f)
+        {
+            killFeedText.alpha = Mathf.Max(0f, killFeedTimer / 0.5f);
         }
     }
 
@@ -309,7 +349,7 @@ public class HUDManager : MonoBehaviour
         healthFillImage.fillOrigin = 0;
         healthFillImage.fillAmount = 1f;
         healthFillVisual = healthFillImage;
-        RectTransform fillRect = healthFillObj.AddComponent<RectTransform>();
+        RectTransform fillRect = healthFillObj.GetComponent<RectTransform>();
         fillRect.anchorMin = Vector2.zero;
         fillRect.anchorMax = Vector2.one;
         fillRect.offsetMin = new Vector2(2f, 2f);
@@ -351,6 +391,20 @@ public class HUDManager : MonoBehaviour
         healthText ??= CreateText(bottomPanel.transform, "HPText",
             new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(238f, -28f), new Vector2(420f, 30f),
             24f, FontStyles.Bold, TextAlignmentOptions.Left);
+
+        // Kill counter — bottom-left, above health panel
+        killCountText ??= CreateText(canvasObject.transform, "KillCountText",
+            new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(240f, 152f), new Vector2(300f, 34f),
+            26f, FontStyles.Bold, TextAlignmentOptions.Left);
+        killCountText.text = "KILLS  0";
+        killCountText.color = new Color(1f, 0.85f, 0.3f, 1f);
+
+        // Kill feed popup — centre screen, slightly above middle
+        killFeedText ??= CreateText(canvasObject.transform, "KillFeedText",
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 80f), new Vector2(500f, 50f),
+            32f, FontStyles.Bold, TextAlignmentOptions.Center);
+        killFeedText.color = new Color(1f, 0.35f, 0.25f, 1f);
+        killFeedText.alpha = 0f;
 
         scoreText.color = new Color(0.97f, 0.98f, 1f, 1f);
         levelText.color = new Color(0.97f, 0.98f, 1f, 1f);
@@ -468,6 +522,16 @@ public class HUDManager : MonoBehaviour
             if (minimapImage.texture != texture)
             {
                 minimapImage.texture = texture;
+            }
+
+            // Update minimap camera position HERE before rendering so it tracks the player this frame
+            if (playerController != null && !minimap.lockToArenaCenter)
+            {
+                minimap.transform.position = new Vector3(
+                    playerController.transform.position.x,
+                    minimap.height,
+                    playerController.transform.position.z);
+                minimap.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
             }
 
             Camera minimapCamera = minimap.GetComponent<Camera>();

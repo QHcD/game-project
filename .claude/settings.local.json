@@ -8,7 +8,12 @@
       "Bash(mkdir -p \"/c/Users/97338/PRISM-7/Assets/Resources/Weapons\")",
       "Bash(cp \"/c/Users/97338/Downloads/Ch33_nonPBR@Standing Melee Attack Horizontal.fbx\" \"/c/Users/97338/PRISM-7/Assets/Resources/Player/Ch33Player.fbx\")",
       "Bash(unzip -o model.zip)",
-      "Bash(cp model.fbx \"/c/Users/97338/PRISM-7/Assets/Resources/Weapons/KnuckleDuster.fbx\")"
+      "Bash(cp model.fbx \"/c/Users/97338/PRISM-7/Assets/Resources/Weapons/KnuckleDuster.fbx\")",
+      "Bash(ls \"C:/Users/97338/PRISM-7/Assets/FirstPersonMelee/Scripts/\"*.cs)",
+      "Bash(find C:/Users/97338/PRISM-7/Assets -name HUDManager* -o -name GameManager* -o -name LevelManager* -o -name MapManager* -o -name ArenaManager*)",
+      "Bash(find C:/Users/97338/PRISM-7/Assets -name *.cs -path *Script*)",
+      "Bash(xxd \"C:/Users/97338/PRISM-7/Assets/Resources/Weapons/KnuckleDuster.fbx\")",
+      "Bash(xxd \"C:/Users/97338/PRISM-7/Assets/Resources/Player/Ch33Player.fbx\")"
     ]
   }
 }

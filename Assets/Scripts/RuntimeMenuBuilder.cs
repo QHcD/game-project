@@ -96,7 +96,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             int score  = GameManager.Instance != null ? GameManager.Instance.score : 0;
             int level  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
             title = "LEVEL COMPLETE";
-            subtitle = "STARS  " + new string('★', stars) + new string('☆', 3 - stars)
+            subtitle = "STARS  " + stars + " / 3"
                      + "\nSCORE  " + score
                      + "\nLEVEL  " + level;
             primaryButton = "NEXT LEVEL";

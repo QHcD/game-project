@@ -75,7 +75,7 @@ public class LevelBuilder : MonoBehaviour
         ground.transform.SetParent(root, false);
         ground.transform.position = new Vector3(0f, -0.5f, 0f);
         ground.transform.rotation = Quaternion.identity;
-        ground.transform.localScale = new Vector3(6f, 0.5f, 6f);
+        ground.transform.localScale = new Vector3(ArenaRadius * 2.2f, 0.5f, ArenaRadius * 2.2f);
 
         SetLitColor(ground, GetGroundColor(GetTheme()));
 
@@ -683,7 +683,9 @@ public class LevelBuilder : MonoBehaviour
 
         player.tag = "Player";
         player.transform.localScale = Vector3.one;
-        player.transform.position = GetGroundPosition(new Vector3(0f, 0f, -18f)) + Vector3.up * 1.05f;
+        // Place directly on the arena floor (y=0) in the open lane between cover blocks.
+        // Do NOT use GetGroundPosition — its raycast hits the CentralPlatform overhead.
+        player.transform.position = new Vector3(8f, 0.1f, -8f);
         player.transform.rotation = Quaternion.identity;
 
         CharacterController controller = player.GetComponent<CharacterController>();
@@ -831,7 +833,8 @@ public class LevelBuilder : MonoBehaviour
     {
         GameObject enemy = new GameObject("Enemy_" + index);
         enemy.transform.SetParent(root, false);
-        enemy.transform.position = GetGroundPosition(position) + Vector3.up * 0.95f;
+        // Place on arena floor directly — GetGroundPosition can hit overhead platforms
+        enemy.transform.position = new Vector3(position.x, 0.1f, position.z);
 
         CapsuleCollider collider = enemy.AddComponent<CapsuleCollider>();
         collider.height = 1.9f;
@@ -870,6 +873,9 @@ public class LevelBuilder : MonoBehaviour
 
             visual.AddComponent<CharacterVisualGrounder>();
             visual.AddComponent<CharacterVisualBob>();
+
+            // Tint enemy knight red so it's visually hostile / distinct from player
+            TintRenderers(visual, new Color(0.85f, 0.35f, 0.30f));
 
             return;
         }
@@ -1001,6 +1007,23 @@ public class LevelBuilder : MonoBehaviour
         }
 
         return new Vector3(desiredPosition.x, 0f, desiredPosition.z);
+    }
+
+    private void TintRenderers(GameObject obj, Color tint)
+    {
+        Renderer[] renderers = obj.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Material[] mats = renderers[i].materials;
+            for (int m = 0; m < mats.Length; m++)
+            {
+                if (mats[m] != null)
+                {
+                    mats[m].color = Color.Lerp(mats[m].color, tint, 0.55f);
+                }
+            }
+            renderers[i].materials = mats;
+        }
     }
 
     private void SetLitColor(GameObject obj, Color color)
