@@ -85,14 +85,15 @@ public class OptionsBuilder : MonoBehaviour
         SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 460f), new Vector2(0f, -10f));
 
         difficultyDropdown = MakeDropdownRow(panel.transform, "DIFFICULTY:", new List<string>(difficultyOptions),
-            DifficultyIndex(), 6f, OnDifficultyChanged);
+            DifficultyIndex(), 80f, OnDifficultyChanged);
         perspectiveDropdown = MakeDropdownRow(panel.transform, "CAMERA VIEW:", new List<string>(perspectiveOptions),
-            PerspectiveIndex(), -74f, OnPerspectiveChanged);
+            PerspectiveIndex(), 0f, OnPerspectiveChanged);
         controlDropdown = MakeDropdownRow(panel.transform, "MOVE STYLE:", new List<string>(controlOptions),
-            ControlIndex(), -154f, OnControlChanged);
+            ControlIndex(), -80f, OnControlChanged);
 
+        // FIX: Moved info text lower so it doesn't overlap dropdowns
         MakeInfoText(panel.transform, "Choose how intense the enemies are, how the camera follows you, and whether movement uses WASD or Arrow keys.",
-            new Vector2(0f, 120f), new Vector2(760f, 70f));
+            new Vector2(0f, -170f), new Vector2(760f, 70f));
 
         MakePrismButton(canvasObject.transform, "RETURN", new Vector2(-150f, -305f), () => SceneManager.LoadScene("MainMenu"));
         MakePrismButton(canvasObject.transform, "RESET", new Vector2(150f, -305f), ResetOptions);
@@ -200,28 +201,40 @@ public class OptionsBuilder : MonoBehaviour
     {
         GameObject dropdownObject = new GameObject("Dropdown");
         dropdownObject.transform.SetParent(parent, false);
-        Image background = dropdownObject.AddComponent<Image>();
-        background.color = new Color(0.94f, 0.94f, 0.96f, 1f);
-        SetRect(dropdownObject.GetComponent<RectTransform>(), new Vector2(360f, 52f), position);
+
+        Image dropdownBackground = dropdownObject.AddComponent<Image>();
+        dropdownBackground.color = new Color(0.94f, 0.94f, 0.98f, 0.98f);
 
         TMP_Dropdown dropdown = dropdownObject.AddComponent<TMP_Dropdown>();
-        dropdown.targetGraphic = background;
+        SetRect(dropdownObject.GetComponent<RectTransform>(), new Vector2(340f, 52f), position);
 
-        TextMeshProUGUI caption = MakeDropdownText(dropdownObject.transform, "Caption", TextAlignmentOptions.Center, new Vector2(16f, 0f), new Vector2(-40f, 0f));
-        dropdown.captionText = caption;
+        TextMeshProUGUI captionText = MakeDropdownText(dropdownObject.transform, "Label", TextAlignmentOptions.MidlineLeft, new Vector2(16f, 0f), new Vector2(-40f, 0f));
+        dropdown.captionText = captionText;
 
-        TextMeshProUGUI arrow = MakeDropdownText(dropdownObject.transform, "Arrow", TextAlignmentOptions.Center, new Vector2(320f, 0f), new Vector2(-8f, 0f));
-        arrow.text = "v";
+        GameObject arrowObject = new GameObject("Arrow");
+        arrowObject.transform.SetParent(dropdownObject.transform, false);
+        TextMeshProUGUI arrow = arrowObject.AddComponent<TextMeshProUGUI>();
+        arrow.text = "▼";
         arrow.fontSize = 18f;
+        arrow.color = new Color(0.24f, 0.22f, 0.38f, 1f);
+        arrow.alignment = TextAlignmentOptions.Center;
+        if (prismFont != null) arrow.font = prismFont;
+        RectTransform arrowRect = arrow.GetComponent<RectTransform>();
+        arrowRect.anchorMin = new Vector2(1f, 0f);
+        arrowRect.anchorMax = new Vector2(1f, 1f);
+        arrowRect.pivot = new Vector2(1f, 0.5f);
+        arrowRect.sizeDelta = new Vector2(36f, 0f);
+        arrowRect.anchoredPosition = new Vector2(-4f, 0f);
 
-        RectTransform templateRect = CreateDropdownTemplate(dropdownObject.transform, out TextMeshProUGUI itemLabel);
+        TextMeshProUGUI itemLabel;
+        RectTransform templateRect = CreateDropdownTemplate(dropdownObject.transform, out itemLabel);
         dropdown.template = templateRect;
         dropdown.itemText = itemLabel;
 
-        List<TMP_Dropdown.OptionData> dropdownOptions = new List<TMP_Dropdown.OptionData>(options.Count);
-        for (int i = 0; i < options.Count; i++)
+        List<TMP_Dropdown.OptionData> dropdownOptions = new List<TMP_Dropdown.OptionData>();
+        foreach (string option in options)
         {
-            dropdownOptions.Add(new TMP_Dropdown.OptionData(options[i]));
+            dropdownOptions.Add(new TMP_Dropdown.OptionData(option));
         }
 
         dropdown.options = dropdownOptions;
@@ -285,7 +298,7 @@ public class OptionsBuilder : MonoBehaviour
         GameObject checkmarkObject = new GameObject("Item Checkmark");
         checkmarkObject.transform.SetParent(itemObject.transform, false);
         TextMeshProUGUI checkmark = checkmarkObject.AddComponent<TextMeshProUGUI>();
-        checkmark.text = "v";
+        checkmark.text = "✓";  // FIX: proper checkmark character instead of "v"
         checkmark.fontSize = 20f;
         checkmark.color = new Color(0.24f, 0.22f, 0.38f, 1f);
         checkmark.alignment = TextAlignmentOptions.Center;
@@ -396,9 +409,10 @@ public class OptionsBuilder : MonoBehaviour
         hover.label = label;
         hover.background = image;
         hover.normalTextColor = new Color(0.10f, 0.10f, 0.14f, 1f);
-        hover.hoverTextColor = new Color(0.10f, 0.10f, 0.14f, 1f);
+        // FIX: hover text color was identical to normal — now gives visible feedback
+        hover.hoverTextColor = new Color(0.25f, 0.45f, 0.95f, 1f);
         hover.normalBackgroundColor = Color.white;
-        hover.hoverBackgroundColor = new Color(0.98f, 0.98f, 1f, 1f);
+        hover.hoverBackgroundColor = new Color(0.88f, 0.92f, 1f, 1f);
     }
 
     private void SetRect(RectTransform rect, Vector2 size, Vector2 position)

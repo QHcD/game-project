@@ -89,11 +89,16 @@ public class PlayerController : MonoBehaviour
         Cursor.visible = false;
     }
 
+    private PlayerHealth cachedPlayerHealth;
+
     private void Start()
     {
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
         ApplyGameplayPreferences();
+        cachedPlayerHealth = GetComponentInParent<PlayerHealth>();
+        if (cachedPlayerHealth == null)
+            cachedPlayerHealth = FindFirstObjectByType<PlayerHealth>();
     }
 
     private void Update()
@@ -104,7 +109,12 @@ public class PlayerController : MonoBehaviour
 
         smoothedMoveInput = Vector2.Lerp(smoothedMoveInput, moveInput, MoveSmoothing * Time.deltaTime);
 
-        MoveInput(smoothedMoveInput);
+        if (Keyboard.current != null && Keyboard.current.qKey.wasPressedThisFrame)
+            TryDodge();
+
+        TickDodge();
+        if (!isDodging)
+            MoveInput(smoothedMoveInput);
         LookInput(lookInput);
         UpdateHeadBob();
         UpdateCameraKick();
@@ -406,6 +416,69 @@ public class PlayerController : MonoBehaviour
     private float comboCooldownTimer;
     private const float ComboCooldown = 0.15f;
 
+    // ------------------- //
+    //   DODGE ROLL         //
+    // ------------------- //
+
+    private const float DodgeSpeed = 13f;
+    private const float DodgeDuration = 0.32f;
+    private const float DodgeCooldownDuration = 1.8f;
+
+    private bool isDodging;
+    private float dodgeTimer;
+    private float dodgeCooldownTimer;
+    private Vector3 dodgeDirection;
+
+    public bool IsDodging => isDodging;
+
+    private void TryDodge()
+    {
+        if (isDodging || dodgeCooldownTimer > 0f) return;
+        // Allow dodge even if very slightly off-ground (step or slope)
+        if (playerVelocity.y > 3f) return;
+
+        // Dodge in movement direction, or back if standing still
+        Vector2 raw = moveInput.sqrMagnitude > 0.1f ? moveInput : new Vector2(0f, -1f);
+        dodgeDirection = transform.TransformDirection(new Vector3(raw.x, 0f, raw.y)).normalized;
+
+        isDodging = true;
+        dodgeTimer = DodgeDuration;
+        dodgeCooldownTimer = DodgeCooldownDuration;
+        // Flatten vertical velocity so dodge stays on ground
+        playerVelocity.y = Mathf.Min(playerVelocity.y, 0f);
+
+        if (cachedPlayerHealth != null)
+            cachedPlayerHealth.SetInvulnerable(DodgeDuration);
+
+        if (HUDManager.Instance != null)
+            HUDManager.Instance.StartDodgeCooldown(DodgeCooldownDuration);
+    }
+
+    private void TickDodge()
+    {
+        if (dodgeCooldownTimer > 0f) dodgeCooldownTimer -= Time.deltaTime;
+
+        if (!isDodging) return;
+
+        dodgeTimer -= Time.deltaTime;
+        if (dodgeTimer <= 0f)
+        {
+            isDodging = false;
+            return;
+        }
+
+        // Horizontal dash
+        controller.Move(dodgeDirection * DodgeSpeed * Time.deltaTime);
+
+        // Still apply gravity so the player doesn't float
+        if (isGrounded && playerVelocity.y < 0f) playerVelocity.y = -6f;
+        playerVelocity.y += gravity * Time.deltaTime;
+        controller.Move(new Vector3(0f, playerVelocity.y, 0f) * Time.deltaTime);
+
+        ClampInsideArena();
+        SnapToArenaFloor();
+    }
+
     public void Attack()
     {
         if (comboCooldownTimer > 0f) return;
@@ -501,23 +574,38 @@ public class PlayerController : MonoBehaviour
 
     private void AttackMelee()
     {
-        Vector3 hitCenter = cam.transform.position + cam.transform.forward * attackDistance;
+        // Use player body position + forward for reliable hit detection in both perspectives
+        Vector3 aimOrigin = transform.position + Vector3.up * 1.0f;
+        Vector3 aimForward = transform.forward;
+        if (cam != null)
+        {
+            aimForward = cam.transform.forward;
+            // Keep height at torso level so we don't miss grounded enemies
+            aimOrigin = new Vector3(transform.position.x, transform.position.y + 1.0f, transform.position.z);
+        }
+
+        Vector3 hitCenter = aimOrigin + aimForward * attackDistance;
         Collider[] hits = Physics.OverlapSphere(hitCenter, attackRadius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
         bool landedHit = false;
+        // Track already-hit actors so we don't double-hit via multiple colliders
+        System.Collections.Generic.HashSet<Actor> hitActors = null;
+
         for (int i = 0; i < hits.Length; i++)
         {
             Actor actor = hits[i].GetComponentInParent<Actor>();
             if (actor != null && actor.gameObject != gameObject)
             {
+                if (hitActors == null) hitActors = new System.Collections.Generic.HashSet<Actor>();
+                if (!hitActors.Add(actor)) continue;
+
                 actor.TakeDamage(attackDamage);
-                ApplyHitReaction(actor.transform, cam.transform.forward);
+                ApplyHitReaction(actor.transform, aimForward);
                 HitTarget(hits[i].ClosestPoint(hitCenter));
                 landedHit = true;
-                break;
             }
         }
 
-        if (!landedHit && Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
+        if (!landedHit && Physics.Raycast(aimOrigin, aimForward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
         {
             HitTarget(hit.point);
         }
@@ -743,8 +831,12 @@ public class PlayerController : MonoBehaviour
 
         CameraController follow = cameraObject.AddComponent<CameraController>();
         follow.target = transform;
-        follow.offset = new Vector3(0f, 3.2f, -5.8f);
-        follow.smoothSpeed = 10f;
+        follow.offset = new Vector3(0f, 2.45f, -4.4f);
+        follow.smoothSpeed = 12f;
+        follow.rotationSmoothSpeed = 16f;
+        follow.collisionRadius = 0.28f;
+        follow.minimumDistance = 1.15f;
+        follow.focusOffset = new Vector3(0f, 1.55f, 0f);
 
         thirdPersonCam = runtimeThirdPersonCamera;
     }

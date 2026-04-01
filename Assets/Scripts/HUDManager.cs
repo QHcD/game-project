@@ -32,6 +32,13 @@ public class HUDManager : MonoBehaviour
     private float killFeedTimer;
     private TextMeshProUGUI killFeedText;
 
+    // Dodge cooldown ring
+    private Image dodgeRingFill;
+    private Image dodgeRingBg;
+    private TextMeshProUGUI dodgeLabel;
+    private float dodgeCooldownTotal;
+    private float dodgeCooldownRemaining;
+
     // Damage flash
     private Image damageFlashImage;
     private float damageFlashAlpha;
@@ -136,6 +143,7 @@ public class HUDManager : MonoBehaviour
 
         UpdateMinimap();
         TickKillFeed();
+        TickDodgeCooldown();
     }
 
     public void UpdateHealth(float current, float max)
@@ -210,11 +218,44 @@ public class HUDManager : MonoBehaviour
         }
     }
 
+    public void StartDodgeCooldown(float duration)
+    {
+        dodgeCooldownTotal = duration;
+        dodgeCooldownRemaining = duration;
+    }
+
+    private void TickDodgeCooldown()
+    {
+        if (dodgeCooldownRemaining > 0f)
+        {
+            dodgeCooldownRemaining -= Time.deltaTime;
+        }
+
+        float fill = dodgeCooldownTotal > 0f
+            ? 1f - Mathf.Clamp01(dodgeCooldownRemaining / dodgeCooldownTotal)
+            : 1f;
+
+        if (dodgeRingFill != null)
+        {
+            dodgeRingFill.fillAmount = fill;
+            dodgeRingFill.color = fill >= 1f
+                ? new Color(0.25f, 0.85f, 1f, 1f)
+                : new Color(0.25f, 0.85f, 1f, 0.45f);
+        }
+
+        if (dodgeLabel != null)
+        {
+            dodgeLabel.color = fill >= 1f
+                ? new Color(0.25f, 0.85f, 1f, 1f)
+                : new Color(1f, 1f, 1f, 0.45f);
+        }
+    }
+
     public void ShowDamageFlash(float damageAmount)
     {
         // Scale flash intensity with damage (cap at 1.0)
         float intensity = Mathf.Clamp01(damageAmount / 40f);
-        damageFlashAlpha = Mathf.Max(damageFlashAlpha, 0.25f + intensity * 0.55f);
+        damageFlashAlpha = Mathf.Max(damageFlashAlpha, 0.14f + intensity * 0.28f);
         if (damageFlashImage != null)
         {
             damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, damageFlashAlpha);
@@ -288,7 +329,7 @@ public class HUDManager : MonoBehaviour
         float pulseSpeed = Mathf.Lerp(3.5f, 6.5f, 1f - ratio / 0.35f);
         lowHealthPulse += Time.deltaTime * pulseSpeed;
         float pulse = (Mathf.Sin(lowHealthPulse) + 1f) * 0.5f;
-        float maxAlpha = Mathf.Lerp(0.12f, 0.52f, 1f - ratio / 0.35f);
+        float maxAlpha = Mathf.Lerp(0.08f, 0.24f, 1f - ratio / 0.35f);
         lowHealthImage.color = new Color(0.75f, 0.02f, 0.02f, pulse * maxAlpha);
     }
 
@@ -399,6 +440,9 @@ public class HUDManager : MonoBehaviour
         killCountText.text = "KILLS  0";
         killCountText.color = new Color(1f, 0.85f, 0.3f, 1f);
 
+        // Dodge cooldown ring — bottom-left, above kill counter
+        BuildDodgeWidget(canvasObject.transform);
+
         // Kill feed popup — centre screen, slightly above middle
         killFeedText ??= CreateText(canvasObject.transform, "KillFeedText",
             new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 80f), new Vector2(500f, 50f),
@@ -414,6 +458,62 @@ public class HUDManager : MonoBehaviour
         healthText.color = Color.white;
 
         EnsureMinimap(canvasObject.transform);
+    }
+
+    private void BuildDodgeWidget(Transform canvasTransform)
+    {
+        // Circular ring at bottom-left, above kill counter
+        // Background dark circle
+        GameObject bgObj = canvasTransform.Find("DodgeRingBg")?.gameObject;
+        if (bgObj == null)
+        {
+            bgObj = new GameObject("DodgeRingBg");
+            bgObj.transform.SetParent(canvasTransform, false);
+        }
+
+        dodgeRingBg = bgObj.GetComponent<Image>();
+        if (dodgeRingBg == null) dodgeRingBg = bgObj.AddComponent<Image>();
+        dodgeRingBg.color = new Color(0.08f, 0.10f, 0.14f, 0.82f);
+        dodgeRingBg.sprite = GetOrCreateCircleSprite();
+        dodgeRingBg.type = Image.Type.Simple;
+
+        RectTransform bgRect = bgObj.GetComponent<RectTransform>();
+        bgRect.anchorMin = new Vector2(0f, 0f);
+        bgRect.anchorMax = new Vector2(0f, 0f);
+        bgRect.anchoredPosition = new Vector2(54f, 210f);
+        bgRect.sizeDelta = new Vector2(64f, 64f);
+
+        // Fill ring — radial fill
+        GameObject fillObj = bgObj.transform.Find("DodgeRingFill")?.gameObject;
+        if (fillObj == null)
+        {
+            fillObj = new GameObject("DodgeRingFill");
+            fillObj.transform.SetParent(bgObj.transform, false);
+        }
+
+        dodgeRingFill = fillObj.GetComponent<Image>();
+        if (dodgeRingFill == null) dodgeRingFill = fillObj.AddComponent<Image>();
+        dodgeRingFill.color = new Color(0.25f, 0.85f, 1f, 1f);
+        dodgeRingFill.type = Image.Type.Filled;
+        dodgeRingFill.fillMethod = Image.FillMethod.Radial360;
+        dodgeRingFill.fillOrigin = (int)Image.Origin360.Top;
+        dodgeRingFill.fillClockwise = true;
+        dodgeRingFill.fillAmount = 1f;
+        dodgeRingFill.sprite = GetOrCreateCircleSprite();
+        dodgeRingFill.raycastTarget = false;
+
+        RectTransform fillRect = fillObj.GetComponent<RectTransform>();
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = Vector2.one;
+        fillRect.offsetMin = new Vector2(5f, 5f);
+        fillRect.offsetMax = new Vector2(-5f, -5f);
+
+        // "Q" label in the centre
+        dodgeLabel ??= CreateText(bgObj.transform, "DodgeLabel",
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -2f), new Vector2(48f, 28f),
+            18f, FontStyles.Bold, TextAlignmentOptions.Center);
+        dodgeLabel.text = "Q";
+        dodgeLabel.color = new Color(0.25f, 0.85f, 1f, 1f);
     }
 
     private GameObject CreateImage(Transform parent, string name, Color color,
@@ -487,19 +587,52 @@ public class HUDManager : MonoBehaviour
             minimapRoot.AddComponent<Mask>().showMaskGraphic = true;
         }
 
-        GameObject minimapContent = CreateImage(minimapRoot.transform, "MinimapContent",
+        GameObject legacyMinimapContent = minimapRoot.transform.Find("MinimapContent")?.gameObject;
+        if (legacyMinimapContent != null)
+        {
+            Destroy(legacyMinimapContent);
+        }
+
+        GameObject minimapViewport = CreateImage(minimapRoot.transform, "MinimapViewport",
             Color.white,
             new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(172f, 172f));
-        Image minimapContentImage = minimapContent.GetComponent<Image>();
-        minimapContentImage.sprite = GetOrCreateCircleSprite();
-        minimapContentImage.color = Color.white;
+        Image minimapViewportImage = minimapViewport.GetComponent<Image>();
+        minimapViewportImage.sprite = GetOrCreateCircleSprite();
+        minimapViewportImage.color = Color.white;
+        minimapViewportImage.preserveAspect = true;
 
-        minimapImage = minimapContent.GetComponent<RawImage>();
+        GameObject minimapTexture = minimapViewport.transform.Find("MinimapTexture")?.gameObject;
+        if (minimapTexture == null)
+        {
+            minimapTexture = new GameObject("MinimapTexture");
+            minimapTexture.transform.SetParent(minimapViewport.transform, false);
+        }
+
+        RectTransform minimapTextureRect = minimapTexture.GetComponent<RectTransform>();
+        if (minimapTextureRect == null)
+        {
+            minimapTextureRect = minimapTexture.AddComponent<RectTransform>();
+        }
+
+        minimapTextureRect.anchorMin = Vector2.zero;
+        minimapTextureRect.anchorMax = Vector2.one;
+        minimapTextureRect.offsetMin = Vector2.zero;
+        minimapTextureRect.offsetMax = Vector2.zero;
+
+        Image strayImage = minimapTexture.GetComponent<Image>();
+        if (strayImage != null)
+        {
+            DestroyImmediate(strayImage);
+        }
+
+        minimapImage = minimapTexture.GetComponent<RawImage>();
         if (minimapImage == null)
         {
-            Destroy(minimapContentImage);
-            minimapImage = minimapContent.AddComponent<RawImage>();
+            minimapImage = minimapTexture.AddComponent<RawImage>();
         }
+
+        minimapImage.color = Color.white;
+        minimapImage.raycastTarget = false;
 
         GameObject arrowObject = CreateImage(minimapRoot.transform, "PlayerArrow",
             new Color(1f, 0.96f, 0.92f, 1f),

@@ -985,6 +985,8 @@ public class LevelBuilder : MonoBehaviour
 
         GameObject enemyRoot = new GameObject("EnemyRoot");
         int enemyCount = GameManager.Instance != null ? Mathf.Max(8, GameManager.Instance.GetEnemyCount()) : 10;
+        GameObject player = GameObject.FindGameObjectWithTag("Player");
+        Vector3 playerPosition = player != null ? player.transform.position : new Vector3(0f, 0.1f, -8.5f);
 
         if (GameManager.Instance != null)
         {
@@ -993,9 +995,7 @@ public class LevelBuilder : MonoBehaviour
 
         for (int i = 0; i < enemyCount; i++)
         {
-            float angle = (Mathf.PI * 2f / enemyCount) * i;
-            float ringRadius = i % 2 == 0 ? 12f : 17f;
-            Vector3 spawnPoint = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * ringRadius;
+            Vector3 spawnPoint = GetEnemySpawnPoint(i, enemyCount, playerPosition);
             CreateEnemy(enemyRoot.transform, i, spawnPoint);
         }
 
@@ -1003,6 +1003,50 @@ public class LevelBuilder : MonoBehaviour
         {
             HUDManager.Instance.UpdateEnemyCount(enemyCount);
         }
+    }
+
+    private Vector3 GetEnemySpawnPoint(int index, int enemyCount, Vector3 playerPosition)
+    {
+        const float minPlayerDistance = 11.5f;
+        const float closeRingRadius = 15.5f;
+        const float farRingRadius = 20.5f;
+        const float angleOffset = 0.35f;
+
+        float baseAngle = (Mathf.PI * 2f / enemyCount) * index;
+        float[] angleCandidates =
+        {
+            baseAngle + angleOffset,
+            baseAngle - angleOffset,
+            baseAngle + angleOffset + Mathf.PI,
+            baseAngle - angleOffset + Mathf.PI
+        };
+        float[] radiusCandidates =
+        {
+            index % 2 == 0 ? closeRingRadius : farRingRadius,
+            index % 2 == 0 ? farRingRadius : closeRingRadius
+        };
+
+        for (int radiusIndex = 0; radiusIndex < radiusCandidates.Length; radiusIndex++)
+        {
+            for (int angleIndex = 0; angleIndex < angleCandidates.Length; angleIndex++)
+            {
+                float radius = radiusCandidates[radiusIndex];
+                float angle = angleCandidates[angleIndex];
+                Vector3 candidate = new Vector3(Mathf.Cos(angle), 0.1f, Mathf.Sin(angle)) * radius;
+                if (Vector3.Distance(candidate, playerPosition) >= minPlayerDistance)
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        Vector3 fallbackDirection = (-new Vector3(playerPosition.x, 0f, playerPosition.z)).normalized;
+        if (fallbackDirection.sqrMagnitude < 0.001f)
+        {
+            fallbackDirection = Vector3.forward;
+        }
+
+        return new Vector3(fallbackDirection.x, 0.1f, fallbackDirection.z) * farRingRadius;
     }
 
     private void CreateEnemy(Transform root, int index, Vector3 position)
@@ -1824,15 +1868,34 @@ public class PrototypeEnemy : Actor
     private const float ArenaPadding = 0.75f;
     private const float ArenaFloorHeight = 0.1f;
 
+    // --- Aggro system ---
+    private const float AggroRadius = 12f;
+    private const float DeaggroRadius = 16f;
+    private const int MaxSimultaneousAttackers = 3;
+    private static int currentAttackerCount;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetStatics() { currentAttackerCount = 0; }
+
     public float moveSpeed = 2.2f;
     public float attackRange = 1.7f;
     public float attackDamage = 12f;
-    public float attackCooldown = 1.1f;
+    public float attackCooldown = 1.6f;
 
     private Transform target;
     private float lastAttackTime;
     private float retargetTime;
     private float currentSpeed;
+    private bool isAggro;
+    private bool isActiveAttacker;
+
+    // --- Hit stagger ---
+    private float staggerTimer;
+    private const float StaggerDuration = 0.6f;
+
+    // --- Idle wander ---
+    private Vector3 wanderTarget;
+    private float wanderTimer;
 
     private void Start()
     {
@@ -1848,10 +1911,21 @@ public class PrototypeEnemy : Actor
             attackDamage = GameManager.Instance.GetEnemyDamage();
         }
         currentSpeed = moveSpeed;
+
+        // Stagger initial attack so enemies don't all hit at the same instant
+        lastAttackTime = Time.time + Random.Range(0f, attackCooldown);
+        wanderTarget = transform.position;
     }
 
     private void Update()
     {
+        // Hit stagger — freeze in place when hit
+        if (staggerTimer > 0f)
+        {
+            staggerTimer -= Time.deltaTime;
+            return;
+        }
+
         if (Time.time >= retargetTime || target == null)
         {
             target = FindBestTarget();
@@ -1860,12 +1934,32 @@ public class PrototypeEnemy : Actor
 
         if (target == null)
         {
+            Wander();
+            ClampInsideArena();
             return;
         }
 
         Vector3 toTarget = target.position - transform.position;
         toTarget.y = 0f;
         float distance = toTarget.magnitude;
+
+        // Aggro check — only chase if within aggro radius
+        if (!isAggro && distance <= AggroRadius)
+            isAggro = true;
+        else if (isAggro && distance > DeaggroRadius)
+        {
+            isAggro = false;
+            ReleaseAttackerSlot();
+        }
+
+        if (!isAggro)
+        {
+            Wander();
+            ClampInsideArena();
+            return;
+        }
+
+        // Face the player
         if (distance > 0.2f)
         {
             Vector3 direction = toTarget.normalized;
@@ -1886,8 +1980,18 @@ public class PrototypeEnemy : Actor
 
         ClampInsideArena();
 
+        // Attack — only if attacker slot available
         if (distance <= attackRange && Time.time >= lastAttackTime + attackCooldown)
         {
+            if (!isActiveAttacker && currentAttackerCount >= MaxSimultaneousAttackers)
+                return;
+
+            if (!isActiveAttacker)
+            {
+                isActiveAttacker = true;
+                currentAttackerCount++;
+            }
+
             lastAttackTime = Time.time;
             CharacterVisualAnimationPlayer visualAnimation = GetComponentInChildren<CharacterVisualAnimationPlayer>();
             visualAnimation?.PlayAttack();
@@ -1905,6 +2009,51 @@ public class PrototypeEnemy : Actor
                 }
             }
         }
+
+        // Release slot if out of attack range for a while
+        if (isActiveAttacker && distance > attackRange * 1.5f)
+        {
+            ReleaseAttackerSlot();
+        }
+    }
+
+    public override void TakeDamage(int amount)
+    {
+        // Apply stagger and knockback BEFORE base call which may destroy us
+        staggerTimer = StaggerDuration;
+        isAggro = true;
+
+        if (target != null)
+        {
+            Vector3 pushDir = (transform.position - target.position).normalized;
+            pushDir.y = 0f;
+            transform.position += pushDir * 0.5f;
+        }
+
+        base.TakeDamage(amount);
+    }
+
+    private void Wander()
+    {
+        wanderTimer -= Time.deltaTime;
+        if (wanderTimer <= 0f)
+        {
+            float angle = Random.Range(0f, 360f) * Mathf.Deg2Rad;
+            float radius = Random.Range(2f, 5f);
+            wanderTarget = transform.position + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+            wanderTimer = Random.Range(2f, 4.5f);
+        }
+
+        float wanderSpeed = moveSpeed * 0.35f;
+        transform.position = Vector3.MoveTowards(transform.position, new Vector3(wanderTarget.x, transform.position.y, wanderTarget.z), wanderSpeed * Time.deltaTime);
+
+        Vector3 wanderDir = (wanderTarget - transform.position);
+        wanderDir.y = 0f;
+        if (wanderDir.sqrMagnitude > 0.1f)
+        {
+            Quaternion rot = Quaternion.LookRotation(wanderDir.normalized);
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, rot, 120f * Time.deltaTime);
+        }
     }
 
     private Transform FindBestTarget()
@@ -1916,6 +2065,15 @@ public class PrototypeEnemy : Actor
         }
 
         return null;
+    }
+
+    private void ReleaseAttackerSlot()
+    {
+        if (isActiveAttacker)
+        {
+            isActiveAttacker = false;
+            currentAttackerCount = Mathf.Max(0, currentAttackerCount - 1);
+        }
     }
 
     private void ClampInsideArena()
@@ -1941,8 +2099,15 @@ public class PrototypeEnemy : Actor
         }
     }
 
+    private void OnDestroy()
+    {
+        ReleaseAttackerSlot();
+    }
+
     protected override void Death()
     {
+        ReleaseAttackerSlot();
+
         if (GameManager.Instance != null)
         {
             GameManager.Instance.EnemyKilled();

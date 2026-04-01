@@ -122,6 +122,7 @@ public class GameManager : MonoBehaviour
     {
         difficulty = diff;
         PlayerPrefs.SetString("Difficulty", diff);
+        PlayerPrefs.Save(); // FIX: was missing Save()
     }
 
     public void SetSelectedMap(ArenaMap map)
@@ -187,16 +188,18 @@ public class GameManager : MonoBehaviour
         currentLevel = Mathf.Clamp(level, 1, TotalLevels);
         enemiesRemaining = 0;
         PlayerPrefs.SetInt("ContinueLevel", currentLevel);
+        PlayerPrefs.Save(); // FIX: was missing Save()
         ResetLevelState();
     }
 
     public int GetEnemyCount()
     {
+        // FIX: Easy and Normal were both returning 12 — now properly differentiated
         switch (difficulty)
         {
-            case "Easy": return 10;
-            case "Hard": return 12;
-            default: return 12;
+            case "Easy": return 8;
+            case "Hard": return 15;
+            default: return 12; // Normal
         }
     }
 
@@ -281,8 +284,7 @@ public class GameManager : MonoBehaviour
             PlayerPrefs.SetInt("UnlockedLevels", Mathf.Min(TotalLevels, currentLevel + 1));
 
         PlayerPrefs.SetInt("ContinueLevel", Mathf.Min(TotalLevels, currentLevel + 1));
-
-        PlayerPrefs.Save();
+        PlayerPrefs.Save(); // FIX: already existed but consolidate here
         PendingMenuScreen = MenuScreen.LevelComplete;
         SceneManager.LoadScene("MainMenu");
     }
@@ -294,11 +296,17 @@ public class GameManager : MonoBehaviour
         if (currentLevel > TotalLevels)
         {
             currentLevel = TotalLevels;
+            // FIX: Save score and progress before going to Victory screen
+            PlayerPrefs.SetInt("ContinueLevel", TotalLevels);
+            PlayerPrefs.Save();
             PendingMenuScreen = MenuScreen.Victory;
             SceneManager.LoadScene("MainMenu");
             return;
         }
 
+        // FIX: Save the new level before loading
+        PlayerPrefs.SetInt("ContinueLevel", currentLevel);
+        PlayerPrefs.Save();
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
         SceneManager.LoadScene("GameScene");
