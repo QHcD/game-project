@@ -19,15 +19,22 @@ public class PlayerController : MonoBehaviour
 
     [Header("Controller")]
     public float moveSpeed = 5;
-    public float gravity = -9.8f;
-    public float jumpHeight = 1.2f;
+    public float gravity = -25f;
+    public float jumpHeight = 0.6f;
+    public float arenaBoundaryRadius = 22.8f;
+    public float arenaBoundaryPadding = 0.35f;
+    public float arenaFloorHeight = 0.1f;
+    public float floorSnapSpeed = 14f;
+    public float maxFloorSnapDistance = 0.45f;
 
     private Vector3 playerVelocity;
     private Vector2 moveInput;
     private Vector2 smoothedMoveInput;
     private Vector2 lookInput;
     private bool wasMoving;
-    private const float MoveSmoothing = 10f;
+    private const float MoveSmoothing = 12f;
+    private const float SprintMultiplier = 1.55f;
+    private bool isSprinting;
 
     private bool isGrounded;
 
@@ -101,6 +108,7 @@ public class PlayerController : MonoBehaviour
         LookInput(lookInput);
         UpdateHeadBob();
         UpdateCameraKick();
+        UpdateCombatState();
         SetAnimations();
     }
 
@@ -139,20 +147,127 @@ public class PlayerController : MonoBehaviour
 
     private void MoveInput(Vector2 inputValue)
     {
+        if (controller != null)
+        {
+            controller.stepOffset = 0.08f;
+            controller.slopeLimit = 28f;
+        }
+
+        isSprinting = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed && inputValue.y > 0.1f;
+        float speed = isSprinting ? moveSpeed * SprintMultiplier : moveSpeed;
+
         Vector3 moveDirection = new Vector3(inputValue.x, 0f, inputValue.y);
-        Vector3 worldMove = transform.TransformDirection(moveDirection) * moveSpeed;
+        Vector3 worldMove = transform.TransformDirection(moveDirection) * speed;
 
         controller.Move(worldMove * Time.deltaTime);
 
         if (isGrounded && playerVelocity.y < 0f)
         {
-            playerVelocity.y = -2f;
+            playerVelocity.y = -6f;
         }
 
         playerVelocity.y += gravity * Time.deltaTime;
         controller.Move(playerVelocity * Time.deltaTime);
 
+        ClampInsideArena();
+        SnapToArenaFloor();
+
         wasMoving = moveInput.sqrMagnitude > 0.01f;
+    }
+
+    private void ClampInsideArena()
+    {
+        Vector3 planarPosition = transform.position;
+        planarPosition.y = 0f;
+
+        float maxRadius = Mathf.Max(1f, arenaBoundaryRadius - controller.radius - arenaBoundaryPadding);
+        if (planarPosition.sqrMagnitude <= maxRadius * maxRadius)
+        {
+            return;
+        }
+
+        Vector3 clampedPlanar = planarPosition.normalized * maxRadius;
+        Vector3 correctedPosition = new Vector3(clampedPlanar.x, transform.position.y, clampedPlanar.z);
+        transform.position = correctedPosition;
+
+        Vector3 planarVelocity = new Vector3(playerVelocity.x, 0f, playerVelocity.z);
+        if (Vector3.Dot(planarVelocity, planarPosition.normalized) > 0f)
+        {
+            playerVelocity.x = 0f;
+            playerVelocity.z = 0f;
+        }
+
+        if (transform.position.y > arenaFloorHeight + 0.6f)
+        {
+            transform.position = new Vector3(transform.position.x, arenaFloorHeight, transform.position.z);
+            playerVelocity.y = Mathf.Min(playerVelocity.y, 0f);
+        }
+    }
+
+    private void SnapToArenaFloor()
+    {
+        if (controller == null || playerVelocity.y > 0.05f)
+        {
+            return;
+        }
+
+        Vector3 rayOrigin = transform.position + Vector3.up * 0.25f;
+        if (!Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit floorHit, maxFloorSnapDistance + 0.25f, ~0, QueryTriggerInteraction.Ignore))
+        {
+            return;
+        }
+
+        float targetY = floorHit.point.y;
+        float currentY = transform.position.y;
+        if (Mathf.Abs(currentY - targetY) < 0.01f || currentY < targetY)
+        {
+            return;
+        }
+
+        if (currentY - targetY > maxFloorSnapDistance)
+        {
+            return;
+        }
+
+        float snappedY = Mathf.MoveTowards(currentY, targetY, floorSnapSpeed * Time.deltaTime);
+        transform.position = new Vector3(transform.position.x, snappedY, transform.position.z);
+    }
+
+    private void ApplyAttackLunge()
+    {
+        if (controller == null)
+        {
+            return;
+        }
+
+        Vector3 lunge = transform.forward * attackLungeDistance;
+        controller.Move(lunge);
+        ClampInsideArena();
+    }
+
+    private void ApplyHitReaction(Transform hitTransform, Vector3 hitDirection)
+    {
+        if (hitTransform == null)
+        {
+            return;
+        }
+
+        Vector3 pushDirection = new Vector3(hitDirection.x, 0f, hitDirection.z).normalized;
+        if (pushDirection.sqrMagnitude < 0.001f)
+        {
+            pushDirection = hitTransform.position - transform.position;
+            pushDirection.y = 0f;
+            pushDirection.Normalize();
+        }
+
+        Rigidbody hitBody = hitTransform.GetComponentInParent<Rigidbody>();
+        if (hitBody != null)
+        {
+            hitBody.AddForce(pushDirection * hitKnockbackForce, ForceMode.VelocityChange);
+            return;
+        }
+
+        hitTransform.position += pushDirection * 0.18f;
     }
 
     private void UpdateHeadBob()
@@ -164,7 +279,8 @@ public class PlayerController : MonoBehaviour
 
         if (headBobVelocity > 0.01f)
         {
-            headBobTimer += Time.deltaTime * HeadBobFrequency;
+            float freq = isSprinting ? HeadBobFrequency * 1.35f : HeadBobFrequency;
+            headBobTimer += Time.deltaTime * freq;
         }
         else
         {
@@ -247,16 +363,16 @@ public class PlayerController : MonoBehaviour
 
     private void SetAnimations()
     {
-        if (!attacking)
+        // Don't override first-person animation during combo attacks
+        if (attacking) return;
+
+        if (wasMoving)
         {
-            if (wasMoving)
-            {
-                ChangeAnimationState(WALK);
-            }
-            else
-            {
-                ChangeAnimationState(IDLE);
-            }
+            ChangeAnimationState(WALK);
+        }
+        else
+        {
+            ChangeAnimationState(IDLE);
         }
     }
 
@@ -271,14 +387,14 @@ public class PlayerController : MonoBehaviour
     public int attackDamage = 1;
     public LayerMask attackLayer;
     public float attackRadius = 1.25f;
+    public float attackLungeDistance = 0.45f;
+    public float hitKnockbackForce = 4.5f;
 
     public GameObject hitEffect;
     public AudioClip swordSwing;
     public AudioClip hitSound;
 
     private bool attacking;
-    private bool readyToAttack = true;
-    private int attackCount;
 
     // Special weapon state
     private GameManager.WeaponType currentWeaponType = GameManager.WeaponType.Melee;
@@ -286,18 +402,47 @@ public class PlayerController : MonoBehaviour
     private float cameraKickTarget;
     private float cameraKickCurrent;
 
+    // Combo cooldown — matches the video's CoolDown parameter
+    private float comboCooldownTimer;
+    private const float ComboCooldown = 0.15f;
+
     public void Attack()
     {
-        if (!readyToAttack || attacking)
+        if (comboCooldownTimer > 0f) return;
+
+        CharacterVisualAnimationPlayer visualAnim = thirdPersonBody != null
+            ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true)
+            : null;
+
+        // If already attacking, only allow combo if animation system says we're in the combo window
+        if (attacking)
         {
+            if (visualAnim != null && visualAnim.IsComboReady)
+            {
+                visualAnim.PlayAttack();
+                FireAttack();
+            }
             return;
         }
 
-        readyToAttack = false;
+        // Fresh attack
         attacking = true;
+        comboCooldownTimer = ComboCooldown;
 
-        Invoke(nameof(ResetAttack), attackSpeed);
-        Invoke(nameof(AttackRaycast), attackDelay);
+        if (visualAnim != null)
+        {
+            visualAnim.PlayAttack();
+        }
+
+        // First-person animation
+        ChangeAnimationState(ATTACK1);
+        FireAttack();
+    }
+
+    private void FireAttack()
+    {
+        comboCooldownTimer = ComboCooldown;
+        ApplyAttackLunge();
 
         if (audioSource != null && swordSwing != null)
         {
@@ -305,26 +450,27 @@ public class PlayerController : MonoBehaviour
             audioSource.PlayOneShot(swordSwing);
         }
 
-        if (attackCount == 0)
-        {
-            ChangeAnimationState(ATTACK1);
-            CharacterVisualAnimationPlayer visualAnimation = thirdPersonBody != null ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true) : null;
-            visualAnimation?.PlayAttack();
-            attackCount++;
-        }
-        else
-        {
-            ChangeAnimationState(ATTACK2);
-            CharacterVisualAnimationPlayer visualAnimation = thirdPersonBody != null ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true) : null;
-            visualAnimation?.PlayAttack();
-            attackCount = 0;
-        }
+        // Delay the damage raycast to sync with animation hit frame
+        CancelInvoke(nameof(AttackRaycast));
+        Invoke(nameof(AttackRaycast), attackDelay);
     }
 
-    private void ResetAttack()
+    private void UpdateCombatState()
     {
-        attacking = false;
-        readyToAttack = true;
+        if (comboCooldownTimer > 0f)
+            comboCooldownTimer -= Time.deltaTime;
+
+        if (!attacking) return;
+
+        // Check if the 3rd-person animation system has auto-reset (normalizedTime > threshold)
+        CharacterVisualAnimationPlayer visualAnim = thirdPersonBody != null
+            ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true)
+            : null;
+
+        if (visualAnim != null && !visualAnim.IsAttacking)
+        {
+            attacking = false;
+        }
     }
 
     private void AttackRaycast()
@@ -364,6 +510,7 @@ public class PlayerController : MonoBehaviour
             if (actor != null && actor.gameObject != gameObject)
             {
                 actor.TakeDamage(attackDamage);
+                ApplyHitReaction(actor.transform, cam.transform.forward);
                 HitTarget(hits[i].ClosestPoint(hitCenter));
                 landedHit = true;
                 break;
@@ -498,6 +645,12 @@ public class PlayerController : MonoBehaviour
                 attackDelay = 0.4f;
                 attackRadius = 1.25f;
                 break;
+        }
+
+        // Update 3rd-person weapon model to match current level
+        if (thirdPersonBody != null)
+        {
+            AttachWeaponToHand(thirdPersonBody);
         }
     }
 
@@ -1042,47 +1195,66 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
 {
     private Animator targetAnimator;
     private AnimationClip idleClip;
-    private AnimationClip attackClip;
     private AnimationClip walkClip;
+    private AnimationClip[] attackClips;
     private PlayableGraph graph;
     private AnimationPlayableOutput output;
     private AnimationClipPlayable idlePlayable;
     private AnimationClipPlayable walkPlayable;
-    private AnimationClipPlayable attackPlayable;
+    private AnimationClipPlayable[] attackPlayables;
     private AnimationMixerPlayable mixer;
-    private bool isAttacking;
     private bool isInitialized;
 
-    // Track parent movement for walk detection
+    // Combat state — mirrors the video's Animator parameter logic
+    private bool isAttacking;
+    private int currentAttackIndex = -1;
+    private int comboStep;
+    private bool comboQueued;
+    private const float ComboWindowStart = 0.5f; // normalizedTime when combo input opens
+    private const float AutoResetTime = 0.85f;   // normalizedTime when attack auto-resets (like the video's 0.6 threshold)
+
+    // Movement blend
     private Transform parentRoot;
     private float currentWalkWeight;
+
+    // Public state for PlayerController to read
+    public bool IsAttacking => isAttacking;
+    public bool IsComboReady => !isAttacking || (currentAttackIndex >= 0 && GetAttackNormalizedTime() >= ComboWindowStart);
 
     public void Setup(Animator animator, AnimationClip idle, AnimationClip attack)
     {
         targetAnimator = animator;
         idleClip = idle;
-        attackClip = attack;
 
-        // Use Block as walk-blend clip — no AnimationEvents, loops well as a combat stride
+        // Load all attack clips for combo chain: Attack1 → Attack2 → Attack3 → Kick
+        AnimationClip attack1 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
+        AnimationClip attack2 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack2");
+        AnimationClip attack3 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack3");
+        AnimationClip kick    = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Kick");
+
+        // Build combo chain from available clips
+        var clips = new System.Collections.Generic.List<AnimationClip>();
+        if (attack1 != null) clips.Add(attack1);
+        if (attack2 != null) clips.Add(attack2);
+        if (attack3 != null) clips.Add(attack3);
+        if (kick != null) clips.Add(kick);
+        if (clips.Count == 0 && attack != null) clips.Add(attack); // fallback to single clip
+        attackClips = clips.ToArray();
+
+        // Walk clip
         walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Block");
-        if (walkClip == null)
-        {
-            walkClip = idle; // fallback: use idle with speed variation
-        }
+        if (walkClip == null) walkClip = idle;
 
-        if (targetAnimator == null || idleClip == null)
-        {
-            return;
-        }
+        if (targetAnimator == null || idleClip == null) return;
 
         parentRoot = transform.parent;
-
         targetAnimator.runtimeAnimatorController = null;
-        graph = PlayableGraph.Create("CharacterVisualAnimationPlayer");
-        output = AnimationPlayableOutput.Create(graph, "Animation", targetAnimator);
 
-        // Create a 3-input mixer: idle(0), walk(1), attack(2)
-        mixer = AnimationMixerPlayable.Create(graph, 3);
+        // Build PlayableGraph: idle(0), walk(1), attacks(2+)
+        int totalInputs = 2 + attackClips.Length;
+        graph = PlayableGraph.Create("CombatAnimPlayer");
+        output = AnimationPlayableOutput.Create(graph, "Animation", targetAnimator);
+        mixer = AnimationMixerPlayable.Create(graph, totalInputs);
 
         idlePlayable = AnimationClipPlayable.Create(graph, idleClip);
         idlePlayable.SetApplyFootIK(false);
@@ -1092,17 +1264,18 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         walkPlayable.SetApplyFootIK(false);
         graph.Connect(walkPlayable, 0, mixer, 1);
 
-        if (attackClip != null)
+        attackPlayables = new AnimationClipPlayable[attackClips.Length];
+        for (int i = 0; i < attackClips.Length; i++)
         {
-            attackPlayable = AnimationClipPlayable.Create(graph, attackClip);
-            attackPlayable.SetApplyFootIK(false);
-            graph.Connect(attackPlayable, 0, mixer, 2);
+            attackPlayables[i] = AnimationClipPlayable.Create(graph, attackClips[i]);
+            attackPlayables[i].SetApplyFootIK(false);
+            graph.Connect(attackPlayables[i], 0, mixer, 2 + i);
         }
 
         // Start in idle
         mixer.SetInputWeight(0, 1f);
-        mixer.SetInputWeight(1, 0f);
-        mixer.SetInputWeight(2, 0f);
+        for (int i = 1; i < totalInputs; i++)
+            mixer.SetInputWeight(i, 0f);
 
         output.SetSourcePlayable(mixer);
         graph.Play();
@@ -1111,61 +1284,99 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
 
     private void Update()
     {
-        if (!isInitialized || !graph.IsValid() || isAttacking)
+        if (!isInitialized || !graph.IsValid()) return;
+
+        // ── Auto-reset logic (equivalent to video's DisableParamAfterPlaying) ──
+        if (isAttacking && currentAttackIndex >= 0)
         {
-            return;
+            float norm = GetAttackNormalizedTime();
+
+            // Combo window: if player queued next attack and we passed the window threshold
+            if (comboQueued && norm >= ComboWindowStart)
+            {
+                comboQueued = false;
+                PlayNextCombo();
+                return;
+            }
+
+            // Auto-reset: animation passed threshold with no combo queued
+            if (norm >= AutoResetTime)
+            {
+                ReturnToIdle();
+            }
+            return; // don't blend movement while attacking
         }
 
-        // Detect movement from parent's CharacterController velocity
+        // ── Movement blend (equivalent to video's FB/RL parameters) ──
         float speed = 0f;
         if (parentRoot != null)
         {
             CharacterController cc = parentRoot.GetComponent<CharacterController>();
             if (cc != null)
-            {
                 speed = new Vector2(cc.velocity.x, cc.velocity.z).magnitude;
-            }
         }
 
-        // Blend between idle and walk based on movement speed
         float targetWalk = speed > 0.5f ? 1f : 0f;
         currentWalkWeight = Mathf.MoveTowards(currentWalkWeight, targetWalk, 6f * Time.deltaTime);
 
-        float idleWeight = 1f - currentWalkWeight;
-        mixer.SetInputWeight(0, idleWeight);
+        SetAllWeights(0f);
+        mixer.SetInputWeight(0, 1f - currentWalkWeight);
         mixer.SetInputWeight(1, currentWalkWeight);
-        mixer.SetInputWeight(2, 0f);
 
-        // Speed up walk animation based on actual speed for natural feel
         if (walkPlayable.IsValid() && speed > 0.5f)
-        {
             walkPlayable.SetSpeed(Mathf.Clamp(speed / 4f, 0.8f, 2f));
+    }
+
+    /// <summary>Start a combo attack chain or queue the next hit.</summary>
+    public void PlayAttack()
+    {
+        if (!isInitialized || !graph.IsValid() || attackClips.Length == 0) return;
+
+        if (!isAttacking)
+        {
+            // Start fresh combo
+            comboStep = 0;
+            PlayComboStep(0);
+        }
+        else if (GetAttackNormalizedTime() >= ComboWindowStart * 0.7f)
+        {
+            // Queue next combo hit (input buffering like the video)
+            comboQueued = true;
         }
     }
 
-    public void PlayAttack()
+    private void PlayNextCombo()
     {
-        if (attackClip == null || !isInitialized || !graph.IsValid())
-        {
-            return;
-        }
+        comboStep = (comboStep + 1) % attackClips.Length;
+        PlayComboStep(comboStep);
+    }
 
+    private void PlayComboStep(int step)
+    {
         isAttacking = true;
+        currentAttackIndex = step;
+        comboQueued = false;
 
-        // Full weight on attack
-        mixer.SetInputWeight(0, 0f);
-        mixer.SetInputWeight(1, 0f);
-        mixer.SetInputWeight(2, 1f);
+        // Zero all weights, full weight on current attack
+        SetAllWeights(0f);
+        mixer.SetInputWeight(2 + step, 1f);
 
-        // Reset attack playable to start
-        if (attackPlayable.IsValid())
+        // Reset playable to start
+        if (attackPlayables[step].IsValid())
         {
-            attackPlayable.SetTime(0d);
-            attackPlayable.SetDone(false);
+            attackPlayables[step].SetTime(0d);
+            attackPlayables[step].SetDone(false);
         }
+    }
 
-        CancelInvoke(nameof(ReturnToIdle));
-        Invoke(nameof(ReturnToIdle), Mathf.Max(0.2f, attackClip.length));
+    private float GetAttackNormalizedTime()
+    {
+        if (currentAttackIndex < 0 || currentAttackIndex >= attackClips.Length) return 1f;
+        if (!attackPlayables[currentAttackIndex].IsValid()) return 1f;
+
+        float clipLen = attackClips[currentAttackIndex].length;
+        if (clipLen <= 0f) return 1f;
+        return (float)(attackPlayables[currentAttackIndex].GetTime() / clipLen);
     }
 
     public void ResetAttack()
@@ -1176,14 +1387,21 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
     private void ReturnToIdle()
     {
         isAttacking = false;
+        currentAttackIndex = -1;
+        comboStep = 0;
+        comboQueued = false;
         // Update() will smoothly blend back to idle/walk
+    }
+
+    private void SetAllWeights(float w)
+    {
+        int count = mixer.GetInputCount();
+        for (int i = 0; i < count; i++)
+            mixer.SetInputWeight(i, w);
     }
 
     private void OnDestroy()
     {
-        if (graph.IsValid())
-        {
-            graph.Destroy();
-        }
+        if (graph.IsValid()) graph.Destroy();
     }
 }

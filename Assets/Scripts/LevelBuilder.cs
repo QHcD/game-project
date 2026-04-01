@@ -168,9 +168,6 @@ public class LevelBuilder : MonoBehaviour
         // Connecting crossbar
         CreateArenaProp(root, "CentralBlock_Cross", PrimitiveType.Cube,
             new Vector3(0f, 2.6f, 0f), new Vector3(11.8f, 0.5f, 2.0f), new Color(0.22f, 0.25f, 0.30f));
-        // Elevated top platform on center structure
-        CreateArenaProp(root, "CentralPlatform", PrimitiveType.Cube,
-            new Vector3(0f, 3.0f, 0f), new Vector3(11.8f, 0.25f, 9.5f), new Color(0.30f, 0.33f, 0.40f));
     }
 
     private void BuildThemeProps(Transform root)
@@ -238,6 +235,30 @@ public class LevelBuilder : MonoBehaviour
         // Ventilation units on ground
         BuildVentUnit(root, "Vent_A", new Vector3(19f, 0f, 7f), 0f);
         BuildVentUnit(root, "Vent_B", new Vector3(-20f, 0f, -8f), 90f);
+
+        // Extra destroyed vehicles for realism
+        BuildDestroyedCar(root, "Wreck_SW", new Vector3(-13f, 0f, -14f), 142f);
+        BuildDestroyedCar(root, "Wreck_Center", new Vector3(3f, 0f, -4f), -12f);
+
+        // Scattered oil barrels
+        BuildOilBarrelCluster(root, "Barrels_NE", new Vector3(16f, 0f, 15f));
+        BuildOilBarrelCluster(root, "Barrels_SW", new Vector3(-15f, 0f, -17f));
+        BuildOilBarrelCluster(root, "Barrels_E", new Vector3(21f, 0f, -3f));
+
+        // Concrete debris piles
+        BuildDebrisPile(root, "Debris_NW", new Vector3(-9f, 0f, 16f));
+        BuildDebrisPile(root, "Debris_SE", new Vector3(8f, 0f, -18f));
+        BuildDebrisPile(root, "Debris_Center", new Vector3(-3f, 0f, 5f));
+
+        // Sandbag walls
+        BuildSandbagWall(root, "Sandbags_N", new Vector3(5f, 0f, 12f), 0f);
+        BuildSandbagWall(root, "Sandbags_S", new Vector3(-6f, 0f, -13f), 90f);
+
+        // Razor wire barricades
+        CreateArenaProp(root, "Wire_A", PrimitiveType.Cylinder,
+            new Vector3(15f, 0.35f, -3f), new Vector3(0.7f, 0.35f, 0.7f), new Color(0.35f, 0.32f, 0.30f));
+        CreateArenaProp(root, "Wire_B", PrimitiveType.Cylinder,
+            new Vector3(-16f, 0.35f, 4f), new Vector3(0.7f, 0.35f, 0.7f), new Color(0.35f, 0.32f, 0.30f));
     }
 
     private void BuildCrateStack(Transform root, string name, Vector3 pos, float rot, int layers)
@@ -307,6 +328,105 @@ public class LevelBuilder : MonoBehaviour
             new Color(0.18f, 0.20f, 0.24f));
     }
 
+    // ─── SHARED PROP BUILDERS ─────────────────────────────────────────────────
+
+    private void BuildOilBarrelCluster(Transform root, string name, Vector3 pos)
+    {
+        GameObject cluster = new GameObject(name);
+        cluster.transform.SetParent(root, false);
+        cluster.transform.position = pos;
+
+        Color[] colors = {
+            new Color(0.62f, 0.14f, 0.10f),
+            new Color(0.20f, 0.24f, 0.28f),
+            new Color(0.45f, 0.42f, 0.10f),
+            new Color(0.55f, 0.18f, 0.14f)
+        };
+        Vector3[] offsets = {
+            new Vector3(-0.55f, 0f, 0.3f),
+            new Vector3(0.55f, 0f, -0.2f),
+            new Vector3(0f, 0f, -0.65f),
+            new Vector3(0.1f, 0f, 0.65f)
+        };
+
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            CreatePrimitiveChild(cluster.transform, "Barrel_" + i, PrimitiveType.Cylinder,
+                offsets[i] + Vector3.up * 0.55f, new Vector3(0.5f, 0.55f, 0.5f), colors[i]);
+        }
+        // One tipped barrel
+        CreatePrimitiveChild(cluster.transform, "Barrel_tipped", PrimitiveType.Cylinder,
+            new Vector3(1.2f, 0.25f, 0.4f), new Vector3(0.5f, 0.55f, 0.5f), colors[0],
+            new Vector3(0f, 0f, 70f));
+    }
+
+    private void BuildDebrisPile(Transform root, string name, Vector3 pos)
+    {
+        GameObject pile = new GameObject(name);
+        pile.transform.SetParent(root, false);
+        pile.transform.position = pos;
+
+        Color concreteLight = new Color(0.52f, 0.50f, 0.48f);
+        Color concreteDark = new Color(0.35f, 0.33f, 0.32f);
+
+        CreatePrimitiveChild(pile.transform, "Slab_A", PrimitiveType.Cube,
+            new Vector3(0f, 0.15f, 0f), new Vector3(2.4f, 0.3f, 1.6f), concreteLight);
+        CreatePrimitiveChild(pile.transform, "Slab_B", PrimitiveType.Cube,
+            new Vector3(0.6f, 0.4f, 0.3f), new Vector3(1.6f, 0.25f, 1.0f), concreteDark,
+            new Vector3(0f, 25f, 8f));
+        CreatePrimitiveChild(pile.transform, "Chunk_A", PrimitiveType.Cube,
+            new Vector3(-0.8f, 0.25f, -0.5f), new Vector3(0.7f, 0.5f, 0.6f), concreteDark,
+            new Vector3(0f, 42f, 0f));
+        CreatePrimitiveChild(pile.transform, "Chunk_B", PrimitiveType.Cube,
+            new Vector3(1.3f, 0.2f, -0.4f), new Vector3(0.5f, 0.4f, 0.5f), concreteLight,
+            new Vector3(12f, -15f, 0f));
+        // Rebar sticking out
+        CreatePrimitiveChild(pile.transform, "Rebar", PrimitiveType.Cylinder,
+            new Vector3(0.2f, 0.6f, 0.1f), new Vector3(0.06f, 0.7f, 0.06f),
+            new Color(0.45f, 0.30f, 0.22f), new Vector3(0f, 0f, 32f));
+    }
+
+    private void BuildSandbagWall(Transform root, string name, Vector3 pos, float rot)
+    {
+        GameObject wall = new GameObject(name);
+        wall.transform.SetParent(root, false);
+        wall.transform.position = pos;
+        wall.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        Color sandbag = new Color(0.60f, 0.55f, 0.40f);
+        // Bottom row
+        for (int i = -2; i <= 2; i++)
+        {
+            CreatePrimitiveChild(wall.transform, "Bag_B" + i, PrimitiveType.Cube,
+                new Vector3(i * 0.65f, 0.2f, 0f), new Vector3(0.6f, 0.35f, 0.55f), sandbag);
+        }
+        // Top row (staggered)
+        for (int i = -1; i <= 1; i++)
+        {
+            CreatePrimitiveChild(wall.transform, "Bag_T" + i, PrimitiveType.Cube,
+                new Vector3(i * 0.65f, 0.55f, 0f), new Vector3(0.6f, 0.35f, 0.55f), sandbag);
+        }
+    }
+
+    private void BuildTyreStack(Transform root, string name, Vector3 pos)
+    {
+        GameObject stack = new GameObject(name);
+        stack.transform.SetParent(root, false);
+        stack.transform.position = pos;
+
+        Color rubber = new Color(0.12f, 0.12f, 0.14f);
+        for (int row = 0; row < 3; row++)
+        {
+            int count = 3 - row;
+            for (int c = 0; c < count; c++)
+            {
+                float x = (c - count * 0.5f + 0.5f) * 0.7f;
+                CreatePrimitiveChild(stack.transform, "Tyre_" + row + "_" + c, PrimitiveType.Cylinder,
+                    new Vector3(x, 0.18f + row * 0.36f, 0f), new Vector3(0.6f, 0.18f, 0.6f), rubber);
+            }
+        }
+    }
+
     // ─── CYBER RUINS NEON ─────────────────────────────────────────────────────
 
     private void BuildCyberRuinsProps(Transform root)
@@ -372,6 +492,28 @@ public class LevelBuilder : MonoBehaviour
         // Rubble clusters
         BuildRubbleCluster(root, "Rubble_A", new Vector3(15f, 0f, -15f), ruinGrey);
         BuildRubbleCluster(root, "Rubble_B", new Vector3(-15f, 0f, 15f), ruinGrey);
+        BuildRubbleCluster(root, "Rubble_C", new Vector3(5f, 0f, -18f), ruinGrey);
+        BuildRubbleCluster(root, "Rubble_D", new Vector3(-5f, 0f, 18f), ruinGrey);
+
+        // Toppled server racks (scattered debris)
+        CreateArenaProp(root, "ServerRack_A", PrimitiveType.Cube,
+            new Vector3(18f, 0.4f, 5f), new Vector3(1.0f, 0.8f, 2.4f), darkSlate);
+        CreateArenaProp(root, "ServerRack_B", PrimitiveType.Cube,
+            new Vector3(-17f, 0.3f, -6f), new Vector3(0.8f, 0.6f, 2.0f), darkSlate);
+
+        // Broken neon tubes on ground
+        CreateArenaProp(root, "BrokenNeon_A", PrimitiveType.Cube,
+            new Vector3(8f, 0.05f, 15f), new Vector3(3.5f, 0.08f, 0.12f), neonMagenta);
+        CreateArenaProp(root, "BrokenNeon_B", PrimitiveType.Cube,
+            new Vector3(-12f, 0.05f, -5f), new Vector3(2.8f, 0.08f, 0.12f), neonCyan);
+
+        // Wrecked hover-car shells
+        BuildDestroyedCar(root, "HoverWreck_A", new Vector3(12f, 0f, 17f), 55f);
+        BuildDestroyedCar(root, "HoverWreck_B", new Vector3(-16f, 0f, -16f), -30f);
+
+        // Scattered barrel-like energy cells
+        BuildOilBarrelCluster(root, "EnergyCells_A", new Vector3(20f, 0f, 12f));
+        BuildOilBarrelCluster(root, "EnergyCells_B", new Vector3(-19f, 0f, -14f));
     }
 
     private void BuildRuinWall(Transform root, string name, Vector3 pos, float rot, Color wallColor, Color neonColor)
@@ -492,6 +634,24 @@ public class LevelBuilder : MonoBehaviour
 
         // Warehouse wall sections
         BuildWarehouseSection(root, "Warehouse_N", new Vector3(0f, 0f, 22f), 0f);
+
+        // Extra oil drum clusters for realism
+        BuildDrumCluster(root, "Drums_NE", new Vector3(16f, 0f, 14f));
+        BuildDrumCluster(root, "Drums_SW", new Vector3(-15f, 0f, -15f));
+
+        // Scattered debris / broken pallets
+        BuildDebrisPile(root, "Debris_E", new Vector3(18f, 0f, 5f));
+        BuildDebrisPile(root, "Debris_W", new Vector3(-18f, 0f, -5f));
+
+        // Tyre stacks
+        BuildTyreStack(root, "Tyres_NW", new Vector3(-14f, 0f, 18f));
+        BuildTyreStack(root, "Tyres_SE", new Vector3(14f, 0f, -18f));
+
+        // Loose containers (single, on ground, tilted for cover)
+        CreateArenaProp(root, "LooseContainer_A", PrimitiveType.Cube,
+            new Vector3(6f, 1.55f, 18f), new Vector3(7.0f, 3.1f, 3.2f), new Color(0.35f, 0.55f, 0.30f));
+        CreateArenaProp(root, "LooseContainer_B", PrimitiveType.Cube,
+            new Vector3(-6f, 1.55f, -19f), new Vector3(7.0f, 3.1f, 3.2f), new Color(0.60f, 0.28f, 0.18f));
     }
 
     private void BuildContainerStack(Transform root, string name, Vector3 pos, float rot, Color color, int layers)
@@ -683,12 +843,18 @@ public class LevelBuilder : MonoBehaviour
 
         player.tag = "Player";
         player.transform.localScale = Vector3.one;
-        // Place directly on the arena floor (y=0) in the open lane between cover blocks.
-        // Do NOT use GetGroundPosition — its raycast hits the CentralPlatform overhead.
-        player.transform.position = new Vector3(8f, 0.1f, -8f);
+
+        // Disable CharacterController before teleporting — it blocks transform.position changes
+        CharacterController controller = player.GetComponent<CharacterController>();
+        if (controller != null)
+        {
+            controller.enabled = false;
+        }
+
+        // Spawn safely on the arena floor and away from the raised cover blocks
+        player.transform.position = new Vector3(0f, 0.1f, -8.5f);
         player.transform.rotation = Quaternion.identity;
 
-        CharacterController controller = player.GetComponent<CharacterController>();
         if (controller == null)
         {
             controller = player.AddComponent<CharacterController>();
@@ -697,7 +863,11 @@ public class LevelBuilder : MonoBehaviour
         controller.height = 1.8f;
         controller.radius = 0.35f;
         controller.center = new Vector3(0f, 0.9f, 0f);
-        controller.stepOffset = 0.35f;
+        controller.stepOffset = 0.04f;
+        controller.slopeLimit = 22f;
+        controller.skinWidth = 0.03f;
+        controller.minMoveDistance = 0f;
+        controller.enabled = true;
 
         if (player.GetComponent<PlayerHealth>() == null)
         {
@@ -707,6 +877,12 @@ public class LevelBuilder : MonoBehaviour
         foreach (Animator animator in player.GetComponentsInChildren<Animator>(true))
         {
             animator.applyRootMotion = false;
+        }
+
+        PlayerController playerController = player.GetComponent<PlayerController>();
+        if (playerController != null)
+        {
+            playerController.arenaBoundaryRadius = ArenaRadius - 2.8f;
         }
     }
 
@@ -844,6 +1020,8 @@ public class LevelBuilder : MonoBehaviour
         Rigidbody body = enemy.AddComponent<Rigidbody>();
         body.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
         body.mass = 55f;
+        body.interpolation = RigidbodyInterpolation.Interpolate;
+        body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
         PrototypeEnemy prototypeEnemy = enemy.AddComponent<PrototypeEnemy>();
         prototypeEnemy.maxHealth = 90;
@@ -1642,6 +1820,10 @@ public class PauseDynamicLabel : MonoBehaviour
 
 public class PrototypeEnemy : Actor
 {
+    private const float ArenaRadius = 23.2f;
+    private const float ArenaPadding = 0.75f;
+    private const float ArenaFloorHeight = 0.1f;
+
     public float moveSpeed = 2.2f;
     public float attackRange = 1.7f;
     public float attackDamage = 12f;
@@ -1702,6 +1884,8 @@ public class PrototypeEnemy : Actor
             }
         }
 
+        ClampInsideArena();
+
         if (distance <= attackRange && Time.time >= lastAttackTime + attackCooldown)
         {
             lastAttackTime = Time.time;
@@ -1725,38 +1909,36 @@ public class PrototypeEnemy : Actor
 
     private Transform FindBestTarget()
     {
-        Transform bestTarget = null;
-        float bestDistance = float.MaxValue;
-
         GameObject player = GameObject.FindGameObjectWithTag("Player");
         if (player != null)
         {
-            float distanceToPlayer = Vector3.Distance(transform.position, player.transform.position);
-            if (distanceToPlayer < bestDistance)
-            {
-                bestDistance = distanceToPlayer;
-                bestTarget = player.transform;
-            }
+            return player.transform;
         }
 
-        PrototypeEnemy[] enemies = Object.FindObjectsByType<PrototypeEnemy>(FindObjectsSortMode.None);
-        for (int i = 0; i < enemies.Length; i++)
+        return null;
+    }
+
+    private void ClampInsideArena()
+    {
+        Vector3 planarPosition = transform.position;
+        planarPosition.y = 0f;
+
+        float maxRadius = ArenaRadius - ArenaPadding;
+        if (planarPosition.sqrMagnitude > maxRadius * maxRadius)
         {
-            PrototypeEnemy enemy = enemies[i];
-            if (enemy == null || enemy == this)
-            {
-                continue;
-            }
-
-            float distance = Vector3.Distance(transform.position, enemy.transform.position);
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                bestTarget = enemy.transform;
-            }
+            Vector3 clampedPlanar = planarPosition.normalized * maxRadius;
+            transform.position = new Vector3(clampedPlanar.x, transform.position.y, clampedPlanar.z);
         }
 
-        return bestTarget;
+        if (transform.position.y > ArenaFloorHeight + 0.35f || transform.position.y < ArenaFloorHeight - 0.05f)
+        {
+            transform.position = new Vector3(transform.position.x, ArenaFloorHeight, transform.position.z);
+            Rigidbody body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.linearVelocity = Vector3.zero;
+            }
+        }
     }
 
     protected override void Death()
