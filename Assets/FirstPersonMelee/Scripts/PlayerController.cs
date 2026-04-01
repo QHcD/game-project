@@ -1,5 +1,7 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Playables;
+using UnityEngine.Animations;
 
 public class PlayerController : MonoBehaviour
 {
@@ -223,6 +225,7 @@ public class PlayerController : MonoBehaviour
     public float attackSpeed = 1f;
     public int attackDamage = 1;
     public LayerMask attackLayer;
+    public float attackRadius = 1.25f;
 
     public GameObject hitEffect;
     public AudioClip swordSwing;
@@ -254,11 +257,15 @@ public class PlayerController : MonoBehaviour
         if (attackCount == 0)
         {
             ChangeAnimationState(ATTACK1);
+            CharacterVisualAnimationPlayer visualAnimation = thirdPersonBody != null ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true) : null;
+            visualAnimation?.PlayAttack();
             attackCount++;
         }
         else
         {
             ChangeAnimationState(ATTACK2);
+            CharacterVisualAnimationPlayer visualAnimation = thirdPersonBody != null ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true) : null;
+            visualAnimation?.PlayAttack();
             attackCount = 0;
         }
     }
@@ -276,16 +283,24 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
-        LayerMask mask = attackLayer.value == 0 ? resolvedAttackMask : attackLayer;
-        if (Physics.SphereCast(cam.transform.position, 0.32f, cam.transform.forward, out RaycastHit hit, attackDistance, mask, QueryTriggerInteraction.Ignore))
+        Vector3 hitCenter = cam.transform.position + cam.transform.forward * attackDistance;
+        Collider[] hits = Physics.OverlapSphere(hitCenter, attackRadius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
+        bool landedHit = false;
+        for (int i = 0; i < hits.Length; i++)
         {
-            HitTarget(hit.point);
-
-            Actor actor = hit.transform.GetComponentInParent<Actor>();
+            Actor actor = hits[i].GetComponentInParent<Actor>();
             if (actor != null && actor.gameObject != gameObject)
             {
                 actor.TakeDamage(attackDamage);
+                HitTarget(hits[i].ClosestPoint(hitCenter));
+                landedHit = true;
+                break;
             }
+        }
+
+        if (!landedHit && Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
+        {
+            HitTarget(hit.point);
         }
     }
 
@@ -408,16 +423,21 @@ public class PlayerController : MonoBehaviour
         {
             thirdPersonBody = Instantiate(knightPrefab, transform);
             thirdPersonBody.name = "ThirdPersonBody";
-            thirdPersonBody.transform.localPosition = new Vector3(0f, -0.9f, 0f);
+            thirdPersonBody.transform.localPosition = Vector3.zero;
             thirdPersonBody.transform.localRotation = Quaternion.identity;
-            thirdPersonBody.transform.localScale = new Vector3(1.05f, 1.05f, 1.05f);
+            thirdPersonBody.transform.localScale = new Vector3(0.92f, 0.92f, 0.92f);
 
-            foreach (Animator childAnimator in thirdPersonBody.GetComponentsInChildren<Animator>(true))
+            Animator importedAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
+            if (importedAnimator != null)
             {
-                childAnimator.enabled = false;
+                CharacterVisualAnimationPlayer animationPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
+                animationPlayer.Setup(importedAnimator,
+                    Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle"),
+                    Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1"));
             }
 
-            RemoveVisibleWeapons(thirdPersonBody.transform);
+            thirdPersonBody.AddComponent<CharacterVisualGrounder>();
+            thirdPersonBody.AddComponent<CharacterVisualBob>();
             return;
         }
 
@@ -509,16 +529,162 @@ public class PlayerController : MonoBehaviour
             Destroy(hitEffectInstance, 20f);
         }
     }
+}
 
-    private void RemoveVisibleWeapons(Transform root)
+public class CharacterVisualBob : MonoBehaviour
+{
+    private Vector3 baseLocalPosition;
+    private Transform actorRoot;
+
+    private void Awake()
     {
-        foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
+        baseLocalPosition = transform.localPosition;
+        actorRoot = transform.parent;
+    }
+
+    private void LateUpdate()
+    {
+        if (actorRoot == null)
         {
-            string loweredName = child.name.ToLowerInvariant();
-            if (loweredName.Contains("sword") || loweredName.Contains("shield") || loweredName.Contains("weapon"))
+            return;
+        }
+
+        float planarSpeed = 0f;
+        CharacterController controller = actorRoot.GetComponent<CharacterController>();
+        if (controller != null)
+        {
+            planarSpeed = new Vector2(controller.velocity.x, controller.velocity.z).magnitude;
+        }
+        else
+        {
+            Rigidbody body = actorRoot.GetComponent<Rigidbody>();
+            if (body != null)
             {
-                child.gameObject.SetActive(false);
+                planarSpeed = new Vector2(body.linearVelocity.x, body.linearVelocity.z).magnitude;
             }
+        }
+
+        float bob = planarSpeed > 0.1f ? Mathf.Sin(Time.time * 10f) * 0.03f : 0f;
+        transform.localPosition = baseLocalPosition + new Vector3(0f, bob, 0f);
+    }
+}
+
+public class CharacterVisualGrounder : MonoBehaviour
+{
+    private bool grounded;
+
+    private void LateUpdate()
+    {
+        if (grounded)
+        {
+            return;
+        }
+
+        Renderer[] renderers = GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0)
+        {
+            return;
+        }
+
+        float lowestPoint = float.MaxValue;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            lowestPoint = Mathf.Min(lowestPoint, renderers[i].bounds.min.y);
+        }
+
+        float delta = transform.parent.position.y - lowestPoint;
+        transform.position += new Vector3(0f, delta, 0f);
+        grounded = true;
+    }
+}
+
+public class CharacterVisualAnimationPlayer : MonoBehaviour
+{
+    private Animator targetAnimator;
+    private AnimationClip idleClip;
+    private AnimationClip attackClip;
+    private PlayableGraph graph;
+    private AnimationPlayableOutput output;
+    private AnimationClipPlayable currentPlayable;
+    private string currentState;
+
+    public void Setup(Animator animator, AnimationClip idle, AnimationClip attack)
+    {
+        targetAnimator = animator;
+        idleClip = idle;
+        attackClip = attack;
+
+        if (targetAnimator == null || idleClip == null)
+        {
+            return;
+        }
+
+        targetAnimator.runtimeAnimatorController = null;
+        graph = PlayableGraph.Create("CharacterVisualAnimationPlayer");
+        output = AnimationPlayableOutput.Create(graph, "Animation", targetAnimator);
+        currentPlayable = AnimationClipPlayable.Create(graph, idleClip);
+        currentPlayable.SetApplyFootIK(false);
+        currentPlayable.SetDuration(idleClip.length);
+        output.SetSourcePlayable(currentPlayable);
+        graph.Play();
+        currentState = "Idle";
+    }
+
+    public void PlayAttack()
+    {
+        if (attackClip == null || targetAnimator == null)
+        {
+            return;
+        }
+
+        PlayClip(attackClip, false);
+        CancelInvoke(nameof(ReturnToIdle));
+        Invoke(nameof(ReturnToIdle), Mathf.Max(0.2f, attackClip.length));
+    }
+
+    public void ResetAttack()
+    {
+        ReturnToIdle();
+    }
+
+    private void ReturnToIdle()
+    {
+        if (idleClip != null)
+        {
+            PlayClip(idleClip, true);
+        }
+    }
+
+    private void PlayClip(AnimationClip clip, bool loop)
+    {
+        if (!graph.IsValid())
+        {
+            return;
+        }
+
+        if (currentPlayable.IsValid())
+        {
+            currentPlayable.Destroy();
+        }
+
+        currentPlayable = AnimationClipPlayable.Create(graph, clip);
+        currentPlayable.SetApplyFootIK(false);
+        currentPlayable.SetDuration(clip.length);
+        currentPlayable.SetTime(0d);
+        if (!loop)
+        {
+            currentPlayable.SetDone(false);
+        }
+
+        output.SetSourcePlayable(currentPlayable);
+        currentState = clip == idleClip ? "Idle" : "Attack";
+    }
+
+    private void OnDestroy()
+    {
+        if (graph.IsValid())
+        {
+            graph.Destroy();
         }
     }
 }

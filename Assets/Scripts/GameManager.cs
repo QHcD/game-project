@@ -140,6 +140,7 @@ public class GameManager : MonoBehaviour
 
     public void StartRun(int level = 1)
     {
+        Time.timeScale = 1f;
         score = 0;
         SetCurrentLevel(level);
         PendingMenuScreen = MenuScreen.MainMenu;
@@ -148,6 +149,7 @@ public class GameManager : MonoBehaviour
 
     public void ReplayCurrentLevel()
     {
+        Time.timeScale = 1f;
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
         SceneManager.LoadScene("GameScene");
@@ -235,6 +237,7 @@ public class GameManager : MonoBehaviour
 
     void LevelComplete()
     {
+        Time.timeScale = 1f;
         int unlocked = PlayerPrefs.GetInt("UnlockedLevels", 1);
         if (currentLevel >= unlocked)
             PlayerPrefs.SetInt("UnlockedLevels", Mathf.Min(TotalLevels, currentLevel + 1));
@@ -248,6 +251,7 @@ public class GameManager : MonoBehaviour
 
     public void LoadNextLevel()
     {
+        Time.timeScale = 1f;
         currentLevel++;
         if (currentLevel > TotalLevels)
         {
@@ -264,12 +268,14 @@ public class GameManager : MonoBehaviour
 
     public void GameOver()
     {
+        Time.timeScale = 1f;
         PendingMenuScreen = MenuScreen.GameOver;
         SceneManager.LoadScene("MainMenu");
     }
 
     public void GoToMainMenu()
     {
+        Time.timeScale = 1f;
         PendingMenuScreen = MenuScreen.MainMenu;
         SceneManager.LoadScene("MainMenu");
     }

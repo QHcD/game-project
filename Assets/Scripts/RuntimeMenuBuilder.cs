@@ -78,7 +78,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         MakeMenuButton(root, "OPTIONS", new Vector2(0.34f, 0.31f), new Vector2(0.66f, 0.38f), () => SceneManager.LoadScene("Options"));
         MakeMenuButton(root, "SETTINGS", new Vector2(0.34f, 0.22f), new Vector2(0.66f, 0.29f), () => SceneManager.LoadScene("Settings"));
         MakeMenuButton(root, "CREDITS", new Vector2(0.34f, 0.13f), new Vector2(0.66f, 0.20f), () => SceneManager.LoadScene("Credits"));
-        MakeMenuButton(root, "QUIT", new Vector2(0.34f, 0.04f), new Vector2(0.66f, 0.11f), Application.Quit);
+        MakeMenuButton(root, "QUIT", new Vector2(0.34f, 0.04f), new Vector2(0.66f, 0.11f), QuitFromMainMenu);
     }
 
     // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
@@ -360,7 +360,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject obj = new GameObject(label + "_Btn");
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
-        img.color = new Color(0.94f, 0.94f, 0.96f, 1f);
+        img.color = Color.white;
         Button btn = obj.AddComponent<Button>();
         btn.targetGraphic = img;
         btn.onClick.AddListener(action);
@@ -370,17 +370,20 @@ public class RuntimeMenuBuilder : MonoBehaviour
         rect.anchorMax = anchorMax;
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
-        // تم إضافة FontStyles.Bold هنا لضمان أن الخط يكون عريض
+        Outline outline = obj.AddComponent<Outline>();
+        outline.effectColor = new Color(0.20f, 0.24f, 0.38f, 0.30f);
+        outline.effectDistance = new Vector2(2f, -2f);
+
         TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 26,
-            new Color(0.10f, 0.10f, 0.14f, 1f), true);
+            new Color(0.08f, 0.08f, 0.12f, 1f), true);
         labelText.fontStyle = FontStyles.Bold;
         labelText.fontSize = 30f;
-        labelText.color = new Color(0.05f, 0.05f, 0.08f, 1f);
+        labelText.color = new Color(0.08f, 0.08f, 0.12f, 1f);
 
         AttachHoverEffect(obj, labelText, img,
-            new Color(0.94f, 0.94f, 0.96f, 1f),
-            new Color(1f, 0.88f, 1f, 1f),
-            new Color(0.10f, 0.10f, 0.14f, 1f));
+            Color.white,
+            new Color(0.98f, 0.98f, 1f, 1f),
+            new Color(0.08f, 0.08f, 0.12f, 1f));
     }
 
     TextMeshProUGUI CreateCenteredLabel(Transform parent, string text,
@@ -439,6 +442,15 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
             child.gameObject.SetActive(isVisible);
         }
+    }
+
+    void QuitFromMainMenu()
+    {
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#else
+        Application.Quit();
+#endif
     }
 
 }

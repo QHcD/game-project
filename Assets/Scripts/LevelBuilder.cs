@@ -342,7 +342,7 @@ public class LevelBuilder : MonoBehaviour
         }
 
         GameObject enemyRoot = new GameObject("EnemyRoot");
-        int enemyCount = GameManager.Instance != null ? Mathf.Max(1, Mathf.Min(3, GameManager.Instance.GetEnemyCount() / 4)) : 2;
+        int enemyCount = GameManager.Instance != null ? Mathf.Max(8, GameManager.Instance.GetEnemyCount()) : 10;
 
         if (GameManager.Instance != null)
         {
@@ -352,7 +352,8 @@ public class LevelBuilder : MonoBehaviour
         for (int i = 0; i < enemyCount; i++)
         {
             float angle = (Mathf.PI * 2f / enemyCount) * i;
-            Vector3 spawnPoint = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * 14f;
+            float ringRadius = i % 2 == 0 ? 12f : 17f;
+            Vector3 spawnPoint = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * ringRadius;
             CreateEnemy(enemyRoot.transform, i, spawnPoint);
         }
 
@@ -390,14 +391,21 @@ public class LevelBuilder : MonoBehaviour
         {
             GameObject visual = Instantiate(knightPrefab, root);
             visual.name = "EnemyVisual";
-            visual.transform.localPosition = new Vector3(0f, -0.9f, 0f);
+            visual.transform.localPosition = Vector3.zero;
             visual.transform.localRotation = Quaternion.identity;
-            visual.transform.localScale = new Vector3(1.05f, 1.05f, 1.05f);
+            visual.transform.localScale = new Vector3(0.92f, 0.92f, 0.92f);
 
-            foreach (Animator childAnimator in visual.GetComponentsInChildren<Animator>(true))
+            Animator importedAnimator = visual.GetComponentInChildren<Animator>(true);
+            if (importedAnimator != null)
             {
-                childAnimator.enabled = false;
+                CharacterVisualAnimationPlayer animationPlayer = visual.AddComponent<CharacterVisualAnimationPlayer>();
+                animationPlayer.Setup(importedAnimator,
+                    Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle"),
+                    Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1"));
             }
+
+            visual.AddComponent<CharacterVisualGrounder>();
+            visual.AddComponent<CharacterVisualBob>();
 
             return;
         }
@@ -700,11 +708,7 @@ public class PauseMenuController : MonoBehaviour
     {
         Time.timeScale = 1f;
         isPaused = false;
-#if UNITY_EDITOR
-        UnityEditor.EditorApplication.isPlaying = false;
-#else
-        Application.Quit();
-#endif
+        GameManager.Instance?.GoToMainMenu();
     }
 
     private void EnsureEventSystem()
@@ -1117,6 +1121,8 @@ public class PrototypeEnemy : Actor
 
     private Transform target;
     private float lastAttackTime;
+    private float retargetTime;
+    private float currentSpeed;
 
     private void Start()
     {
@@ -1131,21 +1137,20 @@ public class PrototypeEnemy : Actor
             moveSpeed = GameManager.Instance.GetEnemySpeed();
             attackDamage = GameManager.Instance.GetEnemyDamage();
         }
+        currentSpeed = moveSpeed;
     }
 
     private void Update()
     {
+        if (Time.time >= retargetTime || target == null)
+        {
+            target = FindBestTarget();
+            retargetTime = Time.time + Random.Range(0.35f, 0.7f);
+        }
+
         if (target == null)
         {
-            GameObject player = GameObject.FindGameObjectWithTag("Player");
-            if (player != null)
-            {
-                target = player.transform;
-            }
-            else
-            {
-                return;
-            }
+            return;
         }
 
         Vector3 toTarget = target.position - transform.position;
@@ -1154,23 +1159,76 @@ public class PrototypeEnemy : Actor
         if (distance > 0.2f)
         {
             Vector3 direction = toTarget.normalized;
-            transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(direction), Time.deltaTime * 8f);
+            Quaternion targetRotation = Quaternion.LookRotation(direction);
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, 540f * Time.deltaTime);
 
             if (distance > attackRange)
             {
-                transform.position += direction * (moveSpeed * Time.deltaTime);
+                currentSpeed = Mathf.MoveTowards(currentSpeed, moveSpeed, 8f * Time.deltaTime);
+                Vector3 destination = target.position - direction * (attackRange * 0.82f);
+                transform.position = Vector3.MoveTowards(transform.position, destination, currentSpeed * Time.deltaTime);
+            }
+            else
+            {
+                currentSpeed = Mathf.MoveTowards(currentSpeed, 0f, 14f * Time.deltaTime);
             }
         }
 
         if (distance <= attackRange && Time.time >= lastAttackTime + attackCooldown)
         {
             lastAttackTime = Time.time;
+            CharacterVisualAnimationPlayer visualAnimation = GetComponentInChildren<CharacterVisualAnimationPlayer>();
+            visualAnimation?.PlayAttack();
             PlayerHealth playerHealth = target.GetComponent<PlayerHealth>();
             if (playerHealth != null)
             {
                 playerHealth.TakeDamage(attackDamage);
             }
+            else
+            {
+                Actor actor = target.GetComponent<Actor>();
+                if (actor != null && actor != this)
+                {
+                    actor.TakeDamage(Mathf.RoundToInt(attackDamage));
+                }
+            }
         }
+    }
+
+    private Transform FindBestTarget()
+    {
+        Transform bestTarget = null;
+        float bestDistance = float.MaxValue;
+
+        GameObject player = GameObject.FindGameObjectWithTag("Player");
+        if (player != null)
+        {
+            float distanceToPlayer = Vector3.Distance(transform.position, player.transform.position);
+            if (distanceToPlayer < bestDistance)
+            {
+                bestDistance = distanceToPlayer;
+                bestTarget = player.transform;
+            }
+        }
+
+        PrototypeEnemy[] enemies = Object.FindObjectsByType<PrototypeEnemy>(FindObjectsSortMode.None);
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            PrototypeEnemy enemy = enemies[i];
+            if (enemy == null || enemy == this)
+            {
+                continue;
+            }
+
+            float distance = Vector3.Distance(transform.position, enemy.transform.position);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestTarget = enemy.transform;
+            }
+        }
+
+        return bestTarget;
     }
 
     protected override void Death()

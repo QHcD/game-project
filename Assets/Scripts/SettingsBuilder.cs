@@ -357,7 +357,7 @@ public class SettingsBuilder : MonoBehaviour
         GameObject checkmarkObj = new GameObject("Item Checkmark");
         checkmarkObj.transform.SetParent(itemObj.transform, false);
         TextMeshProUGUI checkmark = checkmarkObj.AddComponent<TextMeshProUGUI>();
-        checkmark.text = "✓";
+        checkmark.text = "v";
         checkmark.fontSize = 20f;
         checkmark.color = new Color(0.24f, 0.22f, 0.38f, 1f);
         checkmark.alignment = TextAlignmentOptions.Center;
@@ -398,7 +398,7 @@ public class SettingsBuilder : MonoBehaviour
         GameObject checkmarkObj = new GameObject("Checkmark");
         checkmarkObj.transform.SetParent(toggleObj.transform, false);
         TextMeshProUGUI mark = checkmarkObj.AddComponent<TextMeshProUGUI>();
-        mark.text = "✓";
+        mark.text = "v";
         mark.fontSize = 24f;
         mark.alignment = TextAlignmentOptions.Center;
         mark.color = new Color(0.18f, 0.22f, 0.34f, 1f);
@@ -476,6 +476,7 @@ public class SettingsBuilder : MonoBehaviour
         outline.effectDistance = new Vector2(2f, -2f);
 
         Button button = buttonImage.gameObject.AddComponent<Button>();
+        button.targetGraphic = buttonImage;
         button.onClick.AddListener(action);
         TextMeshProUGUI labelText = MakeText(buttonImage.transform, label, 22, new Color(0.10f, 0.10f, 0.14f, 1f), Vector2.zero, new Vector2(190f, 58f), false, TextAlignmentOptions.Center);
         labelText.fontStyle = FontStyles.Bold;
