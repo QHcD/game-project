@@ -16,11 +16,13 @@ public class PlayerHealth : MonoBehaviour
 
     public void TakeDamage(float amount)
     {
-        currentHealth = Mathf.Max(0f, currentHealth - Mathf.Abs(amount));
+        float absorbed = Mathf.Abs(amount);
+        currentHealth = Mathf.Max(0f, currentHealth - absorbed);
 
         if (HUDManager.Instance != null)
         {
             HUDManager.Instance.UpdateHealth(currentHealth, maxHealth);
+            HUDManager.Instance.ShowDamageFlash(absorbed);
         }
 
         if (currentHealth <= 0f)

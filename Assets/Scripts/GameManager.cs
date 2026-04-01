@@ -35,32 +35,59 @@ public class GameManager : MonoBehaviour
 
     public const int TotalLevels = 20;
 
+    public enum WeaponType
+    {
+        Melee,
+        Flamethrower,
+        Sniper,
+        Explosive,
+        UltimateMelee
+    }
+
+    // Levels 1-15: melee progression. Levels 16-20: special weapons.
     private static readonly string[] LevelWeaponNames = {
-        "Combat Knife", "Katana", "Hammer", "Baseball Bat", "Axe",
-        "Wrench", "Tennis Racket", "Shovel", "Crowbar", "Fire Axe",
-        "Machete", "Brass Knuckles", "Nunchucks", "Pipe", "Sickle",
-        "Golden Spork", "Electric Baton", "Saw Blade", "Battle Hammer", "Champion Blade"
+        "Combat Knife", "Katana", "Dumbbell", "Boxing Gloves", "Wrench",
+        "Tennis Racket", "Baseball Bat", "Crowbar", "Axe", "Fire Axe",
+        "Machete", "Brass Knuckles", "Nunchucks", "Shovel", "Sledgehammer",
+        "Flamethrower", "Sniper Rifle", "Bazooka", "RPG", "Champion Blade"
     };
 
+    // Damage per hit. Flamethrower = per burst ray, Sniper/Explosive = single hit.
     private static readonly float[] LevelWeaponDamage = {
-        32f, 36f, 40f, 42f, 45f,
-        48f, 50f, 52f, 54f, 56f,
-        58f, 60f, 63f, 66f, 69f,
-        72f, 76f, 80f, 86f, 92f
+        32f,  36f,  40f,  42f,  45f,
+        48f,  50f,  52f,  54f,  56f,
+        58f,  60f,  63f,  66f,  72f,
+        22f,  180f, 100f, 120f, 200f
     };
 
+    // Attack range. For Explosive = max projectile range.
     private static readonly float[] LevelWeaponRange = {
-        2.0f, 2.3f, 2.1f, 2.5f, 2.4f,
-        2.2f, 2.8f, 2.6f, 2.3f, 2.5f,
-        2.6f, 1.9f, 2.7f, 2.3f, 2.4f,
-        2.2f, 2.9f, 2.8f, 3.0f, 3.2f
+        2.0f, 2.3f, 2.1f, 1.8f, 2.4f,
+        2.7f, 2.8f, 2.5f, 2.6f, 2.5f,
+        2.7f, 1.9f, 2.7f, 2.6f, 2.9f,
+        8.0f, 200f, 80f,  80f,  4.0f
+    };
+
+    // Explosion AoE radius for Bazooka/RPG; 0 = not explosive.
+    private static readonly float[] LevelWeaponExplosionRadius = {
+        0f, 0f, 0f, 0f, 0f,
+        0f, 0f, 0f, 0f, 0f,
+        0f, 0f, 0f, 0f, 0f,
+        0f, 0f, 5.5f, 7.0f, 0f
+    };
+
+    private static readonly WeaponType[] LevelWeaponTypes = {
+        WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,
+        WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,
+        WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,
+        WeaponType.Flamethrower, WeaponType.Sniper,   WeaponType.Explosive,  WeaponType.Explosive,  WeaponType.UltimateMelee
     };
 
     private static readonly Color[] LevelWeaponColors = {
-        new Color(0.8f, 0.85f, 0.9f), new Color(0.75f, 0.85f, 1f), new Color(0.95f, 0.75f, 0.4f), new Color(0.7f, 0.5f, 0.35f), new Color(0.85f, 0.45f, 0.3f),
-        new Color(0.7f, 0.8f, 0.9f), new Color(0.95f, 0.95f, 0.95f), new Color(0.85f, 0.7f, 0.45f), new Color(0.6f, 0.65f, 0.75f), new Color(0.95f, 0.4f, 0.25f),
-        new Color(0.8f, 0.9f, 0.7f), new Color(1f, 0.85f, 0.35f), new Color(0.7f, 0.9f, 1f), new Color(0.55f, 0.65f, 0.75f), new Color(0.85f, 0.95f, 0.55f),
-        new Color(1f, 0.85f, 0.3f), new Color(0.45f, 0.9f, 1f), new Color(0.95f, 0.55f, 0.4f), new Color(1f, 0.7f, 0.3f), new Color(1f, 0.95f, 0.5f)
+        new Color(0.80f, 0.85f, 0.90f), new Color(0.75f, 0.85f, 1.00f), new Color(0.70f, 0.72f, 0.80f), new Color(0.95f, 0.60f, 0.45f), new Color(0.70f, 0.80f, 0.90f),
+        new Color(0.95f, 0.95f, 0.95f), new Color(0.85f, 0.60f, 0.35f), new Color(0.60f, 0.65f, 0.75f), new Color(0.85f, 0.45f, 0.30f), new Color(0.95f, 0.40f, 0.25f),
+        new Color(0.80f, 0.90f, 0.70f), new Color(1.00f, 0.85f, 0.35f), new Color(0.70f, 0.90f, 1.00f), new Color(0.85f, 0.70f, 0.45f), new Color(0.55f, 0.62f, 0.72f),
+        new Color(1.00f, 0.50f, 0.15f), new Color(0.30f, 0.90f, 1.00f), new Color(1.00f, 0.70f, 0.20f), new Color(1.00f, 0.40f, 0.20f), new Color(1.00f, 0.95f, 0.40f)
     };
 
     public int currentLevel = 1;
@@ -213,6 +240,16 @@ public class GameManager : MonoBehaviour
     public Color GetWeaponColorForLevel(int level)
     {
         return LevelWeaponColors[Mathf.Clamp(level - 1, 0, LevelWeaponColors.Length - 1)];
+    }
+
+    public WeaponType GetWeaponTypeForLevel(int level)
+    {
+        return LevelWeaponTypes[Mathf.Clamp(level - 1, 0, LevelWeaponTypes.Length - 1)];
+    }
+
+    public float GetWeaponExplosionRadiusForLevel(int level)
+    {
+        return LevelWeaponExplosionRadius[Mathf.Clamp(level - 1, 0, LevelWeaponExplosionRadius.Length - 1)];
     }
 
     public void AddScore(int points)

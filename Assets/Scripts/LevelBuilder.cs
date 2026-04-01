@@ -90,46 +90,87 @@ public class LevelBuilder : MonoBehaviour
 
     private void BuildBoundary(Transform root)
     {
-        Color wallColor = GetWallColor(GetTheme());
-        Color pillarColor = GetPlatformColor(GetTheme());
+        ArenaTheme theme = GetTheme();
+        Color wallColor   = GetWallColor(theme);
+        Color pillarColor = GetPlatformColor(theme);
+        Color accentColor = GetAccentColor(theme);
 
         for (int i = 0; i < ArenaSegments; i++)
         {
             float angle = (Mathf.PI * 2f / ArenaSegments) * i;
             Vector3 direction = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
 
+            // Main wall segment — taller and thicker
             GameObject wallSegment = CreateArenaProp(root, "ArenaWall_" + i, PrimitiveType.Cube,
-                direction * ArenaRadius + Vector3.up * 2.4f,
-                new Vector3(7f, 4.8f, 1.4f), wallColor);
+                direction * ArenaRadius + Vector3.up * 3.2f,
+                new Vector3(7.2f, 6.4f, 1.6f), wallColor);
             wallSegment.transform.rotation = Quaternion.LookRotation(direction, Vector3.up);
 
+            // Wall top cap / parapet
+            GameObject wallTop = CreateArenaProp(root, "ArenaWallTop_" + i, PrimitiveType.Cube,
+                direction * ArenaRadius + Vector3.up * 6.6f,
+                new Vector3(7.4f, 0.5f, 1.9f), pillarColor);
+            wallTop.transform.rotation = Quaternion.LookRotation(direction, Vector3.up);
+
+            // Accent strip at mid-height (every other segment gets theme color)
+            if (i % 2 == 0)
+            {
+                GameObject accent = CreateArenaProp(root, "ArenaWallAccent_" + i, PrimitiveType.Cube,
+                    direction * (ArenaRadius + 0.05f) + Vector3.up * 4.8f,
+                    new Vector3(6.8f, 0.22f, 0.12f), accentColor);
+                accent.transform.rotation = Quaternion.LookRotation(direction, Vector3.up);
+            }
+
+            // Pillar between segments
             GameObject pillar = CreateArenaProp(root, "ArenaPillar_" + i, PrimitiveType.Cylinder,
-                direction * (ArenaRadius - 1.5f) + Vector3.up * 2.8f,
-                new Vector3(0.8f, 2.8f, 0.8f), pillarColor);
+                direction * (ArenaRadius - 1.5f) + Vector3.up * 3.4f,
+                new Vector3(0.85f, 3.4f, 0.85f), pillarColor);
             pillar.transform.rotation = Quaternion.identity;
         }
     }
 
     private void BuildInnerCover(Transform root)
     {
-        Color coverColor = GetCoverColor(GetTheme());
+        ArenaTheme theme = GetTheme();
+        Color coverColor = GetCoverColor(theme);
+        Color accentColor = GetAccentColor(theme);
 
+        // 8 main cover blocks — vary height and depth for gameplay interest
+        float[] heights = { 2.3f, 1.4f, 2.8f, 1.6f, 2.3f, 1.4f, 2.8f, 1.6f };
+        float[] depths  = { 2.2f, 3.0f, 1.8f, 2.8f, 2.2f, 3.0f, 1.8f, 2.8f };
         for (int i = 0; i < 8; i++)
         {
             float angle = (Mathf.PI * 2f / 8f) * i;
             Vector3 direction = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
             float radius = i % 2 == 0 ? 11f : 14f;
+            float h = heights[i];
 
             GameObject cover = CreateArenaProp(root, "ArenaCover_" + i, PrimitiveType.Cube,
-                direction * radius + Vector3.up * 1.15f,
-                new Vector3(4.2f, 2.3f, 2.2f), coverColor);
+                direction * radius + Vector3.up * (h * 0.5f),
+                new Vector3(4.2f, h, depths[i]), coverColor);
             cover.transform.rotation = Quaternion.LookRotation(direction, Vector3.up);
+
+            // Accent stripe on top of tall covers
+            if (h > 2f)
+            {
+                GameObject stripe = CreateArenaProp(root, "CoverStripe_" + i, PrimitiveType.Cube,
+                    direction * radius + Vector3.up * (h + 0.1f),
+                    new Vector3(4.2f, 0.18f, depths[i] + 0.05f), accentColor);
+                stripe.transform.rotation = Quaternion.LookRotation(direction, Vector3.up);
+            }
         }
 
-        CreateArenaProp(root, "ArenaCentralBlock_A", PrimitiveType.Cube,
-            new Vector3(-4.5f, 1.2f, 0f), new Vector3(3f, 2.4f, 9f), new Color(0.27f, 0.30f, 0.36f));
-        CreateArenaProp(root, "ArenaCentralBlock_B", PrimitiveType.Cube,
-            new Vector3(4.5f, 1.2f, 0f), new Vector3(3f, 2.4f, 9f), new Color(0.27f, 0.30f, 0.36f));
+        // Central T-wall structure — more interesting than 2 plain blocks
+        CreateArenaProp(root, "CentralBlock_A", PrimitiveType.Cube,
+            new Vector3(-4.5f, 1.35f, 0f), new Vector3(2.8f, 2.7f, 9.5f), new Color(0.27f, 0.30f, 0.36f));
+        CreateArenaProp(root, "CentralBlock_B", PrimitiveType.Cube,
+            new Vector3(4.5f, 1.35f, 0f), new Vector3(2.8f, 2.7f, 9.5f), new Color(0.27f, 0.30f, 0.36f));
+        // Connecting crossbar
+        CreateArenaProp(root, "CentralBlock_Cross", PrimitiveType.Cube,
+            new Vector3(0f, 2.6f, 0f), new Vector3(11.8f, 0.5f, 2.0f), new Color(0.22f, 0.25f, 0.30f));
+        // Elevated top platform on center structure
+        CreateArenaProp(root, "CentralPlatform", PrimitiveType.Cube,
+            new Vector3(0f, 3.0f, 0f), new Vector3(11.8f, 0.25f, 9.5f), new Color(0.30f, 0.33f, 0.40f));
     }
 
     private void BuildThemeProps(Transform root)
@@ -138,29 +179,452 @@ public class LevelBuilder : MonoBehaviour
 
         if (theme == ArenaTheme.BlacksiteFacility)
         {
-            CreateArenaProp(root, "AccentNorth", PrimitiveType.Cube,
-                new Vector3(0f, 4.6f, 18f), new Vector3(10f, 0.35f, 1.2f), new Color(0.92f, 0.28f, 0.24f));
-            CreateArenaProp(root, "AccentSouth", PrimitiveType.Cube,
-                new Vector3(0f, 4.6f, -18f), new Vector3(10f, 0.35f, 1.2f), new Color(0.28f, 0.78f, 1f));
-            BuildDestroyedCar(root, "WreckNorth", new Vector3(-11f, 0f, 8f), 22f);
-            BuildDestroyedCar(root, "WreckEast", new Vector3(12f, 0f, -6f), -35f);
-            BuildBarricade(root, "BarrierA", new Vector3(6f, 0f, 15f), 16f);
-            BuildBarricade(root, "BarrierB", new Vector3(-14f, 0f, -12f), -22f);
+            BuildBlacksiteProps(root);
         }
         else if (theme == ArenaTheme.CyberRuinsNeon)
         {
-            CreateArenaProp(root, "AccentEast", PrimitiveType.Cube,
-                new Vector3(18f, 4.4f, 0f), new Vector3(1f, 0.35f, 10f), new Color(1f, 0.24f, 0.78f));
-            CreateArenaProp(root, "AccentWest", PrimitiveType.Cube,
-                new Vector3(-18f, 4.4f, 0f), new Vector3(1f, 0.35f, 10f), new Color(0.18f, 0.86f, 1f));
+            BuildCyberRuinsProps(root);
         }
         else
         {
-            CreateArenaProp(root, "ContainerA", PrimitiveType.Cube,
-                new Vector3(10f, 1.7f, 10f), new Vector3(7f, 3.4f, 3.2f), new Color(0.72f, 0.38f, 0.20f));
-            CreateArenaProp(root, "ContainerB", PrimitiveType.Cube,
-                new Vector3(-10f, 1.7f, -10f), new Vector3(7f, 3.4f, 3.2f), new Color(0.20f, 0.46f, 0.62f));
+            BuildContainerPortProps(root);
         }
+    }
+
+    // ─── BLACKSITE FACILITY ────────────────────────────────────────────────────
+
+    private void BuildBlacksiteProps(Transform root)
+    {
+        // Wall accent beams
+        CreateArenaProp(root, "AccentN", PrimitiveType.Cube,
+            new Vector3(0f, 5.0f, 18f), new Vector3(12f, 0.4f, 1.4f), new Color(0.88f, 0.22f, 0.20f));
+        CreateArenaProp(root, "AccentS", PrimitiveType.Cube,
+            new Vector3(0f, 5.0f, -18f), new Vector3(12f, 0.4f, 1.4f), new Color(0.22f, 0.72f, 1.0f));
+        CreateArenaProp(root, "AccentE", PrimitiveType.Cube,
+            new Vector3(18f, 5.0f, 0f), new Vector3(1.4f, 0.4f, 12f), new Color(0.88f, 0.22f, 0.20f));
+        CreateArenaProp(root, "AccentW", PrimitiveType.Cube,
+            new Vector3(-18f, 5.0f, 0f), new Vector3(1.4f, 0.4f, 12f), new Color(0.22f, 0.72f, 1.0f));
+
+        // Destroyed vehicles
+        BuildDestroyedCar(root, "Wreck_NW", new Vector3(-11f, 0f, 9f), 22f);
+        BuildDestroyedCar(root, "Wreck_SE", new Vector3(13f, 0f, -7f), -38f);
+        BuildDestroyedCar(root, "Wreck_NE", new Vector3(10f, 0f, 12f), 65f);
+
+        // Concrete barriers / sandbag positions
+        BuildBarricade(root, "Barricade_A", new Vector3(7f, 0f, 16f), 18f);
+        BuildBarricade(root, "Barricade_B", new Vector3(-14f, 0f, -11f), -24f);
+        BuildBarricade(root, "Barricade_C", new Vector3(-7f, 0f, -16f), 5f);
+        BuildBarricade(root, "Barricade_D", new Vector3(15f, 0f, 6f), -72f);
+
+        // Military crate stacks
+        BuildCrateStack(root, "Crates_NE", new Vector3(17f, 0f, 12f), 15f, 3);
+        BuildCrateStack(root, "Crates_SW", new Vector3(-17f, 0f, -13f), -30f, 2);
+        BuildCrateStack(root, "Crates_NW", new Vector3(-16f, 0f, 10f), 50f, 3);
+
+        // Watchtower stubs at cardinal points (partial towers on boundary inside)
+        BuildWatchtower(root, "Tower_N", new Vector3(0f, 0f, 22f));
+        BuildWatchtower(root, "Tower_S", new Vector3(0f, 0f, -22f));
+
+        // Floor warning stripes
+        CreateArenaProp(root, "FloorStripe_N", PrimitiveType.Cube,
+            new Vector3(0f, 0.02f, 10f), new Vector3(8f, 0.06f, 0.5f), new Color(0.95f, 0.75f, 0.05f));
+        CreateArenaProp(root, "FloorStripe_S", PrimitiveType.Cube,
+            new Vector3(0f, 0.02f, -10f), new Vector3(8f, 0.06f, 0.5f), new Color(0.95f, 0.75f, 0.05f));
+        CreateArenaProp(root, "FloorStripe_E", PrimitiveType.Cube,
+            new Vector3(10f, 0.02f, 0f), new Vector3(0.5f, 0.06f, 8f), new Color(0.95f, 0.75f, 0.05f));
+        CreateArenaProp(root, "FloorStripe_W", PrimitiveType.Cube,
+            new Vector3(-10f, 0.02f, 0f), new Vector3(0.5f, 0.06f, 8f), new Color(0.95f, 0.75f, 0.05f));
+
+        // Ventilation units on ground
+        BuildVentUnit(root, "Vent_A", new Vector3(19f, 0f, 7f), 0f);
+        BuildVentUnit(root, "Vent_B", new Vector3(-20f, 0f, -8f), 90f);
+    }
+
+    private void BuildCrateStack(Transform root, string name, Vector3 pos, float rot, int layers)
+    {
+        GameObject stack = new GameObject(name);
+        stack.transform.SetParent(root, false);
+        stack.transform.position = pos;
+        stack.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        Color base1 = new Color(0.48f, 0.42f, 0.30f);
+        Color base2 = new Color(0.38f, 0.34f, 0.26f);
+        for (int row = 0; row < layers; row++)
+        {
+            int cols = layers - row;
+            for (int c = 0; c < cols; c++)
+            {
+                CreatePrimitiveChild(stack.transform, "Crate_" + row + "_" + c, PrimitiveType.Cube,
+                    new Vector3((c - cols * 0.5f + 0.5f) * 1.05f, 0.55f + row * 1.05f, 0f),
+                    new Vector3(1.0f, 1.0f, 1.0f),
+                    row % 2 == 0 ? base1 : base2);
+            }
+        }
+    }
+
+    private void BuildWatchtower(Transform root, string name, Vector3 pos)
+    {
+        GameObject tower = new GameObject(name);
+        tower.transform.SetParent(root, false);
+        tower.transform.position = pos;
+
+        // Legs
+        for (int i = 0; i < 4; i++)
+        {
+            float lx = i < 2 ? -0.7f : 0.7f;
+            float lz = i % 2 == 0 ? -0.7f : 0.7f;
+            CreatePrimitiveChild(tower.transform, "Leg_" + i, PrimitiveType.Cylinder,
+                new Vector3(lx, 2.5f, lz), new Vector3(0.22f, 2.5f, 0.22f),
+                new Color(0.22f, 0.22f, 0.26f));
+        }
+
+        // Platform
+        CreatePrimitiveChild(tower.transform, "Platform", PrimitiveType.Cube,
+            new Vector3(0f, 5.2f, 0f), new Vector3(3.2f, 0.3f, 3.2f),
+            new Color(0.30f, 0.30f, 0.34f));
+
+        // Railing
+        CreatePrimitiveChild(tower.transform, "Rail_F", PrimitiveType.Cube,
+            new Vector3(0f, 5.7f, 1.6f), new Vector3(3.0f, 0.6f, 0.12f),
+            new Color(0.18f, 0.18f, 0.22f));
+        CreatePrimitiveChild(tower.transform, "Rail_B", PrimitiveType.Cube,
+            new Vector3(0f, 5.7f, -1.6f), new Vector3(3.0f, 0.6f, 0.12f),
+            new Color(0.18f, 0.18f, 0.22f));
+    }
+
+    private void BuildVentUnit(Transform root, string name, Vector3 pos, float rot)
+    {
+        GameObject vent = new GameObject(name);
+        vent.transform.SetParent(root, false);
+        vent.transform.position = pos;
+        vent.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        CreatePrimitiveChild(vent.transform, "Box", PrimitiveType.Cube,
+            new Vector3(0f, 0.6f, 0f), new Vector3(2.4f, 1.2f, 1.4f),
+            new Color(0.28f, 0.30f, 0.34f));
+        CreatePrimitiveChild(vent.transform, "Fan", PrimitiveType.Cylinder,
+            new Vector3(0f, 1.25f, 0f), new Vector3(0.9f, 0.08f, 0.9f),
+            new Color(0.18f, 0.20f, 0.24f));
+    }
+
+    // ─── CYBER RUINS NEON ─────────────────────────────────────────────────────
+
+    private void BuildCyberRuinsProps(Transform root)
+    {
+        Color neonMagenta = new Color(1f, 0.18f, 0.82f);
+        Color neonCyan    = new Color(0.12f, 0.90f, 1f);
+        Color ruinGrey    = new Color(0.20f, 0.22f, 0.28f);
+        Color darkSlate   = new Color(0.12f, 0.14f, 0.20f);
+
+        // Wall accent neon strips
+        CreateArenaProp(root, "NeonE_H", PrimitiveType.Cube,
+            new Vector3(18f, 4.6f, 0f), new Vector3(1.2f, 0.32f, 12f), neonMagenta);
+        CreateArenaProp(root, "NeonW_H", PrimitiveType.Cube,
+            new Vector3(-18f, 4.6f, 0f), new Vector3(1.2f, 0.32f, 12f), neonCyan);
+        CreateArenaProp(root, "NeonN_H", PrimitiveType.Cube,
+            new Vector3(0f, 4.6f, 18f), new Vector3(12f, 0.32f, 1.2f), neonCyan);
+        CreateArenaProp(root, "NeonS_H", PrimitiveType.Cube,
+            new Vector3(0f, 4.6f, -18f), new Vector3(12f, 0.32f, 1.2f), neonMagenta);
+
+        // Neon floor grid lines
+        for (int i = -2; i <= 2; i++)
+        {
+            if (i == 0) continue;
+            CreateArenaProp(root, "GridH_" + i, PrimitiveType.Cube,
+                new Vector3(i * 5f, 0.025f, 0f), new Vector3(0.12f, 0.05f, 40f),
+                i < 0 ? neonCyan : neonMagenta);
+            CreateArenaProp(root, "GridV_" + i, PrimitiveType.Cube,
+                new Vector3(0f, 0.025f, i * 5f), new Vector3(40f, 0.05f, 0.12f),
+                i < 0 ? neonMagenta : neonCyan);
+        }
+
+        // Ruined building walls
+        BuildRuinWall(root, "Ruin_NE", new Vector3(14f, 0f, 10f), 30f, ruinGrey, neonMagenta);
+        BuildRuinWall(root, "Ruin_SW", new Vector3(-14f, 0f, -10f), 210f, ruinGrey, neonCyan);
+        BuildRuinWall(root, "Ruin_NW", new Vector3(-10f, 0f, 14f), 120f, ruinGrey, neonMagenta);
+        BuildRuinWall(root, "Ruin_SE", new Vector3(10f, 0f, -14f), -45f, ruinGrey, neonCyan);
+
+        // Holo-pillars (glowing cylinders)
+        Vector3[] pillarPositions = {
+            new Vector3(7f, 0f, 7f), new Vector3(-7f, 0f, 7f),
+            new Vector3(7f, 0f, -7f), new Vector3(-7f, 0f, -7f)
+        };
+        Color[] pillarColors = { neonMagenta, neonCyan, neonCyan, neonMagenta };
+        for (int i = 0; i < pillarPositions.Length; i++)
+        {
+            CreateArenaProp(root, "HoloPillar_" + i, PrimitiveType.Cylinder,
+                pillarPositions[i] + Vector3.up * 2.2f,
+                new Vector3(0.28f, 2.2f, 0.28f), pillarColors[i]);
+            // Glowing base ring
+            CreateArenaProp(root, "HoloPillarBase_" + i, PrimitiveType.Cylinder,
+                pillarPositions[i] + Vector3.up * 0.06f,
+                new Vector3(0.9f, 0.06f, 0.9f), pillarColors[i]);
+        }
+
+        // Elevated cyber platforms
+        BuildCyberPlatform(root, "Platform_N", new Vector3(0f, 0f, 16f), neonCyan);
+        BuildCyberPlatform(root, "Platform_S", new Vector3(0f, 0f, -16f), neonMagenta);
+
+        // Data obelisks
+        BuildDataObelisk(root, "Obelisk_E", new Vector3(18f, 0f, -8f), darkSlate, neonCyan);
+        BuildDataObelisk(root, "Obelisk_W", new Vector3(-18f, 0f, 9f), darkSlate, neonMagenta);
+
+        // Rubble clusters
+        BuildRubbleCluster(root, "Rubble_A", new Vector3(15f, 0f, -15f), ruinGrey);
+        BuildRubbleCluster(root, "Rubble_B", new Vector3(-15f, 0f, 15f), ruinGrey);
+    }
+
+    private void BuildRuinWall(Transform root, string name, Vector3 pos, float rot, Color wallColor, Color neonColor)
+    {
+        GameObject ruin = new GameObject(name);
+        ruin.transform.SetParent(root, false);
+        ruin.transform.position = pos;
+        ruin.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        // Main wall section
+        CreatePrimitiveChild(ruin.transform, "Wall", PrimitiveType.Cube,
+            new Vector3(0f, 2.5f, 0f), new Vector3(6f, 5f, 0.8f), wallColor);
+        // Broken top — offset to simulate damage
+        CreatePrimitiveChild(ruin.transform, "WallTop", PrimitiveType.Cube,
+            new Vector3(1.8f, 5.5f, 0f), new Vector3(2.4f, 1.0f, 0.8f), wallColor);
+        // Neon strip on wall
+        CreatePrimitiveChild(ruin.transform, "NeonStrip", PrimitiveType.Cube,
+            new Vector3(0f, 1.2f, -0.45f), new Vector3(5.5f, 0.18f, 0.1f), neonColor);
+    }
+
+    private void BuildCyberPlatform(Transform root, string name, Vector3 pos, Color neonColor)
+    {
+        Color platformColor = new Color(0.16f, 0.18f, 0.26f);
+        GameObject plat = new GameObject(name);
+        plat.transform.SetParent(root, false);
+        plat.transform.position = pos;
+
+        CreatePrimitiveChild(plat.transform, "Surface", PrimitiveType.Cube,
+            new Vector3(0f, 1.0f, 0f), new Vector3(6f, 0.28f, 3.5f), platformColor);
+        // Support legs
+        CreatePrimitiveChild(plat.transform, "SupportL", PrimitiveType.Cube,
+            new Vector3(-2.5f, 0.5f, 0f), new Vector3(0.3f, 1.0f, 3.5f), platformColor);
+        CreatePrimitiveChild(plat.transform, "SupportR", PrimitiveType.Cube,
+            new Vector3(2.5f, 0.5f, 0f), new Vector3(0.3f, 1.0f, 3.5f), platformColor);
+        // Neon edge
+        CreatePrimitiveChild(plat.transform, "EdgeFront", PrimitiveType.Cube,
+            new Vector3(0f, 1.15f, 1.76f), new Vector3(6.1f, 0.08f, 0.08f), neonColor);
+        CreatePrimitiveChild(plat.transform, "EdgeBack", PrimitiveType.Cube,
+            new Vector3(0f, 1.15f, -1.76f), new Vector3(6.1f, 0.08f, 0.08f), neonColor);
+    }
+
+    private void BuildDataObelisk(Transform root, string name, Vector3 pos, Color bodyColor, Color neonColor)
+    {
+        GameObject obj = new GameObject(name);
+        obj.transform.SetParent(root, false);
+        obj.transform.position = pos;
+
+        CreatePrimitiveChild(obj.transform, "Body", PrimitiveType.Cube,
+            new Vector3(0f, 3f, 0f), new Vector3(1.2f, 6f, 1.2f), bodyColor);
+        CreatePrimitiveChild(obj.transform, "Top", PrimitiveType.Cube,
+            new Vector3(0f, 6.4f, 0f), new Vector3(0.8f, 0.8f, 0.8f), neonColor);
+        // Screen panels
+        CreatePrimitiveChild(obj.transform, "Screen_F", PrimitiveType.Cube,
+            new Vector3(0f, 2.5f, -0.62f), new Vector3(0.9f, 1.8f, 0.05f), neonColor);
+        CreatePrimitiveChild(obj.transform, "Screen_B", PrimitiveType.Cube,
+            new Vector3(0f, 2.5f, 0.62f), new Vector3(0.9f, 1.8f, 0.05f), neonColor);
+    }
+
+    private void BuildRubbleCluster(Transform root, string name, Vector3 pos, Color color)
+    {
+        GameObject cluster = new GameObject(name);
+        cluster.transform.SetParent(root, false);
+        cluster.transform.position = pos;
+
+        float[] rots = { 0f, 34f, 72f, 110f };
+        Vector3[] offsets = { Vector3.zero, new Vector3(1.2f, 0f, 0.4f), new Vector3(-0.8f, 0f, 0.9f), new Vector3(0.5f, 0f, -0.8f) };
+        Vector3[] scales = { new Vector3(1.8f, 0.5f, 1.2f), new Vector3(1.0f, 0.8f, 0.7f), new Vector3(1.4f, 0.4f, 0.9f), new Vector3(0.6f, 0.6f, 0.6f) };
+
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            CreatePrimitiveChild(cluster.transform, "Chunk_" + i, PrimitiveType.Cube,
+                offsets[i] + Vector3.up * (scales[i].y * 0.5f),
+                scales[i],
+                new Color(color.r * 0.85f, color.g * 0.85f, color.b * 0.85f),
+                new Vector3(0f, rots[i], 0f));
+        }
+    }
+
+    // ─── CONTAINER PORT YARD ──────────────────────────────────────────────────
+
+    private void BuildContainerPortProps(Transform root)
+    {
+        // Container stacks
+        BuildContainerStack(root, "Stack_NE", new Vector3(12f, 0f, 12f),  20f, new Color(0.72f, 0.32f, 0.16f), 2);
+        BuildContainerStack(root, "Stack_NW", new Vector3(-12f, 0f, 12f), 340f, new Color(0.18f, 0.44f, 0.60f), 3);
+        BuildContainerStack(root, "Stack_SE", new Vector3(12f, 0f, -12f), 160f, new Color(0.50f, 0.52f, 0.18f), 2);
+        BuildContainerStack(root, "Stack_SW", new Vector3(-12f, 0f, -12f), 200f, new Color(0.70f, 0.65f, 0.15f), 3);
+        BuildContainerStack(root, "Stack_E",  new Vector3(20f, 0f, 0f),    90f, new Color(0.58f, 0.25f, 0.22f), 2);
+        BuildContainerStack(root, "Stack_W",  new Vector3(-20f, 0f, 0f),  270f, new Color(0.22f, 0.48f, 0.36f), 2);
+
+        // Crane structure (north side)
+        BuildCrane(root, "Crane_Main", new Vector3(0f, 0f, 20f));
+
+        // Dock bollards along southern edge
+        for (int i = -3; i <= 3; i++)
+        {
+            CreateArenaProp(root, "Bollard_" + i, PrimitiveType.Cylinder,
+                new Vector3(i * 4.5f, 0.55f, -21f), new Vector3(0.4f, 1.1f, 0.4f),
+                new Color(0.22f, 0.22f, 0.24f));
+        }
+
+        // Oil drum clusters
+        BuildDrumCluster(root, "Drums_E", new Vector3(20f, 0f, -10f));
+        BuildDrumCluster(root, "Drums_W", new Vector3(-20f, 0f, 8f));
+
+        // Pallet stacks
+        BuildPalletStack(root, "Pallets_A", new Vector3(16f, 0f, -18f), 15f);
+        BuildPalletStack(root, "Pallets_B", new Vector3(-16f, 0f, 16f), -30f);
+
+        // Floor paint lines (dock markings)
+        CreateArenaProp(root, "DockLine_H", PrimitiveType.Cube,
+            new Vector3(0f, 0.02f, -8f), new Vector3(30f, 0.05f, 0.45f), new Color(0.95f, 0.80f, 0.10f));
+        CreateArenaProp(root, "DockLine_V", PrimitiveType.Cube,
+            new Vector3(-8f, 0.02f, 0f), new Vector3(0.45f, 0.05f, 30f), new Color(0.95f, 0.80f, 0.10f));
+
+        // Fuel tank
+        BuildFuelTank(root, "FuelTank", new Vector3(-19f, 0f, -14f), 45f);
+
+        // Warehouse wall sections
+        BuildWarehouseSection(root, "Warehouse_N", new Vector3(0f, 0f, 22f), 0f);
+    }
+
+    private void BuildContainerStack(Transform root, string name, Vector3 pos, float rot, Color color, int layers)
+    {
+        GameObject stack = new GameObject(name);
+        stack.transform.SetParent(root, false);
+        stack.transform.position = pos;
+        stack.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        for (int layer = 0; layer < layers; layer++)
+        {
+            Color c = new Color(
+                Mathf.Clamp01(color.r + (layer % 2 == 0 ? 0f : 0.12f)),
+                Mathf.Clamp01(color.g + (layer % 2 == 0 ? 0f : 0.10f)),
+                Mathf.Clamp01(color.b + (layer % 2 == 0 ? 0f : 0.08f)));
+            CreatePrimitiveChild(stack.transform, "Container_" + layer, PrimitiveType.Cube,
+                new Vector3(0f, 1.55f + layer * 3.1f, 0f),
+                new Vector3(7.0f, 3.1f, 3.2f), c);
+        }
+    }
+
+    private void BuildCrane(Transform root, string name, Vector3 pos)
+    {
+        GameObject crane = new GameObject(name);
+        crane.transform.SetParent(root, false);
+        crane.transform.position = pos;
+
+        Color steelDark = new Color(0.22f, 0.24f, 0.28f);
+        Color steelMid  = new Color(0.32f, 0.34f, 0.40f);
+
+        // Vertical tower
+        CreatePrimitiveChild(crane.transform, "Tower", PrimitiveType.Cube,
+            new Vector3(0f, 7f, 0f), new Vector3(1.4f, 14f, 1.4f), steelDark);
+        // Horizontal boom
+        CreatePrimitiveChild(crane.transform, "Boom", PrimitiveType.Cube,
+            new Vector3(-7f, 13.5f, 0f), new Vector3(14f, 0.7f, 0.7f), steelMid);
+        // Counter weight
+        CreatePrimitiveChild(crane.transform, "CounterWeight", PrimitiveType.Cube,
+            new Vector3(5f, 13.5f, 0f), new Vector3(2.5f, 1.5f, 1.5f), steelDark);
+        // Cable
+        CreatePrimitiveChild(crane.transform, "Cable", PrimitiveType.Cylinder,
+            new Vector3(-7f, 9.5f, 0f), new Vector3(0.12f, 4f, 0.12f), steelDark);
+        // Hook block
+        CreatePrimitiveChild(crane.transform, "Hook", PrimitiveType.Cube,
+            new Vector3(-7f, 5.2f, 0f), new Vector3(1.0f, 0.8f, 1.0f), steelMid);
+        // Base feet
+        CreatePrimitiveChild(crane.transform, "FootL", PrimitiveType.Cube,
+            new Vector3(-2f, 0.4f, 0f), new Vector3(0.6f, 0.8f, 3f), steelDark);
+        CreatePrimitiveChild(crane.transform, "FootR", PrimitiveType.Cube,
+            new Vector3(2f, 0.4f, 0f), new Vector3(0.6f, 0.8f, 3f), steelDark);
+    }
+
+    private void BuildDrumCluster(Transform root, string name, Vector3 pos)
+    {
+        GameObject cluster = new GameObject(name);
+        cluster.transform.SetParent(root, false);
+        cluster.transform.position = pos;
+
+        Color[] drumColors = {
+            new Color(0.70f, 0.16f, 0.12f),
+            new Color(0.22f, 0.28f, 0.32f),
+            new Color(0.50f, 0.46f, 0.12f)
+        };
+        Vector3[] offsets = { new Vector3(-0.6f, 0f, 0f), new Vector3(0.6f, 0f, 0.2f), new Vector3(0f, 0f, -0.7f) };
+
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            CreatePrimitiveChild(cluster.transform, "Drum_" + i, PrimitiveType.Cylinder,
+                offsets[i] + Vector3.up * 0.6f, new Vector3(0.55f, 0.6f, 0.55f), drumColors[i]);
+        }
+        // Second row on top
+        CreatePrimitiveChild(cluster.transform, "DrumTop", PrimitiveType.Cylinder,
+            new Vector3(0f, 1.6f, -0.3f), new Vector3(0.55f, 0.6f, 0.55f), drumColors[0]);
+    }
+
+    private void BuildPalletStack(Transform root, string name, Vector3 pos, float rot)
+    {
+        GameObject stack = new GameObject(name);
+        stack.transform.SetParent(root, false);
+        stack.transform.position = pos;
+        stack.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        Color palletColor = new Color(0.62f, 0.48f, 0.28f);
+        for (int i = 0; i < 4; i++)
+        {
+            CreatePrimitiveChild(stack.transform, "Pallet_" + i, PrimitiveType.Cube,
+                new Vector3(0f, 0.07f + i * 0.16f, 0f),
+                new Vector3(2.4f, 0.12f, 1.6f), palletColor);
+        }
+    }
+
+    private void BuildFuelTank(Transform root, string name, Vector3 pos, float rot)
+    {
+        GameObject tank = new GameObject(name);
+        tank.transform.SetParent(root, false);
+        tank.transform.position = pos;
+        tank.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        Color tankColor = new Color(0.55f, 0.52f, 0.42f);
+        // Horizontal tank body
+        CreatePrimitiveChild(tank.transform, "Body", PrimitiveType.Cylinder,
+            new Vector3(0f, 1.2f, 0f), new Vector3(1.8f, 2.2f, 1.8f), tankColor,
+            new Vector3(90f, 0f, 0f));
+        // End caps
+        CreatePrimitiveChild(tank.transform, "CapA", PrimitiveType.Sphere,
+            new Vector3(0f, 1.2f, 2.2f), new Vector3(1.8f, 1.8f, 0.6f), tankColor);
+        CreatePrimitiveChild(tank.transform, "CapB", PrimitiveType.Sphere,
+            new Vector3(0f, 1.2f, -2.2f), new Vector3(1.8f, 1.8f, 0.6f), tankColor);
+        // Legs
+        CreatePrimitiveChild(tank.transform, "LegL", PrimitiveType.Cube,
+            new Vector3(-0.7f, 0.4f, 0f), new Vector3(0.25f, 0.8f, 4.5f),
+            new Color(0.30f, 0.30f, 0.32f));
+        CreatePrimitiveChild(tank.transform, "LegR", PrimitiveType.Cube,
+            new Vector3(0.7f, 0.4f, 0f), new Vector3(0.25f, 0.8f, 4.5f),
+            new Color(0.30f, 0.30f, 0.32f));
+    }
+
+    private void BuildWarehouseSection(Transform root, string name, Vector3 pos, float rot)
+    {
+        GameObject wh = new GameObject(name);
+        wh.transform.SetParent(root, false);
+        wh.transform.position = pos;
+        wh.transform.rotation = Quaternion.Euler(0f, rot, 0f);
+
+        Color wallColor = new Color(0.42f, 0.38f, 0.32f);
+        Color roofColor = new Color(0.32f, 0.28f, 0.24f);
+
+        CreatePrimitiveChild(wh.transform, "WallL", PrimitiveType.Cube,
+            new Vector3(-5f, 2.5f, 0f), new Vector3(1.0f, 5.0f, 6f), wallColor);
+        CreatePrimitiveChild(wh.transform, "WallR", PrimitiveType.Cube,
+            new Vector3(5f, 2.5f, 0f), new Vector3(1.0f, 5.0f, 6f), wallColor);
+        CreatePrimitiveChild(wh.transform, "Roof", PrimitiveType.Cube,
+            new Vector3(0f, 5.2f, 0f), new Vector3(11f, 0.4f, 6.2f), roofColor);
     }
 
     private void BuildDestroyedCar(Transform root, string name, Vector3 position, float yRotation)
@@ -296,10 +760,10 @@ public class LevelBuilder : MonoBehaviour
         }
 
         minimapFollow.target = player.transform;
-        minimapFollow.height = 32f;
-        minimapFollow.orthographicSize = 18f;
+        minimapFollow.height = 28f;
+        minimapFollow.orthographicSize = 16f;   // tighter view so movement is obvious
         minimapFollow.offset = Vector3.zero;
-        minimapFollow.lockToArenaCenter = true;
+        minimapFollow.lockToArenaCenter = false; // follows the player
         minimapFollow.EnsureRenderTexture();
     }
 
@@ -439,24 +903,58 @@ public class LevelBuilder : MonoBehaviour
 
     private void SetupLighting()
     {
+        ArenaTheme theme = GetTheme();
+
         GameObject lightObject = GameObject.Find("Directional Light");
         if (lightObject != null)
         {
-            lightObject.transform.rotation = Quaternion.Euler(38f, -34f, 0f);
             Light lightComponent = lightObject.GetComponent<Light>();
             if (lightComponent != null)
             {
-                lightComponent.intensity = 1.3f;
-                lightComponent.color = new Color(0.92f, 0.95f, 1f);
+                switch (theme)
+                {
+                    case ArenaTheme.CyberRuinsNeon:
+                        lightObject.transform.rotation = Quaternion.Euler(28f, 60f, 0f);
+                        lightComponent.intensity = 0.7f;
+                        lightComponent.color = new Color(0.72f, 0.80f, 1.0f);
+                        break;
+                    case ArenaTheme.ContainerPortYard:
+                        lightObject.transform.rotation = Quaternion.Euler(42f, -20f, 0f);
+                        lightComponent.intensity = 1.5f;
+                        lightComponent.color = new Color(1.0f, 0.96f, 0.88f);
+                        break;
+                    default: // BlacksiteFacility
+                        lightObject.transform.rotation = Quaternion.Euler(38f, -34f, 0f);
+                        lightComponent.intensity = 1.3f;
+                        lightComponent.color = new Color(0.92f, 0.95f, 1.0f);
+                        break;
+                }
             }
         }
 
         RenderSettings.fog = true;
         RenderSettings.fogMode = FogMode.ExponentialSquared;
-        RenderSettings.fogColor = new Color(0.10f, 0.12f, 0.16f);
-        RenderSettings.fogDensity = 0.0065f;
+
+        switch (theme)
+        {
+            case ArenaTheme.CyberRuinsNeon:
+                RenderSettings.fogColor = new Color(0.08f, 0.06f, 0.16f);
+                RenderSettings.fogDensity = 0.008f;
+                RenderSettings.ambientLight = new Color(0.26f, 0.20f, 0.44f);
+                break;
+            case ArenaTheme.ContainerPortYard:
+                RenderSettings.fogColor = new Color(0.52f, 0.58f, 0.62f);
+                RenderSettings.fogDensity = 0.004f;
+                RenderSettings.ambientLight = new Color(0.56f, 0.58f, 0.62f);
+                break;
+            default:
+                RenderSettings.fogColor = new Color(0.10f, 0.12f, 0.16f);
+                RenderSettings.fogDensity = 0.0065f;
+                RenderSettings.ambientLight = new Color(0.48f, 0.54f, 0.62f);
+                break;
+        }
+
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-        RenderSettings.ambientLight = new Color(0.48f, 0.54f, 0.62f);
     }
 
     private GameObject CreateArenaProp(Transform root, string name, PrimitiveType type, Vector3 position, Vector3 scale, Color color)
@@ -516,6 +1014,13 @@ public class LevelBuilder : MonoBehaviour
         Material mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
         mat.color = color;
         renderer.material = mat;
+    }
+
+    private Color GetAccentColor(ArenaTheme theme)
+    {
+        if (theme == ArenaTheme.BlacksiteFacility) return new Color(0.88f, 0.22f, 0.20f);
+        if (theme == ArenaTheme.CyberRuinsNeon)   return new Color(1f, 0.18f, 0.82f);
+        return new Color(0.95f, 0.80f, 0.10f);
     }
 
     private Color GetGroundColor(ArenaTheme theme)

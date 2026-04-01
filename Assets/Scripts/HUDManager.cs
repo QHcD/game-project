@@ -26,6 +26,15 @@ public class HUDManager : MonoBehaviour
     private TMP_FontAsset prismFont;
     private Image healthFillVisual;
 
+    // Damage flash
+    private Image damageFlashImage;
+    private float damageFlashAlpha;
+    private const float DamageFlashDecay = 2.2f;
+
+    // Low-health vignette
+    private Image lowHealthImage;
+    private float lowHealthPulse;
+
     public bool IsMatchFinished => matchFinished;
 
     private void Awake()
@@ -49,6 +58,8 @@ public class HUDManager : MonoBehaviour
 
         prismFont = ResolvePrismFont();
         EnsureRuntimeHud();
+        EnsureDamageFlashLayer();
+        EnsureLowHealthLayer();
         playerHealth = FindFirstObjectByType<PlayerHealth>();
         playerController = FindFirstObjectByType<PlayerController>();
 
@@ -94,6 +105,9 @@ public class HUDManager : MonoBehaviour
             ShowMatchFinishedOverlay();
         }
 
+        TickDamageFlash();
+        TickLowHealthVignette();
+
         if (playerHealth == null)
         {
             playerHealth = FindFirstObjectByType<PlayerHealth>();
@@ -119,19 +133,24 @@ public class HUDManager : MonoBehaviour
 
     public void UpdateHealth(float current, float max)
     {
+        float ratio = Mathf.Clamp01(current / Mathf.Max(1f, max));
+
         if (healthText != null)
         {
-            healthText.text = "HEALTH  " + Mathf.CeilToInt(current) + " / " + Mathf.CeilToInt(max);
+            healthText.text = "HP  " + Mathf.CeilToInt(current) + " / " + Mathf.CeilToInt(max);
+        }
+
+        // Drive the fill image directly — this is the most reliable approach
+        if (healthFillVisual != null)
+        {
+            healthFillVisual.fillAmount = ratio;
+            // Shift colour from green → red as health drops
+            healthFillVisual.color = Color.Lerp(new Color(0.92f, 0.18f, 0.18f), new Color(0.18f, 0.92f, 0.45f), ratio);
         }
 
         if (healthBar != null)
         {
-            healthBar.value = Mathf.Clamp01(current / Mathf.Max(1f, max));
-        }
-
-        if (healthFillVisual != null)
-        {
-            healthFillVisual.fillAmount = Mathf.Clamp01(current / Mathf.Max(1f, max));
+            healthBar.value = ratio;
         }
     }
 
@@ -149,6 +168,88 @@ public class HUDManager : MonoBehaviour
         {
             enemyCountText.text = "ENEMIES  " + count;
         }
+    }
+
+    public void ShowDamageFlash(float damageAmount)
+    {
+        // Scale flash intensity with damage (cap at 1.0)
+        float intensity = Mathf.Clamp01(damageAmount / 40f);
+        damageFlashAlpha = Mathf.Max(damageFlashAlpha, 0.25f + intensity * 0.55f);
+        if (damageFlashImage != null)
+        {
+            damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, damageFlashAlpha);
+        }
+    }
+
+    private void EnsureDamageFlashLayer()
+    {
+        GameObject canvasObject = GameObject.Find("HUDCanvas");
+        if (canvasObject == null) return;
+
+        GameObject existing = canvasObject.transform.Find("DamageFlash")?.gameObject;
+        if (existing != null)
+        {
+            damageFlashImage = existing.GetComponent<Image>();
+            return;
+        }
+
+        GameObject flashObj = new GameObject("DamageFlash");
+        flashObj.transform.SetParent(canvasObject.transform, false);
+        damageFlashImage = flashObj.AddComponent<Image>();
+        damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, 0f);
+        damageFlashImage.raycastTarget = false;
+        Stretch(flashObj.GetComponent<RectTransform>());
+
+        // Put it above HUD but below pause menu
+        flashObj.GetComponent<Canvas>();
+        flashObj.transform.SetAsLastSibling();
+    }
+
+    private void TickDamageFlash()
+    {
+        if (damageFlashImage == null) return;
+        damageFlashAlpha = Mathf.MoveTowards(damageFlashAlpha, 0f, DamageFlashDecay * Time.deltaTime);
+        damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, damageFlashAlpha);
+    }
+
+    private void EnsureLowHealthLayer()
+    {
+        GameObject canvasObject = GameObject.Find("HUDCanvas");
+        if (canvasObject == null) return;
+
+        GameObject existing = canvasObject.transform.Find("LowHealthVignette")?.gameObject;
+        if (existing != null)
+        {
+            lowHealthImage = existing.GetComponent<Image>();
+            return;
+        }
+
+        GameObject vigObj = new GameObject("LowHealthVignette");
+        vigObj.transform.SetParent(canvasObject.transform, false);
+        lowHealthImage = vigObj.AddComponent<Image>();
+        lowHealthImage.color = new Color(0.75f, 0.02f, 0.02f, 0f);
+        lowHealthImage.raycastTarget = false;
+        Stretch(vigObj.GetComponent<RectTransform>());
+        vigObj.transform.SetSiblingIndex(1); // just above bottom
+    }
+
+    private void TickLowHealthVignette()
+    {
+        if (lowHealthImage == null || playerHealth == null) return;
+
+        float ratio = playerHealth.currentHealth / Mathf.Max(1f, playerHealth.maxHealth);
+        if (ratio > 0.35f)
+        {
+            lowHealthImage.color = new Color(0.75f, 0.02f, 0.02f, 0f);
+            return;
+        }
+
+        // Pulse faster as health drops
+        float pulseSpeed = Mathf.Lerp(3.5f, 6.5f, 1f - ratio / 0.35f);
+        lowHealthPulse += Time.deltaTime * pulseSpeed;
+        float pulse = (Mathf.Sin(lowHealthPulse) + 1f) * 0.5f;
+        float maxAlpha = Mathf.Lerp(0.12f, 0.52f, 1f - ratio / 0.35f);
+        lowHealthImage.color = new Color(0.75f, 0.02f, 0.02f, pulse * maxAlpha);
     }
 
     private void EnsureRuntimeHud()
@@ -183,43 +284,42 @@ public class HUDManager : MonoBehaviour
             new Color(0.30f, 0.76f, 1f, 0.35f),
             new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 1f), new Vector2(0f, 2f));
 
+        // ── Health panel (bottom-left) ──────────────────────────────────────────
+        // Outer panel: anchored bottom-left, fixed size
         GameObject bottomPanel = CreateImage(canvasObject.transform, "BottomHealthPanel",
-            new Color(0.05f, 0.07f, 0.11f, 0.66f),
-            new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(252f, 72f), new Vector2(476f, 104f));
+            new Color(0.05f, 0.07f, 0.11f, 0.78f),
+            new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(240f, 62f), new Vector2(440f, 80f));
 
-        GameObject healthBackground = CreateImage(bottomPanel.transform, "HealthBg",
-            new Color(0.12f, 0.16f, 0.20f, 1f),
-            new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(28f, 18f), new Vector2(428f, 24f));
+        // ── Bar track (dark background behind the green bar) ────────────────────
+        // Positioned inside the panel, bottom half
+        GameObject healthTrack = CreateImage(bottomPanel.transform, "HealthTrack",
+            new Color(0.08f, 0.10f, 0.14f, 1f),
+            new Vector2(0f, 0f), new Vector2(1f, 0f),   // anchored at bottom of panel
+            new Vector2(0f, 10f),                         // 10 px from bottom edge, centred
+            new Vector2(-24f, 18f));                      // full width minus 12 px margin each side, 18 px tall
 
-        GameObject fillArea = EnsureRectObject(healthBackground.transform, "FillArea",
-            new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
-        RectTransform fillAreaRect = fillArea.GetComponent<RectTransform>();
-        fillAreaRect.offsetMin = new Vector2(10f, 3f);
-        fillAreaRect.offsetMax = new Vector2(-3f, -3f);
-        if (fillArea.GetComponent<RectMask2D>() == null)
-        {
-            fillArea.AddComponent<RectMask2D>();
-        }
-
-        GameObject healthFill = CreateImage(fillArea.transform, "HealthFill",
-            new Color(0.18f, 0.92f, 0.45f, 1f),
-            Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
-        Image healthFillImage = healthFill.GetComponent<Image>();
+        // ── Green fill — simple Image that we scale via fillAmount ───────────────
+        // Anchored LEFT inside the track so width shrinks rightward as HP drops
+        GameObject healthFillObj = new GameObject("HealthFill");
+        healthFillObj.transform.SetParent(healthTrack.transform, false);
+        Image healthFillImage = healthFillObj.AddComponent<Image>();
+        healthFillImage.color = new Color(0.18f, 0.92f, 0.45f, 1f);
         healthFillImage.type = Image.Type.Filled;
         healthFillImage.fillMethod = Image.FillMethod.Horizontal;
         healthFillImage.fillOrigin = 0;
         healthFillImage.fillAmount = 1f;
         healthFillVisual = healthFillImage;
+        RectTransform fillRect = healthFillObj.AddComponent<RectTransform>();
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = Vector2.one;
+        fillRect.offsetMin = new Vector2(2f, 2f);
+        fillRect.offsetMax = new Vector2(-2f, -2f);
 
+        // Dummy Slider kept for legacy UpdateHealth path
         if (healthBar == null)
         {
-            healthBar = healthBackground.GetComponent<Slider>();
-            if (healthBar == null)
-            {
-                healthBar = healthBackground.AddComponent<Slider>();
-            }
-
-            healthBar.fillRect = healthFill.GetComponent<RectTransform>();
+            healthBar = healthTrack.AddComponent<Slider>();
+            healthBar.fillRect = fillRect;
             healthBar.minValue = 0f;
             healthBar.maxValue = 1f;
             healthBar.value = 1f;
@@ -379,10 +479,8 @@ public class HUDManager : MonoBehaviour
 
         if (minimapArrow != null && playerController != null)
         {
-            float normalizedX = Mathf.Clamp(playerController.transform.position.x / 26f, -1f, 1f);
-            float normalizedZ = Mathf.Clamp(playerController.transform.position.z / 26f, -1f, 1f);
-            float travelRadius = 62f;
-            minimapArrow.anchoredPosition = new Vector2(normalizedX * travelRadius, normalizedZ * travelRadius);
+            // Camera now follows the player, so player is always at minimap centre
+            minimapArrow.anchoredPosition = Vector2.zero;
             minimapArrow.localEulerAngles = new Vector3(0f, 0f, -playerController.transform.eulerAngles.y);
         }
     }

@@ -84,41 +84,111 @@ public class RuntimeMenuBuilder : MonoBehaviour
     // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
     void BuildResultsMenu(Transform root)
     {
+        // Ensure GameManager exists so button callbacks never silently fail
+        EnsureGameManager();
+
         string title = "MISSION RESULT", subtitle = "Back to the Prism.", primaryButton = "MAIN MENU";
-        UnityEngine.Events.UnityAction primaryAction = () => GameManager.Instance?.GoToMainMenu();
+        UnityEngine.Events.UnityAction primaryAction = GoToMainMenuSafe;
 
         if (GameManager.PendingMenuScreen == GameManager.MenuScreen.LevelComplete)
         {
-            int stars = GameManager.Instance.CalculateStars(120f);
+            int stars = GameManager.Instance != null ? GameManager.Instance.CalculateStars(120f) : 1;
+            int score  = GameManager.Instance != null ? GameManager.Instance.score : 0;
+            int level  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
             title = "LEVEL COMPLETE";
-            subtitle = "Stars: " + new string('*', stars) + new string('-', 3 - stars)
-                     + "\nScore: " + GameManager.Instance.score
-                     + "\nLevel: " + GameManager.Instance.currentLevel;
+            subtitle = "STARS  " + new string('★', stars) + new string('☆', 3 - stars)
+                     + "\nSCORE  " + score
+                     + "\nLEVEL  " + level;
             primaryButton = "NEXT LEVEL";
-            primaryAction = () => GameManager.Instance?.LoadNextLevel();
+            primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.LoadNextLevel(); else GoToMainMenuSafe(); };
         }
         else if (GameManager.PendingMenuScreen == GameManager.MenuScreen.GameOver)
         {
+            int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+            int score = GameManager.Instance != null ? GameManager.Instance.score : 0;
             title = "MISSION FAILED";
-            subtitle = "Level: " + GameManager.Instance.currentLevel + "\nScore: " + GameManager.Instance.score;
+            subtitle = "LEVEL  " + level + "\nSCORE  " + score;
             primaryButton = "RETRY";
-            primaryAction = () => GameManager.Instance?.ReplayCurrentLevel();
+            primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.ReplayCurrentLevel(); else UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene"); };
         }
         else if (GameManager.PendingMenuScreen == GameManager.MenuScreen.Victory)
         {
+            int score = GameManager.Instance != null ? GameManager.Instance.score : 0;
             title = "PRISM CLEARED";
-            subtitle = "All 20 trials completed.\nFinal Score: " + GameManager.Instance.score;
+            subtitle = "All 20 trials completed.\nFinal Score: " + score;
             primaryButton = "PLAY AGAIN";
-            primaryAction = () => GameManager.Instance?.StartRun(1);
+            primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.StartRun(1); else UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene"); };
         }
 
+        // Title
         MakeText(root, title, 92, new Color(0.92f, 0.92f, 1f, 1f),
             new Vector2(0.20f, 0.62f), new Vector2(0.80f, 0.82f), true);
-        MakeText(root, subtitle, 42, Color.white,
-            new Vector2(0.20f, 0.42f), new Vector2(0.80f, 0.58f));
-        MakePanelButton(root, primaryButton, new Vector2(0.39f, 0.21f), new Vector2(0.61f, 0.28f), primaryAction);
-        MakePanelButton(root, "MAIN MENU", new Vector2(0.39f, 0.11f), new Vector2(0.61f, 0.18f),
-            () => GameManager.Instance?.GoToMainMenu());
+
+        // Subtitle panel
+        MakeText(root, subtitle, 42, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.25f, 0.40f), new Vector2(0.75f, 0.60f));
+
+        // Primary action button (NEXT LEVEL / RETRY / PLAY AGAIN) — large, bright
+        MakeActiveButton(root, primaryButton, new Vector2(0.32f, 0.24f), new Vector2(0.68f, 0.33f),
+            primaryAction, new Color(0.60f, 0.22f, 0.88f, 1f), Color.white);
+
+        // MAIN MENU button — slightly smaller, secondary style
+        MakeActiveButton(root, "MAIN MENU", new Vector2(0.35f, 0.11f), new Vector2(0.65f, 0.20f),
+            GoToMainMenuSafe, new Color(0.18f, 0.18f, 0.28f, 1f), new Color(0.88f, 0.88f, 1f, 1f));
+    }
+
+    void EnsureGameManager()
+    {
+        if (GameManager.Instance != null) return;
+        GameObject gm = new GameObject("GameManager");
+        gm.AddComponent<GameManager>();
+    }
+
+    void GoToMainMenuSafe()
+    {
+        if (GameManager.Instance != null)
+            GameManager.Instance.GoToMainMenu();
+        else
+            UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+    }
+
+    // A clearly active, prominent button with solid background
+    void MakeActiveButton(Transform parent, string label,
+        Vector2 anchorMin, Vector2 anchorMax,
+        UnityEngine.Events.UnityAction action,
+        Color bgColor, Color textColor)
+    {
+        GameObject obj = new GameObject("ActiveBtn_" + label);
+        obj.transform.SetParent(parent, false);
+
+        Image img = obj.AddComponent<Image>();
+        img.color = bgColor;
+
+        Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
+        btn.interactable = true;
+        btn.onClick.AddListener(action);
+
+        // Ensure button is unblocked
+        btn.onClick.AddListener(action); // double-register is harmless but let's remove dupe
+        btn.onClick.RemoveAllListeners();
+        btn.onClick.AddListener(action);
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = anchorMin;
+        rect.anchorMax = anchorMax;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+
+        Outline outline = obj.AddComponent<Outline>();
+        outline.effectColor = new Color(textColor.r * 0.6f, textColor.g * 0.6f, textColor.b * 0.6f, 0.5f);
+        outline.effectDistance = new Vector2(2f, -2f);
+
+        TextMeshProUGUI lbl = CreateCenteredLabel(obj.transform, label, 32, textColor, true);
+        lbl.fontStyle = FontStyles.Bold;
+
+        AttachHoverEffect(obj, lbl, img, bgColor,
+            new Color(Mathf.Min(1f, bgColor.r + 0.18f), Mathf.Min(1f, bgColor.g + 0.08f), Mathf.Min(1f, bgColor.b + 0.18f), 1f),
+            textColor);
     }
 
     void ToggleLevelSelect(Transform root)
