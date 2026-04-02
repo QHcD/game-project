@@ -883,6 +883,12 @@ public class LevelBuilder : MonoBehaviour
         if (playerController != null)
         {
             playerController.arenaBoundaryRadius = ArenaRadius - 2.8f;
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.FirstPerson);
+            }
+
+            playerController.RefreshGameplayPreferences();
         }
     }
 
