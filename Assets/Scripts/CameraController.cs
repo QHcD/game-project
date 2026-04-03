@@ -4,15 +4,13 @@ public class CameraController : MonoBehaviour
 {
     public Transform target;
 
-    // FIX: Raised camera higher and pulled back more so it doesn't point at the ground
-    public Vector3 offset = new Vector3(0f, 3.2f, -5.5f);
+    public Vector3 offset = new Vector3(0f, 1.4f, -4.2f);
     public float smoothSpeed = 8f;
     public float rotationSmoothSpeed = 12f;
     public float collisionRadius = 0.28f;
     public float minimumDistance = 1.15f;
 
-    // FIX: Raised focus point so camera looks at chest/head level, not feet
-    public Vector3 focusOffset = new Vector3(0f, 1.85f, 0f);
+    public Vector3 focusOffset = new Vector3(0f, 1.5f, 0f);
 
     void LateUpdate()
     {

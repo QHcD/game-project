@@ -13,17 +13,19 @@ public class LevelBuilder : MonoBehaviour
 
     private enum ArenaTheme
     {
-        BlacksiteFacility,
-        CyberRuinsNeon,
-        ContainerPortYard
+        UrbanWarzone,
+        MilitaryBase,
+        IndustrialFactory
     }
+
+    private bool encounterStarted;
 
     private void Start()
     {
         SetupManagers();
         BuildArena();
         SetupPlayer();
-        SetupEnemies();
+        SetupWeaponChest();
         SetupCameras();
         SetupMinimap();
         SetupLighting();
@@ -33,17 +35,17 @@ public class LevelBuilder : MonoBehaviour
     {
         if (GameManager.Instance == null)
         {
-            return ArenaTheme.BlacksiteFacility;
+            return ArenaTheme.UrbanWarzone;
         }
 
         switch (GameManager.Instance.GetSelectedMap())
         {
-            case GameManager.ArenaMap.CyberRuinsNeon:
-                return ArenaTheme.CyberRuinsNeon;
-            case GameManager.ArenaMap.ContainerPortYard:
-                return ArenaTheme.ContainerPortYard;
+            case GameManager.ArenaMap.MilitaryBase:
+                return ArenaTheme.MilitaryBase;
+            case GameManager.ArenaMap.IndustrialFactory:
+                return ArenaTheme.IndustrialFactory;
             default:
-                return ArenaTheme.BlacksiteFacility;
+                return ArenaTheme.UrbanWarzone;
         }
     }
 
@@ -80,12 +82,14 @@ public class LevelBuilder : MonoBehaviour
         SetLitColor(ground, GetGroundColor(GetTheme()));
 
         GameObject centerDisk = CreateArenaProp(root, "ArenaCenterDisk", PrimitiveType.Cylinder,
-            new Vector3(0f, -0.44f, 0f), new Vector3(2.4f, 0.18f, 2.4f), GetLaneColor(GetTheme()));
+            new Vector3(0f, 0.01f, 0f), new Vector3(2.4f, 0.04f, 2.4f), GetLaneColor(GetTheme()));
         centerDisk.transform.rotation = Quaternion.identity;
+        Destroy(centerDisk.GetComponent<Collider>());
 
         GameObject ringDisk = CreateArenaProp(root, "ArenaRingDisk", PrimitiveType.Cylinder,
-            new Vector3(0f, -0.46f, 0f), new Vector3(4.6f, 0.08f, 4.6f), new Color(0.32f, 0.36f, 0.42f));
+            new Vector3(0f, 0.005f, 0f), new Vector3(4.6f, 0.03f, 4.6f), new Color(0.32f, 0.36f, 0.42f));
         ringDisk.transform.rotation = Quaternion.identity;
+        Destroy(ringDisk.GetComponent<Collider>());
     }
 
     private void BuildBoundary(Transform root)
@@ -174,11 +178,11 @@ public class LevelBuilder : MonoBehaviour
     {
         ArenaTheme theme = GetTheme();
 
-        if (theme == ArenaTheme.BlacksiteFacility)
+        if (theme == ArenaTheme.UrbanWarzone)
         {
             BuildBlacksiteProps(root);
         }
-        else if (theme == ArenaTheme.CyberRuinsNeon)
+        else if (theme == ArenaTheme.MilitaryBase)
         {
             BuildCyberRuinsProps(root);
         }
@@ -431,10 +435,10 @@ public class LevelBuilder : MonoBehaviour
 
     private void BuildCyberRuinsProps(Transform root)
     {
-        Color neonMagenta = new Color(1f, 0.18f, 0.82f);
-        Color neonCyan    = new Color(0.12f, 0.90f, 1f);
-        Color ruinGrey    = new Color(0.20f, 0.22f, 0.28f);
-        Color darkSlate   = new Color(0.12f, 0.14f, 0.20f);
+        Color neonMagenta = new Color(0.52f, 0.74f, 0.22f);
+        Color neonCyan    = new Color(0.92f, 0.74f, 0.18f);
+        Color ruinGrey    = new Color(0.24f, 0.28f, 0.22f);
+        Color darkSlate   = new Color(0.14f, 0.18f, 0.14f);
 
         // Wall accent neon strips
         CreateArenaProp(root, "NeonE_H", PrimitiveType.Cube,
@@ -883,11 +887,8 @@ public class LevelBuilder : MonoBehaviour
         if (playerController != null)
         {
             playerController.arenaBoundaryRadius = ArenaRadius - 2.8f;
-            if (GameManager.Instance != null)
-            {
-                GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.FirstPerson);
-            }
-
+            int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+            playerController.PrepareForWeaponTrial(level);
             playerController.RefreshGameplayPreferences();
         }
     }
@@ -981,6 +982,139 @@ public class LevelBuilder : MonoBehaviour
         }
     }
 
+    private void SetupWeaponChest()
+    {
+        GameObject existingChest = GameObject.Find("WeaponTrialChest");
+        if (existingChest != null)
+        {
+            Destroy(existingChest);
+        }
+
+        encounterStarted = false;
+
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        bool heavyWeaponLevel = GameManager.Instance != null && GameManager.Instance.IsHeavyWeaponLevel(level);
+        string weaponName = GameManager.Instance != null ? GameManager.Instance.GetWeaponNameForLevel(level) : "Weapon";
+        Color accentColor = GameManager.Instance != null ? GameManager.Instance.GetWeaponColorForLevel(level) : new Color(0.28f, 0.85f, 1f);
+
+        Vector3 chestPosition = GetChestSpawnPoint(GetTheme(), level, heavyWeaponLevel);
+        GameObject chestObject = BuildWeaponTrialChest(chestPosition, heavyWeaponLevel, accentColor);
+        WeaponChest chest = chestObject.GetComponent<WeaponChest>();
+        chest.Configure(weaponName, heavyWeaponLevel, BeginEncounter);
+
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.enemiesRemaining = 0;
+        }
+
+        if (HUDManager.Instance != null)
+        {
+            HUDManager.Instance.UpdateEnemyCount(0);
+        }
+    }
+
+    public void BeginEncounter()
+    {
+        if (encounterStarted)
+        {
+            return;
+        }
+
+        encounterStarted = true;
+        SetupEnemies();
+    }
+
+    private Vector3 GetChestSpawnPoint(ArenaTheme theme, int level, bool heavyWeaponLevel)
+    {
+        Vector3[] candidates;
+        switch (theme)
+        {
+            case ArenaTheme.MilitaryBase:
+                candidates = new[]
+                {
+                    new Vector3(10f, 0.1f, 13f),
+                    new Vector3(-14f, 0.1f, 8f),
+                    new Vector3(13f, 0.1f, -10f),
+                    new Vector3(-8f, 0.1f, -15f)
+                };
+                break;
+            case ArenaTheme.IndustrialFactory:
+                candidates = new[]
+                {
+                    new Vector3(16f, 0.1f, 10f),
+                    new Vector3(-15f, 0.1f, 12f),
+                    new Vector3(14f, 0.1f, -14f),
+                    new Vector3(-12f, 0.1f, -11f)
+                };
+                break;
+            default:
+                candidates = new[]
+                {
+                    new Vector3(12f, 0.1f, 14f),
+                    new Vector3(-14f, 0.1f, 10f),
+                    new Vector3(15f, 0.1f, -9f),
+                    new Vector3(-11f, 0.1f, -15f)
+                };
+                break;
+        }
+
+        int index = (Mathf.Max(1, level) - 1 + (heavyWeaponLevel ? 1 : 0)) % candidates.Length;
+        return candidates[index];
+    }
+
+    private GameObject BuildWeaponTrialChest(Vector3 position, bool heavyWeaponLevel, Color accentColor)
+    {
+        GameObject chest = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        chest.name = "WeaponTrialChest";
+        chest.transform.position = position + new Vector3(0f, heavyWeaponLevel ? 0.72f : 0.58f, 0f);
+        chest.transform.localScale = heavyWeaponLevel ? new Vector3(1.9f, 1.15f, 1.15f) : new Vector3(1.35f, 0.95f, 0.95f);
+        SetLitColor(chest, heavyWeaponLevel ? new Color(0.50f, 0.08f, 0.06f) : new Color(0.28f, 0.20f, 0.14f));
+
+        CreatePrimitiveChild(chest.transform, "Lid", PrimitiveType.Cube,
+            new Vector3(0f, heavyWeaponLevel ? 0.55f : 0.44f, 0f),
+            heavyWeaponLevel ? new Vector3(1.98f, 0.24f, 1.25f) : new Vector3(1.42f, 0.18f, 1.02f),
+            heavyWeaponLevel ? new Color(0.82f, 0.14f, 0.10f) : accentColor);
+        CreatePrimitiveChild(chest.transform, "Latch", PrimitiveType.Cube,
+            new Vector3(0f, 0.05f, heavyWeaponLevel ? 0.58f : 0.48f),
+            heavyWeaponLevel ? new Vector3(0.30f, 0.26f, 0.10f) : new Vector3(0.20f, 0.18f, 0.08f),
+            new Color(0.95f, 0.82f, 0.32f));
+
+        CreateChestMarker(chest.transform, heavyWeaponLevel, accentColor);
+
+        WeaponChest weaponChest = chest.AddComponent<WeaponChest>();
+        weaponChest.interactRange = heavyWeaponLevel ? 3f : 2.7f;
+        return chest;
+    }
+
+    private void CreateChestMarker(Transform chest, bool heavyWeaponLevel, Color accentColor)
+    {
+        string difficulty = GameManager.Instance != null ? GameManager.Instance.difficulty : "Normal";
+        if (difficulty == "Hard")
+        {
+            return;
+        }
+
+        CreatePrimitiveChild(chest, "LocatorRing", PrimitiveType.Cylinder,
+            new Vector3(0f, -0.48f, 0f),
+            heavyWeaponLevel ? new Vector3(1.7f, 0.02f, 1.7f) : new Vector3(1.35f, 0.02f, 1.35f),
+            new Color(accentColor.r, accentColor.g, accentColor.b, 1f));
+
+        if (difficulty == "Easy")
+        {
+            CreatePrimitiveChild(chest, "Beacon", PrimitiveType.Cylinder,
+                new Vector3(0f, 4.5f, 0f),
+                new Vector3(0.18f, 3.5f, 0.18f),
+                new Color(
+                    Mathf.Lerp(accentColor.r, 1f, 0.28f),
+                    Mathf.Lerp(accentColor.g, 1f, 0.28f),
+                    Mathf.Lerp(accentColor.b, 1f, 0.28f)));
+            CreatePrimitiveChild(chest, "BeaconCap", PrimitiveType.Sphere,
+                new Vector3(0f, 8.1f, 0f),
+                new Vector3(0.45f, 0.45f, 0.45f),
+                new Color(1f, 0.95f, 0.65f));
+        }
+    }
+
     private void SetupEnemies()
     {
         GameObject existingRoot = GameObject.Find("EnemyRoot");
@@ -990,7 +1124,7 @@ public class LevelBuilder : MonoBehaviour
         }
 
         GameObject enemyRoot = new GameObject("EnemyRoot");
-        int enemyCount = GameManager.Instance != null ? Mathf.Max(8, GameManager.Instance.GetEnemyCount()) : 10;
+        int enemyCount = GameManager.Instance != null ? GameManager.Instance.GetEnemyCount() : 10;
         GameObject player = GameObject.FindGameObjectWithTag("Player");
         Vector3 playerPosition = player != null ? player.transform.position : new Vector3(0f, 0.1f, -8.5f);
 
@@ -1147,17 +1281,17 @@ public class LevelBuilder : MonoBehaviour
             {
                 switch (theme)
                 {
-                    case ArenaTheme.CyberRuinsNeon:
-                        lightObject.transform.rotation = Quaternion.Euler(28f, 60f, 0f);
-                        lightComponent.intensity = 0.7f;
-                        lightComponent.color = new Color(0.72f, 0.80f, 1.0f);
+                    case ArenaTheme.MilitaryBase:
+                        lightObject.transform.rotation = Quaternion.Euler(34f, 32f, 0f);
+                        lightComponent.intensity = 1.1f;
+                        lightComponent.color = new Color(0.92f, 0.96f, 0.82f);
                         break;
-                    case ArenaTheme.ContainerPortYard:
+                    case ArenaTheme.IndustrialFactory:
                         lightObject.transform.rotation = Quaternion.Euler(42f, -20f, 0f);
                         lightComponent.intensity = 1.5f;
                         lightComponent.color = new Color(1.0f, 0.96f, 0.88f);
                         break;
-                    default: // BlacksiteFacility
+                    default: // UrbanWarzone
                         lightObject.transform.rotation = Quaternion.Euler(38f, -34f, 0f);
                         lightComponent.intensity = 1.3f;
                         lightComponent.color = new Color(0.92f, 0.95f, 1.0f);
@@ -1171,12 +1305,12 @@ public class LevelBuilder : MonoBehaviour
 
         switch (theme)
         {
-            case ArenaTheme.CyberRuinsNeon:
-                RenderSettings.fogColor = new Color(0.08f, 0.06f, 0.16f);
-                RenderSettings.fogDensity = 0.008f;
-                RenderSettings.ambientLight = new Color(0.26f, 0.20f, 0.44f);
+            case ArenaTheme.MilitaryBase:
+                RenderSettings.fogColor = new Color(0.26f, 0.30f, 0.22f);
+                RenderSettings.fogDensity = 0.0055f;
+                RenderSettings.ambientLight = new Color(0.42f, 0.48f, 0.36f);
                 break;
-            case ArenaTheme.ContainerPortYard:
+            case ArenaTheme.IndustrialFactory:
                 RenderSettings.fogColor = new Color(0.52f, 0.58f, 0.62f);
                 RenderSettings.fogDensity = 0.004f;
                 RenderSettings.ambientLight = new Color(0.56f, 0.58f, 0.62f);
@@ -1269,43 +1403,43 @@ public class LevelBuilder : MonoBehaviour
 
     private Color GetAccentColor(ArenaTheme theme)
     {
-        if (theme == ArenaTheme.BlacksiteFacility) return new Color(0.88f, 0.22f, 0.20f);
-        if (theme == ArenaTheme.CyberRuinsNeon)   return new Color(1f, 0.18f, 0.82f);
+        if (theme == ArenaTheme.UrbanWarzone) return new Color(0.88f, 0.22f, 0.20f);
+        if (theme == ArenaTheme.MilitaryBase) return new Color(0.54f, 0.74f, 0.24f);
         return new Color(0.95f, 0.80f, 0.10f);
     }
 
     private Color GetGroundColor(ArenaTheme theme)
     {
-        if (theme == ArenaTheme.BlacksiteFacility) return new Color(0.18f, 0.20f, 0.24f);
-        if (theme == ArenaTheme.CyberRuinsNeon) return new Color(0.12f, 0.16f, 0.22f);
+        if (theme == ArenaTheme.UrbanWarzone) return new Color(0.18f, 0.20f, 0.24f);
+        if (theme == ArenaTheme.MilitaryBase) return new Color(0.18f, 0.22f, 0.18f);
         return new Color(0.20f, 0.20f, 0.18f);
     }
 
     private Color GetLaneColor(ArenaTheme theme)
     {
-        if (theme == ArenaTheme.BlacksiteFacility) return new Color(0.32f, 0.36f, 0.42f);
-        if (theme == ArenaTheme.CyberRuinsNeon) return new Color(0.20f, 0.28f, 0.40f);
+        if (theme == ArenaTheme.UrbanWarzone) return new Color(0.32f, 0.36f, 0.42f);
+        if (theme == ArenaTheme.MilitaryBase) return new Color(0.26f, 0.34f, 0.22f);
         return new Color(0.34f, 0.28f, 0.22f);
     }
 
     private Color GetWallColor(ArenaTheme theme)
     {
-        if (theme == ArenaTheme.BlacksiteFacility) return new Color(0.10f, 0.11f, 0.14f);
-        if (theme == ArenaTheme.CyberRuinsNeon) return new Color(0.11f, 0.12f, 0.18f);
+        if (theme == ArenaTheme.UrbanWarzone) return new Color(0.10f, 0.11f, 0.14f);
+        if (theme == ArenaTheme.MilitaryBase) return new Color(0.16f, 0.20f, 0.16f);
         return new Color(0.22f, 0.20f, 0.18f);
     }
 
     private Color GetPlatformColor(ArenaTheme theme)
     {
-        if (theme == ArenaTheme.BlacksiteFacility) return new Color(0.26f, 0.30f, 0.36f);
-        if (theme == ArenaTheme.CyberRuinsNeon) return new Color(0.24f, 0.22f, 0.34f);
+        if (theme == ArenaTheme.UrbanWarzone) return new Color(0.26f, 0.30f, 0.36f);
+        if (theme == ArenaTheme.MilitaryBase) return new Color(0.26f, 0.30f, 0.22f);
         return new Color(0.36f, 0.28f, 0.20f);
     }
 
     private Color GetCoverColor(ArenaTheme theme)
     {
-        if (theme == ArenaTheme.BlacksiteFacility) return new Color(0.28f, 0.24f, 0.24f);
-        if (theme == ArenaTheme.CyberRuinsNeon) return new Color(0.22f, 0.24f, 0.32f);
+        if (theme == ArenaTheme.UrbanWarzone) return new Color(0.28f, 0.24f, 0.24f);
+        if (theme == ArenaTheme.MilitaryBase) return new Color(0.26f, 0.30f, 0.24f);
         return new Color(0.40f, 0.30f, 0.22f);
     }
 }
@@ -1694,7 +1828,7 @@ public class PauseMenuController : MonoBehaviour
     {
         GameManager.PerspectiveMode mode = GameManager.Instance != null
             ? GameManager.Instance.GetPerspectiveMode()
-            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", 0), 0, 1);
+            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson), 0, 1);
         return mode == GameManager.PerspectiveMode.ThirdPerson ? "THIRD PERSON" : "FIRST PERSON";
     }
 
@@ -1702,7 +1836,7 @@ public class PauseMenuController : MonoBehaviour
     {
         GameManager.PerspectiveMode current = GameManager.Instance != null
             ? GameManager.Instance.GetPerspectiveMode()
-            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", 0), 0, 1);
+            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson), 0, 1);
         GameManager.PerspectiveMode next = current == GameManager.PerspectiveMode.FirstPerson
             ? GameManager.PerspectiveMode.ThirdPerson
             : GameManager.PerspectiveMode.FirstPerson;

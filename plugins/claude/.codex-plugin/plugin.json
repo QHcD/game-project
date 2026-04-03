@@ -1,0 +1,39 @@
+{
+  "name": "claude",
+  "version": "0.1.0",
+  "description": "Local Codex bridge to a Claude Code MCP server.",
+  "author": {
+    "name": "Local Plugin",
+    "url": "https://docs.anthropic.com/en/docs/claude-code/mcp"
+  },
+  "homepage": "https://docs.anthropic.com/en/docs/claude-code/mcp",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "anthropic",
+    "mcp",
+    "codex",
+    "bridge"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Claude Bridge",
+    "shortDescription": "Connect Codex to a local Claude Code MCP server",
+    "longDescription": "Launch Claude Code as a local MCP server so Codex can use a Claude-oriented tool bridge from this plugin. This plugin requires the Claude CLI to be installed and authenticated on the same machine.",
+    "developerName": "Local Plugin",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://docs.anthropic.com/en/docs/claude-code/mcp",
+    "privacyPolicyURL": "https://www.anthropic.com/legal/privacy",
+    "termsOfServiceURL": "https://docs.anthropic.com/en/docs/claude-code/legal-and-compliance",
+    "defaultPrompt": "Use Claude Bridge to connect Codex to a local Claude Code MCP server",
+    "brandColor": "#D97757",
+    "composerIcon": "./assets/claude-bridge.svg",
+    "logo": "./assets/claude-bridge.svg",
+    "screenshots": []
+  }
+}

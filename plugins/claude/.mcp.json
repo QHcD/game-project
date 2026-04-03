@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "claude-code": {
+      "command": "claude",
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "env": {},
+      "note": "Requires the Claude Code CLI to be installed and authenticated locally. If `claude` is not on PATH, replace `command` with the full executable path."
+    }
+  }
+}

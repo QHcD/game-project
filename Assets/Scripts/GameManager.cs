@@ -13,9 +13,9 @@ public class GameManager : MonoBehaviour
 
     public enum ArenaMap
     {
-        BlacksiteFacility,
-        CyberRuinsNeon,
-        ContainerPortYard
+        UrbanWarzone,
+        IndustrialFactory,
+        MilitaryBase
     }
 
     public enum PerspectiveMode
@@ -38,56 +38,52 @@ public class GameManager : MonoBehaviour
     public enum WeaponType
     {
         Melee,
-        Flamethrower,
-        Sniper,
         Explosive,
-        UltimateMelee
+        Flamethrower,
+        Automatic,
+        Sniper
     }
 
-    // Levels 1-15: melee progression. Levels 16-20: special weapons.
     private static readonly string[] LevelWeaponNames = {
-        "Combat Knife", "Knuckle Duster", "Dumbbell", "Boxing Gloves", "Wrench",
-        "Tennis Racket", "Baseball Bat", "Crowbar", "Axe", "Fire Axe",
-        "Machete", "Brass Knuckles", "Nunchucks", "Shovel", "Sledgehammer",
-        "Flamethrower", "Sniper Rifle", "Bazooka", "RPG", "Champion Blade"
+        "Combat Knife", "Katana", "Shovel", "Baseball Bat", "Nunchucks",
+        "Brass Knuckles", "Wrench", "Iron Jim (Crowbar)", "Hammer", "Axe",
+        "Boxing Gloves", "Electric Stick", "Saw", "Sickle", "Golden Spork",
+        "Bazooka", "RPG", "Flamethrower", "Minigun", "Sniper Rifle"
     };
 
-    // Damage per hit. Flamethrower = per burst ray, Sniper/Explosive = single hit.
     private static readonly float[] LevelWeaponDamage = {
-        32f,  36f,  40f,  42f,  45f,
-        48f,  50f,  52f,  54f,  56f,
-        58f,  60f,  63f,  66f,  72f,
-        22f,  180f, 100f, 120f, 200f
+        28f, 36f, 42f, 46f, 40f,
+        32f, 54f, 58f, 66f, 70f,
+        34f, 44f, 52f, 60f, 72f,
+        130f, 145f, 24f, 20f, 220f
     };
 
-    // Attack range. For Explosive = max projectile range.
     private static readonly float[] LevelWeaponRange = {
-        2.0f, 2.3f, 2.1f, 1.8f, 2.4f,
-        2.7f, 2.8f, 2.5f, 2.6f, 2.5f,
-        2.7f, 1.9f, 2.7f, 2.6f, 2.9f,
-        8.0f, 200f, 80f,  80f,  4.0f
+        2.1f, 2.8f, 2.7f, 2.5f, 2.4f,
+        1.9f, 2.6f, 2.7f, 2.6f, 2.8f,
+        2.0f, 2.5f, 2.4f, 2.3f, 2.2f,
+        72f, 78f, 13f, 110f, 220f
     };
 
-    // Explosion AoE radius for Bazooka/RPG; 0 = not explosive.
     private static readonly float[] LevelWeaponExplosionRadius = {
         0f, 0f, 0f, 0f, 0f,
         0f, 0f, 0f, 0f, 0f,
         0f, 0f, 0f, 0f, 0f,
-        0f, 0f, 5.5f, 7.0f, 0f
+        6.5f, 7.5f, 0f, 0f, 0f
     };
 
     private static readonly WeaponType[] LevelWeaponTypes = {
-        WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,
-        WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,
-        WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,      WeaponType.Melee,
-        WeaponType.Flamethrower, WeaponType.Sniper,   WeaponType.Explosive,  WeaponType.Explosive,  WeaponType.UltimateMelee
+        WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee,
+        WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee,
+        WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee,
+        WeaponType.Explosive, WeaponType.Explosive, WeaponType.Flamethrower, WeaponType.Automatic, WeaponType.Sniper
     };
 
     private static readonly Color[] LevelWeaponColors = {
-        new Color(0.80f, 0.85f, 0.90f), new Color(0.75f, 0.85f, 1.00f), new Color(0.70f, 0.72f, 0.80f), new Color(0.95f, 0.60f, 0.45f), new Color(0.70f, 0.80f, 0.90f),
-        new Color(0.95f, 0.95f, 0.95f), new Color(0.85f, 0.60f, 0.35f), new Color(0.60f, 0.65f, 0.75f), new Color(0.85f, 0.45f, 0.30f), new Color(0.95f, 0.40f, 0.25f),
-        new Color(0.80f, 0.90f, 0.70f), new Color(1.00f, 0.85f, 0.35f), new Color(0.70f, 0.90f, 1.00f), new Color(0.85f, 0.70f, 0.45f), new Color(0.55f, 0.62f, 0.72f),
-        new Color(1.00f, 0.50f, 0.15f), new Color(0.30f, 0.90f, 1.00f), new Color(1.00f, 0.70f, 0.20f), new Color(1.00f, 0.40f, 0.20f), new Color(1.00f, 0.95f, 0.40f)
+        new Color(0.78f, 0.82f, 0.88f), new Color(0.78f, 0.92f, 1.00f), new Color(0.62f, 0.46f, 0.30f), new Color(0.72f, 0.50f, 0.26f), new Color(0.78f, 0.66f, 0.28f),
+        new Color(0.96f, 0.82f, 0.34f), new Color(0.78f, 0.80f, 0.84f), new Color(0.66f, 0.30f, 0.22f), new Color(0.52f, 0.52f, 0.56f), new Color(0.74f, 0.38f, 0.18f),
+        new Color(0.92f, 0.30f, 0.26f), new Color(0.30f, 0.86f, 1.00f), new Color(0.90f, 0.72f, 0.26f), new Color(0.74f, 0.88f, 0.34f), new Color(1.00f, 0.86f, 0.28f),
+        new Color(1.00f, 0.34f, 0.16f), new Color(1.00f, 0.24f, 0.18f), new Color(1.00f, 0.56f, 0.20f), new Color(0.72f, 0.72f, 0.78f), new Color(0.34f, 0.88f, 1.00f)
     };
 
     public int currentLevel = 1;
@@ -96,8 +92,8 @@ public class GameManager : MonoBehaviour
     public string difficulty = "Normal";
     public bool playerTookDamage = false;
     public float levelTime = 0f;
-    public ArenaMap selectedMap = ArenaMap.BlacksiteFacility;
-    public PerspectiveMode perspectiveMode = PerspectiveMode.FirstPerson;
+    public ArenaMap selectedMap = ArenaMap.UrbanWarzone;
+    public PerspectiveMode perspectiveMode = PerspectiveMode.ThirdPerson;
     public MovementScheme movementScheme = MovementScheme.Wasd;
 
     void Awake()
@@ -108,7 +104,7 @@ public class GameManager : MonoBehaviour
             DontDestroyOnLoad(gameObject);
             difficulty = PlayerPrefs.GetString("Difficulty", difficulty);
             selectedMap = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", 0), 0, 2);
-            perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", 0), 0, 1);
+            perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)PerspectiveMode.ThirdPerson), 0, 1);
             movementScheme = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", 0), 0, 1);
             currentLevel = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
         }
@@ -194,34 +190,32 @@ public class GameManager : MonoBehaviour
 
     public int GetEnemyCount()
     {
-        // FIX: Easy and Normal were both returning 12 — now properly differentiated
         switch (difficulty)
         {
-            case "Easy": return 8;
+            case "Easy": return 5;
             case "Hard": return 15;
-            default: return 12; // Normal
+            default: return 10;
         }
     }
 
     public float GetEnemySpeed()
     {
-        float baseSpeed = 1.85f + ((currentLevel - 1) * 0.045f);
+        float baseSpeed = currentLevel >= 12 ? 2.7f : currentLevel >= 5 ? 2.25f : 1.9f;
         switch (difficulty)
         {
-            case "Easy": return baseSpeed * 0.88f;
-            case "Hard": return baseSpeed * 1.05f;
+            case "Easy": return baseSpeed * 0.82f;
+            case "Hard": return baseSpeed * 1.18f;
             default: return baseSpeed;
         }
     }
 
     public float GetEnemyDamage()
     {
-        float baseDamage = 7.5f + ((currentLevel - 1) * 0.45f);
         switch (difficulty)
         {
-            case "Easy": return baseDamage * 0.82f;
-            case "Hard": return baseDamage * 1.15f;
-            default: return baseDamage;
+            case "Easy": return 10f;
+            case "Hard": return 40f;
+            default: return 25f;
         }
     }
 
@@ -253,6 +247,11 @@ public class GameManager : MonoBehaviour
     public float GetWeaponExplosionRadiusForLevel(int level)
     {
         return LevelWeaponExplosionRadius[Mathf.Clamp(level - 1, 0, LevelWeaponExplosionRadius.Length - 1)];
+    }
+
+    public bool IsHeavyWeaponLevel(int level)
+    {
+        return Mathf.Clamp(level, 1, TotalLevels) >= 16;
     }
 
     public void AddScore(int points)

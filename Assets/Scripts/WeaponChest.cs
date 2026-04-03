@@ -6,10 +6,27 @@ using UnityEngine.UI;
 public class WeaponChest : MonoBehaviour
 {
     public float interactRange = 2.5f;
+    public string weaponName = "Weapon";
+    public string promptAction = "unlock weapon";
+    public bool isHeavyCrate;
 
     private bool opened = false;
     private Transform player;
     private TextMeshProUGUI promptText;
+    private System.Action openedCallback;
+
+    public void Configure(string trialWeaponName, bool heavyWeaponLevel, System.Action onOpened)
+    {
+        weaponName = trialWeaponName;
+        promptAction = heavyWeaponLevel ? "unlock heavy crate" : "open chest";
+        isHeavyCrate = heavyWeaponLevel;
+        openedCallback = onOpened;
+
+        if (promptText != null)
+        {
+            promptText.text = BuildPromptText();
+        }
+    }
 
     void Start()
     {
@@ -51,7 +68,11 @@ public class WeaponChest : MonoBehaviour
 
         Renderer renderer = GetComponent<Renderer>();
         if (renderer != null)
-            renderer.material.color = new Color(0.2f, 1f, 0.6f);
+            renderer.material.color = isHeavyCrate
+                ? new Color(1f, 0.46f, 0.22f)
+                : new Color(0.2f, 1f, 0.6f);
+
+        openedCallback?.Invoke();
 
         Invoke(nameof(DestroyChest), 0.8f);
     }
@@ -81,7 +102,7 @@ public class WeaponChest : MonoBehaviour
         GameObject textObj = new GameObject("Prompt");
         textObj.transform.SetParent(canvasObj.transform, false);
         promptText = textObj.AddComponent<TextMeshProUGUI>();
-        promptText.text = "Press E to open chest";
+        promptText.text = BuildPromptText();
         promptText.fontSize = 18f;
         promptText.alignment = TextAlignmentOptions.Center;
         promptText.color = Color.white;
@@ -92,6 +113,11 @@ public class WeaponChest : MonoBehaviour
         textRect.offsetMin = textRect.offsetMax = Vector2.zero;
 
         promptText.gameObject.SetActive(false);
+    }
+
+    private string BuildPromptText()
+    {
+        return "Press E to " + promptAction + "\n" + weaponName;
     }
 
     void OnDrawGizmosSelected()

@@ -109,7 +109,7 @@ public class OptionsBuilder : MonoBehaviour
 
     private int PerspectiveIndex()
     {
-        return Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", 0), 0, 1);
+        return Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson), 0, 1);
     }
 
     private int ControlIndex()
@@ -175,7 +175,7 @@ public class OptionsBuilder : MonoBehaviour
 
         if (perspectiveDropdown != null)
         {
-            perspectiveDropdown.SetValueWithoutNotify(0);
+            perspectiveDropdown.SetValueWithoutNotify((int)GameManager.PerspectiveMode.ThirdPerson);
             perspectiveDropdown.RefreshShownValue();
         }
 
@@ -186,7 +186,7 @@ public class OptionsBuilder : MonoBehaviour
         }
 
         OnDifficultyChanged(1);
-        OnPerspectiveChanged(0);
+        OnPerspectiveChanged((int)GameManager.PerspectiveMode.ThirdPerson);
         OnControlChanged(0);
     }
 

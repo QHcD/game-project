@@ -257,7 +257,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         mapLayoutRect.anchorMax = new Vector2(0.95f, 0.77f);
         mapLayoutRect.offsetMin = mapLayoutRect.offsetMax = Vector2.zero;
 
-        string[] mapNames = { "BLACKSITE\nFACILITY", "CYBERRUINS\nNEON", "CONTAINER\nPORT YARD" };
+        string[] mapNames = { "URBAN\nWARZONE", "INDUSTRIAL\nFACTORY", "MILITARY\nBASE" };
 
         float[] btnMinY = { 0.72f, 0.42f, 0.12f };
         float[] btnMaxY = { 0.88f, 0.58f, 0.28f };
@@ -304,8 +304,15 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
             mapBtnComp.onClick.AddListener(() =>
             {
-                PlayerPrefs.SetInt("SelectedMap", currentIndex);
-                PlayerPrefs.Save();
+                if (GameManager.Instance != null)
+                {
+                    GameManager.Instance.SetSelectedMap((GameManager.ArenaMap)currentIndex);
+                }
+                else
+                {
+                    PlayerPrefs.SetInt("SelectedMap", currentIndex);
+                    PlayerPrefs.Save();
+                }
 
                 for (int i = 0; i < mapNames.Length; i++)
                 {

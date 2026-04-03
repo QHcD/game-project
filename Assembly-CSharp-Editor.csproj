@@ -51,6 +51,7 @@
   <ItemGroup>
     <Compile Include="Assets/TutorialInfo/Scripts/Editor/ReadmeEditor.cs" />
     <Compile Include="Assets/Editor/AutoSetupGame.cs" />
+    <Compile Include="Assets/Editor/GameSceneRebuilder.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Library/PackageCache/com.unity.collab-proxy@e566cd3e7623/Lib/Editor/Localization/cm-help.zh-Hans.txt" />

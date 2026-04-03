@@ -55,6 +55,7 @@ public class PlayerController : MonoBehaviour
     private GameObject thirdPersonBody;
     private Renderer[] firstPersonRenderers;
     private LayerMask resolvedAttackMask;
+    private bool hasUnlockedTrialWeapon;
 
     private void Awake()
     {
@@ -94,7 +95,7 @@ public class PlayerController : MonoBehaviour
     private void Start()
     {
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
-        EquipWeaponForLevel(level);
+        PrepareForWeaponTrial(level);
         ApplyGameplayPreferences();
         cachedPlayerHealth = GetComponentInParent<PlayerHealth>();
         if (cachedPlayerHealth == null)
@@ -111,6 +112,9 @@ public class PlayerController : MonoBehaviour
 
         if (Keyboard.current != null && Keyboard.current.qKey.wasPressedThisFrame)
             TryDodge();
+
+        if (Keyboard.current != null && Keyboard.current.vKey.wasPressedThisFrame)
+            TogglePerspectiveMode();
 
         TickDodge();
         if (!isDodging)
@@ -481,6 +485,11 @@ public class PlayerController : MonoBehaviour
 
     public void Attack()
     {
+        if (!hasUnlockedTrialWeapon)
+        {
+            return;
+        }
+
         if (comboCooldownTimer > 0f) return;
 
         CharacterVisualAnimationPlayer visualAnim = thirdPersonBody != null
@@ -500,7 +509,7 @@ public class PlayerController : MonoBehaviour
 
         // Fresh attack
         attacking = true;
-        comboCooldownTimer = ComboCooldown;
+        comboCooldownTimer = Mathf.Max(0.05f, 1f / Mathf.Max(0.1f, attackSpeed));
 
         if (visualAnim != null)
         {
@@ -514,7 +523,7 @@ public class PlayerController : MonoBehaviour
 
     private void FireAttack()
     {
-        comboCooldownTimer = ComboCooldown;
+        comboCooldownTimer = Mathf.Max(0.05f, 1f / Mathf.Max(0.1f, attackSpeed));
         ApplyAttackLunge();
 
         if (audioSource != null && swordSwing != null)
@@ -555,6 +564,9 @@ public class PlayerController : MonoBehaviour
             case GameManager.WeaponType.Flamethrower:
                 AttackFlamethrower();
                 break;
+            case GameManager.WeaponType.Automatic:
+                AttackAutomatic();
+                break;
             case GameManager.WeaponType.Sniper:
                 AttackSniper();
                 break;
@@ -568,6 +580,7 @@ public class PlayerController : MonoBehaviour
 
         // Camera kick feedback
         cameraKickTarget = currentWeaponType == GameManager.WeaponType.Sniper ? -4.5f :
+                           currentWeaponType == GameManager.WeaponType.Automatic ? -0.45f :
                            currentWeaponType == GameManager.WeaponType.Explosive ? -3.5f :
                            currentWeaponType == GameManager.WeaponType.Flamethrower ? -0.6f : -1.2f;
     }
@@ -661,6 +674,24 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    private void AttackAutomatic()
+    {
+        Vector3 direction = Quaternion.Euler(Random.Range(-1.4f, 1.4f), Random.Range(-1.8f, 1.8f), 0f) * cam.transform.forward;
+        if (Physics.Raycast(cam.transform.position, direction, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
+        {
+            Actor actor = hit.collider.GetComponentInParent<Actor>();
+            if (actor != null && actor.gameObject != gameObject)
+            {
+                actor.TakeDamage(attackDamage);
+            }
+
+            HitTarget(hit.point);
+            return;
+        }
+
+        HitTarget(cam.transform.position + direction * Mathf.Min(attackDistance, 40f));
+    }
+
     // Explosive: raycast to point, then AoE sphere damage around it
     private void AttackExplosive()
     {
@@ -699,6 +730,7 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
+        hasUnlockedTrialWeapon = true;
         equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
         attackDamage = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(level));
         attackDistance = GameManager.Instance.GetWeaponRangeForLevel(level);
@@ -709,33 +741,52 @@ public class PlayerController : MonoBehaviour
         switch (currentWeaponType)
         {
             case GameManager.WeaponType.Flamethrower:
-                attackSpeed = 0.12f;
+                attackSpeed = 6.5f;
                 attackDelay = 0.04f;
                 attackRadius = 1.6f;
                 break;
             case GameManager.WeaponType.Sniper:
-                attackSpeed = 2.2f;
+                attackSpeed = 0.8f;
                 attackDelay = 0.05f;
                 attackRadius = 0f; // precision raycast only
                 break;
+            case GameManager.WeaponType.Automatic:
+                attackSpeed = 10f;
+                attackDelay = 0.03f;
+                attackRadius = 0f;
+                break;
             case GameManager.WeaponType.Explosive:
-                attackSpeed = 1.6f;
+                attackSpeed = 0.75f;
                 attackDelay = 0.15f;
                 attackRadius = 0f;
                 break;
-            case GameManager.WeaponType.UltimateMelee:
-                attackSpeed = 0.45f;
-                attackDelay = 0.18f;
-                attackRadius = 1.6f;
-                break;
             default:
-                attackSpeed = 1.0f;
-                attackDelay = 0.4f;
-                attackRadius = 1.25f;
+                ConfigureMeleeTiming(level);
                 break;
         }
 
         // Update 3rd-person weapon model to match current level
+        if (thirdPersonBody != null)
+        {
+            AttachWeaponToHand(thirdPersonBody);
+        }
+    }
+
+    public void PrepareForWeaponTrial(int level)
+    {
+        hasUnlockedTrialWeapon = false;
+        string targetWeapon = GameManager.Instance != null
+            ? GameManager.Instance.GetWeaponNameForLevel(level)
+            : "Weapon";
+        equippedWeaponName = "Find " + targetWeapon;
+        attackDamage = 0;
+        attackDistance = 0f;
+        attackRadius = 0f;
+        attackDelay = 0f;
+        attackSpeed = 0f;
+        currentWeaponType = GameManager.WeaponType.Melee;
+        explosionRadius = 0f;
+
         if (thirdPersonBody != null)
         {
             AttachWeaponToHand(thirdPersonBody);
@@ -751,7 +802,7 @@ public class PlayerController : MonoBehaviour
     {
         GameManager.PerspectiveMode perspective = GameManager.Instance != null
             ? GameManager.Instance.GetPerspectiveMode()
-            : GameManager.PerspectiveMode.FirstPerson;
+            : GameManager.PerspectiveMode.ThirdPerson;
 
         if (perspective == GameManager.PerspectiveMode.ThirdPerson)
         {
@@ -811,6 +862,21 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    private void TogglePerspectiveMode()
+    {
+        if (GameManager.Instance == null)
+        {
+            return;
+        }
+
+        GameManager.PerspectiveMode nextMode = GameManager.Instance.GetPerspectiveMode() == GameManager.PerspectiveMode.FirstPerson
+            ? GameManager.PerspectiveMode.ThirdPerson
+            : GameManager.PerspectiveMode.FirstPerson;
+
+        GameManager.Instance.SetPerspectiveMode(nextMode);
+        RefreshGameplayPreferences();
+    }
+
     private void EnsureThirdPersonCamera()
     {
         if (runtimeThirdPersonCamera != null)
@@ -831,12 +897,12 @@ public class PlayerController : MonoBehaviour
 
         CameraController follow = cameraObject.AddComponent<CameraController>();
         follow.target = transform;
-        follow.offset = new Vector3(0f, 2.45f, -4.4f);
+        follow.offset = new Vector3(0f, 1.4f, -4.2f);
         follow.smoothSpeed = 12f;
         follow.rotationSmoothSpeed = 16f;
         follow.collisionRadius = 0.28f;
         follow.minimumDistance = 1.15f;
-        follow.focusOffset = new Vector3(0f, 1.55f, 0f);
+        follow.focusOffset = new Vector3(0f, 1.5f, 0f);
 
         thirdPersonCam = runtimeThirdPersonCamera;
     }
@@ -944,6 +1010,11 @@ public class PlayerController : MonoBehaviour
             equippedWeaponObject = null;
         }
 
+        if (!hasUnlockedTrialWeapon)
+        {
+            return;
+        }
+
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
 
         // Primary method: use Animator humanoid bone mapping (works for all humanoid rigs)
@@ -983,8 +1054,7 @@ public class PlayerController : MonoBehaviour
     // Build a weapon visual for the given level and parent it to attachPoint
     private GameObject BuildWeaponModel(int level, Transform attachPoint)
     {
-        // Level 2 — try to load the real KnuckleDuster FBX
-        if (level == 2)
+        if (level == 6)
         {
             GameObject kdPrefab = Resources.Load<GameObject>("Weapons/KnuckleDuster");
             if (kdPrefab != null)
@@ -1002,6 +1072,46 @@ public class PlayerController : MonoBehaviour
         return BuildPrimitiveWeapon(level, attachPoint);
     }
 
+    private void ConfigureMeleeTiming(int level)
+    {
+        switch (level)
+        {
+            case 1:
+            case 2:
+            case 5:
+            case 14:
+                attackSpeed = 2.4f;
+                attackDelay = 0.16f;
+                attackRadius = 1.35f;
+                break;
+            case 3:
+            case 7:
+            case 9:
+            case 10:
+            case 13:
+                attackSpeed = 1.3f;
+                attackDelay = 0.24f;
+                attackRadius = 1.45f;
+                break;
+            case 6:
+            case 11:
+                attackSpeed = 3.2f;
+                attackDelay = 0.10f;
+                attackRadius = 1.15f;
+                break;
+            case 15:
+                attackSpeed = 2.8f;
+                attackDelay = 0.12f;
+                attackRadius = 1.5f;
+                break;
+            default:
+                attackSpeed = 1.8f;
+                attackDelay = 0.18f;
+                attackRadius = 1.25f;
+                break;
+        }
+    }
+
     private GameObject BuildPrimitiveWeapon(int level, Transform attachPoint)
     {
         GameObject root = new GameObject("WeaponModel");
@@ -1015,6 +1125,7 @@ public class PlayerController : MonoBehaviour
         Color yellow      = new Color(0.95f, 0.80f, 0.20f);
         Color orange      = new Color(0.92f, 0.42f, 0.14f);
         Color red         = new Color(0.85f, 0.18f, 0.18f);
+        Color blue        = new Color(0.28f, 0.86f, 1f);
 
         switch (level)
         {
@@ -1027,7 +1138,39 @@ public class PlayerController : MonoBehaviour
                     new Vector3(0f, 0f, -0.07f), new Vector3(0.022f, 0.022f, 0.10f), brown);
                 break;
 
-            case 2: // Knuckle Duster (primitive fallback)
+            case 2: // Katana
+                CreateWeaponPart(root.transform, "Blade", PrimitiveType.Cube,
+                    new Vector3(0f, 0f, 0.22f), new Vector3(0.02f, 0.010f, 0.40f), metalSilver);
+                CreateWeaponPart(root.transform, "Guard", PrimitiveType.Cube,
+                    new Vector3(0f, 0f, -0.01f), new Vector3(0.08f, 0.015f, 0.025f), darkMetal);
+                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cube,
+                    new Vector3(0f, 0f, -0.16f), new Vector3(0.03f, 0.03f, 0.16f), brown);
+                break;
+
+            case 3: // Shovel
+                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
+                    new Vector3(0f, 0f, 0.04f), new Vector3(0.015f, 0.18f, 0.015f), brown);
+                CreateWeaponPart(root.transform, "Blade", PrimitiveType.Cube,
+                    new Vector3(0f, 0f, 0.24f), new Vector3(0.08f, 0.015f, 0.12f), darkMetal);
+                break;
+
+            case 4: // Baseball Bat
+                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
+                    new Vector3(0f, 0f, -0.05f), new Vector3(0.016f, 0.10f, 0.016f), brown);
+                CreateWeaponPart(root.transform, "Barrel", PrimitiveType.Cylinder,
+                    new Vector3(0f, 0f, 0.12f), new Vector3(0.038f, 0.12f, 0.038f), brown);
+                break;
+
+            case 5: // Nunchucks
+                CreateWeaponPart(root.transform, "StickA", PrimitiveType.Cylinder,
+                    new Vector3(-0.03f, 0f, 0.05f), new Vector3(0.013f, 0.08f, 0.013f), brown);
+                CreateWeaponPart(root.transform, "StickB", PrimitiveType.Cylinder,
+                    new Vector3(0.03f, 0f, 0.11f), new Vector3(0.013f, 0.08f, 0.013f), brown);
+                CreateWeaponPart(root.transform, "Chain", PrimitiveType.Cube,
+                    new Vector3(0f, 0f, 0.08f), new Vector3(0.012f, 0.012f, 0.08f), metalSilver);
+                break;
+
+            case 6: // Brass Knuckles
                 for (int i = 0; i < 4; i++)
                 {
                     CreateWeaponPart(root.transform, "Ring_" + i, PrimitiveType.Cylinder,
@@ -1039,23 +1182,7 @@ public class PlayerController : MonoBehaviour
                     new Vector3(0f, -0.02f, 0.02f), new Vector3(0.11f, 0.012f, 0.032f), yellow);
                 break;
 
-            case 3: // Dumbbell
-                CreateWeaponPart(root.transform, "Shaft", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, 0f), new Vector3(0.014f, 0.09f, 0.014f), darkMetal);
-                CreateWeaponPart(root.transform, "WeightL", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0.10f, 0f), new Vector3(0.045f, 0.022f, 0.045f), darkMetal);
-                CreateWeaponPart(root.transform, "WeightR", PrimitiveType.Cylinder,
-                    new Vector3(0f, -0.10f, 0f), new Vector3(0.045f, 0.022f, 0.045f), darkMetal);
-                break;
-
-            case 4: // Boxing Glove
-                CreateWeaponPart(root.transform, "Glove", PrimitiveType.Sphere,
-                    new Vector3(0f, 0f, 0.04f), new Vector3(0.07f, 0.07f, 0.09f), red);
-                CreateWeaponPart(root.transform, "Wrist", PrimitiveType.Cube,
-                    new Vector3(0f, 0f, -0.02f), new Vector3(0.055f, 0.045f, 0.04f), red);
-                break;
-
-            case 5: // Wrench
+            case 7: // Wrench
                 CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
                     new Vector3(0f, 0f, -0.02f), new Vector3(0.014f, 0.10f, 0.014f), metalSilver);
                 CreateWeaponPart(root.transform, "HeadA", PrimitiveType.Cube,
@@ -1064,34 +1191,64 @@ public class PlayerController : MonoBehaviour
                     new Vector3(0.022f, 0f, 0.11f), new Vector3(0.012f, 0.032f, 0.04f), metalSilver);
                 break;
 
-            case 6: // Tennis Racket
-                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, -0.06f), new Vector3(0.014f, 0.10f, 0.014f), brown);
-                CreateWeaponPart(root.transform, "Frame", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, 0.11f), new Vector3(0.11f, 0.008f, 0.14f), metalSilver,
-                    new Vector3(90f, 0f, 0f));
-                CreateWeaponPart(root.transform, "Strings_H", PrimitiveType.Cube,
-                    new Vector3(0f, 0f, 0.11f), new Vector3(0.09f, 0.003f, 0.12f),
-                    new Color(0.95f, 0.95f, 0.75f));
-                break;
-
-            case 7: // Baseball Bat
-                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, -0.05f), new Vector3(0.016f, 0.10f, 0.016f), brown);
-                CreateWeaponPart(root.transform, "Barrel", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, 0.12f), new Vector3(0.038f, 0.12f, 0.038f), brown);
-                break;
-
             default: // Generic club/bar for higher levels
-                float barLen = 0.14f + (level - 8) * 0.004f;
-                Color barColor = level >= 16 ? orange : metalSilver;
-                CreateWeaponPart(root.transform, "Bar", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, barLen * 0.5f), new Vector3(0.018f, barLen, 0.018f), barColor);
-                if (level >= 15) // Heavy end weight
+                if (level == 11)
                 {
-                    CreateWeaponPart(root.transform, "Head", PrimitiveType.Sphere,
-                        new Vector3(0f, 0f, barLen), new Vector3(0.04f, 0.04f, 0.04f), barColor);
+                    CreateWeaponPart(root.transform, "Glove", PrimitiveType.Sphere,
+                        new Vector3(0f, 0f, 0.04f), new Vector3(0.07f, 0.07f, 0.09f), red);
+                    CreateWeaponPart(root.transform, "Wrist", PrimitiveType.Cube,
+                        new Vector3(0f, 0f, -0.02f), new Vector3(0.055f, 0.045f, 0.04f), red);
+                    break;
                 }
+
+                if (level == 16 || level == 17)
+                {
+                    CreateWeaponPart(root.transform, "Body", PrimitiveType.Cube,
+                        new Vector3(0f, 0f, 0.10f), new Vector3(0.06f, 0.06f, 0.28f), orange);
+                    CreateWeaponPart(root.transform, "Tube", PrimitiveType.Cylinder,
+                        new Vector3(0f, 0f, 0.26f), new Vector3(0.05f, 0.12f, 0.05f), darkMetal);
+                    CreateWeaponPart(root.transform, "Grip", PrimitiveType.Cube,
+                        new Vector3(0f, -0.04f, 0.02f), new Vector3(0.04f, 0.08f, 0.05f), darkMetal);
+                    break;
+                }
+
+                if (level == 18)
+                {
+                    CreateWeaponPart(root.transform, "Tank", PrimitiveType.Cylinder,
+                        new Vector3(0f, 0f, 0.05f), new Vector3(0.05f, 0.10f, 0.05f), orange);
+                    CreateWeaponPart(root.transform, "Nozzle", PrimitiveType.Cylinder,
+                        new Vector3(0f, 0f, 0.22f), new Vector3(0.02f, 0.14f, 0.02f), darkMetal);
+                    break;
+                }
+
+                if (level == 19)
+                {
+                    for (int i = -1; i <= 1; i++)
+                    {
+                        CreateWeaponPart(root.transform, "Barrel_" + i, PrimitiveType.Cylinder,
+                            new Vector3(i * 0.02f, 0f, 0.22f), new Vector3(0.012f, 0.14f, 0.012f), darkMetal);
+                    }
+                    CreateWeaponPart(root.transform, "Housing", PrimitiveType.Cube,
+                        new Vector3(0f, 0f, 0.08f), new Vector3(0.09f, 0.06f, 0.18f), metalSilver);
+                    break;
+                }
+
+                if (level == 20)
+                {
+                    CreateWeaponPart(root.transform, "Body", PrimitiveType.Cube,
+                        new Vector3(0f, 0f, 0.10f), new Vector3(0.05f, 0.05f, 0.26f), darkMetal);
+                    CreateWeaponPart(root.transform, "Barrel", PrimitiveType.Cylinder,
+                        new Vector3(0f, 0f, 0.30f), new Vector3(0.012f, 0.18f, 0.012f), blue);
+                    CreateWeaponPart(root.transform, "Scope", PrimitiveType.Cylinder,
+                        new Vector3(0f, 0.03f, 0.12f), new Vector3(0.018f, 0.08f, 0.018f), metalSilver);
+                    break;
+                }
+
+                float barLen = 0.14f + (level - 8) * 0.004f;
+                CreateWeaponPart(root.transform, "Bar", PrimitiveType.Cylinder,
+                    new Vector3(0f, 0f, barLen * 0.5f), new Vector3(0.018f, barLen, 0.018f), metalSilver);
+                CreateWeaponPart(root.transform, "Head", PrimitiveType.Sphere,
+                    new Vector3(0f, 0f, barLen), new Vector3(0.04f, 0.04f, 0.04f), level == 15 ? yellow : metalSilver);
                 break;
         }
 
