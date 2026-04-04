@@ -17,7 +17,10 @@
       "Bash(while read:*)",
       "Bash(do echo:*)",
       "Read(//c/Users/97338/PRISM-7/**)",
-      "Bash(done)"
+      "Bash(done)",
+      "mcp__unity__Unity_GetConsoleLogs",
+      "Bash(dir \"C:\\\\Users\\\\97338\\\\PRISM-7\\\\Assets\\\\Scripts\"\")",
+      "mcp__unity__Unity_RunCommand"
     ]
   }
 }

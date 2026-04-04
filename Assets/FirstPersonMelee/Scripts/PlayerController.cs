@@ -56,6 +56,9 @@ public class PlayerController : MonoBehaviour
     private Renderer[] firstPersonRenderers;
     private LayerMask resolvedAttackMask;
 
+    // Tracks which view is currently active so V-key toggle knows what to switch to
+    private bool isThirdPersonActive = false;
+
     private void Awake()
     {
         controller = GetComponent<CharacterController>();
@@ -110,6 +113,20 @@ public class PlayerController : MonoBehaviour
         UpdateCameraKick();
         UpdateCombatState();
         SetAnimations();
+
+        // V key: toggle between first-person and third-person view
+        if (Keyboard.current != null && Keyboard.current.vKey.wasPressedThisFrame)
+        {
+            TogglePerspective();
+        }
+    }
+
+    private void TogglePerspective()
+    {
+        if (isThirdPersonActive)
+            EnableFirstPersonView();
+        else
+            EnableThirdPersonView();
     }
 
     private void UpdateCameraKick()
@@ -127,31 +144,27 @@ public class PlayerController : MonoBehaviour
 
     private Vector2 ReadMovementInput()
     {
-        if (GameManager.Instance != null && GameManager.Instance.GetMovementScheme() == GameManager.MovementScheme.ArrowKeys)
-        {
-            if (Keyboard.current == null)
-            {
-                return Vector2.zero;
-            }
+        // Always read WASD from the Input System — works regardless of GameManager MovementScheme
+        Vector2 wasd = input.Movement.ReadValue<Vector2>();
 
-            Vector2 movement = Vector2.zero;
-            if (Keyboard.current.upArrowKey.isPressed) movement.y += 1f;
-            if (Keyboard.current.downArrowKey.isPressed) movement.y -= 1f;
-            if (Keyboard.current.leftArrowKey.isPressed) movement.x -= 1f;
-            if (Keyboard.current.rightArrowKey.isPressed) movement.x += 1f;
-            return Vector2.ClampMagnitude(movement, 1f);
+        // Also read arrow keys directly so both schemes always work simultaneously
+        Vector2 arrows = Vector2.zero;
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.upArrowKey.isPressed)    arrows.y += 1f;
+            if (Keyboard.current.downArrowKey.isPressed)  arrows.y -= 1f;
+            if (Keyboard.current.leftArrowKey.isPressed)  arrows.x -= 1f;
+            if (Keyboard.current.rightArrowKey.isPressed) arrows.x += 1f;
         }
 
-        return input.Movement.ReadValue<Vector2>();
+        // Use whichever input has greater magnitude — player can use either control scheme
+        Vector2 combined = wasd.sqrMagnitude >= arrows.sqrMagnitude ? wasd : arrows;
+        return Vector2.ClampMagnitude(combined, 1f);
     }
 
     private void MoveInput(Vector2 inputValue)
     {
-        if (controller != null)
-        {
-            controller.stepOffset = 0.08f;
-            controller.slopeLimit = 28f;
-        }
+        // CC settings are configured once by LevelBuilder.SetupPlayer() — do not override per-frame
 
         isSprinting = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed && inputValue.y > 0.1f;
         float speed = isSprinting ? moveSpeed * SprintMultiplier : moveSpeed;
@@ -206,7 +219,8 @@ public class PlayerController : MonoBehaviour
 
     private void SnapToArenaFloor()
     {
-        if (controller == null || playerVelocity.y > 0.05f)
+        // Skip snap when CC is already managing ground contact — prevents micro-jitter
+        if (controller == null || playerVelocity.y > 0.05f || isGrounded)
         {
             return;
         }
@@ -307,6 +321,14 @@ public class PlayerController : MonoBehaviour
 
         cam.transform.localRotation = Quaternion.Euler(xRotation, 0, 0);
         transform.Rotate(Vector3.up * (mouseX * sensitivity * Time.deltaTime));
+
+        // Pass vertical pitch to the third-person orbit camera for responsive vertical look
+        if (isThirdPersonActive && runtimeThirdPersonCamera != null)
+        {
+            CameraController camCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
+            if (camCtrl != null)
+                camCtrl.pitch = xRotation * 0.45f;
+        }
     }
 
     private void OnEnable()
@@ -506,11 +528,9 @@ public class PlayerController : MonoBehaviour
         bool landedHit = false;
         for (int i = 0; i < hits.Length; i++)
         {
-            Actor actor = hits[i].GetComponentInParent<Actor>();
-            if (actor != null && actor.gameObject != gameObject)
+            if (TryDamageTarget(hits[i].transform, attackDamage))
             {
-                actor.TakeDamage(attackDamage);
-                ApplyHitReaction(actor.transform, cam.transform.forward);
+                ApplyHitReaction(hits[i].transform, cam.transform.forward);
                 HitTarget(hits[i].ClosestPoint(hitCenter));
                 landedHit = true;
                 break;
@@ -538,10 +558,8 @@ public class PlayerController : MonoBehaviour
 
             if (Physics.Raycast(cam.transform.position, dir, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
             {
-                Actor actor = hit.collider.GetComponentInParent<Actor>();
-                if (actor != null && actor.gameObject != gameObject)
+                if (TryDamageTarget(hit.collider.transform, attackDamage))
                 {
-                    actor.TakeDamage(attackDamage);
                     hitAnything = true;
                 }
 
@@ -563,12 +581,7 @@ public class PlayerController : MonoBehaviour
     {
         if (Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
         {
-            Actor actor = hit.collider.GetComponentInParent<Actor>();
-            if (actor != null && actor.gameObject != gameObject)
-            {
-                actor.TakeDamage(attackDamage);
-            }
-
+            TryDamageTarget(hit.collider.transform, attackDamage);
             HitTarget(hit.point);
         }
     }
@@ -593,14 +606,10 @@ public class PlayerController : MonoBehaviour
         Collider[] blasted = Physics.OverlapSphere(blastPoint, radius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
         for (int i = 0; i < blasted.Length; i++)
         {
-            Actor actor = blasted[i].GetComponentInParent<Actor>();
-            if (actor != null && actor.gameObject != gameObject)
-            {
-                // Damage falls off with distance from blast centre
-                float dist = Vector3.Distance(blastPoint, blasted[i].transform.position);
-                float falloff = 1f - Mathf.Clamp01(dist / radius);
-                actor.TakeDamage(Mathf.RoundToInt(attackDamage * (0.4f + 0.6f * falloff)));
-            }
+            float dist = Vector3.Distance(blastPoint, blasted[i].transform.position);
+            float falloff = 1f - Mathf.Clamp01(dist / radius);
+            int damage = Mathf.RoundToInt(attackDamage * (0.4f + 0.6f * falloff));
+            TryDamageTarget(blasted[i].transform, damage);
         }
     }
 
@@ -663,7 +672,7 @@ public class PlayerController : MonoBehaviour
     {
         GameManager.PerspectiveMode perspective = GameManager.Instance != null
             ? GameManager.Instance.GetPerspectiveMode()
-            : GameManager.PerspectiveMode.FirstPerson;
+            : GameManager.PerspectiveMode.ThirdPerson;
 
         if (perspective == GameManager.PerspectiveMode.ThirdPerson)
         {
@@ -675,6 +684,30 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    private bool TryDamageTarget(Transform target, int damage)
+    {
+        if (target == null)
+        {
+            return false;
+        }
+
+        EnemyController enemy = target.GetComponentInParent<EnemyController>();
+        if (enemy != null && enemy.gameObject != gameObject)
+        {
+            enemy.TakeDamage(damage);
+            return true;
+        }
+
+        Actor actor = target.GetComponentInParent<Actor>();
+        if (actor != null && actor.gameObject != gameObject)
+        {
+            actor.TakeDamage(damage);
+            return true;
+        }
+
+        return false;
+    }
+
     private void EnableFirstPersonView()
     {
         if (cam == null)
@@ -682,6 +715,7 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
+        isThirdPersonActive = false;
         cam.gameObject.SetActive(true);
         cam.transform.SetParent(transform, false);
         cam.transform.localPosition = firstPersonLocalPosition;
@@ -707,6 +741,7 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
+        isThirdPersonActive = true;
         EnsureThirdPersonCamera();
         EnsureThirdPersonBody();
 
@@ -1099,7 +1134,7 @@ public class PlayerController : MonoBehaviour
                 continue;
             }
 
-            if (thirdPersonBody != null && rendererComponent.transform == thirdPersonBody.transform)
+            if (thirdPersonBody != null && rendererComponent.transform.IsChildOf(thirdPersonBody.transform))
             {
                 continue;
             }

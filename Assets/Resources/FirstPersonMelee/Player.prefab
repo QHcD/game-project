@@ -144,6 +144,11 @@ MonoBehaviour:
   moveSpeed: 5
   gravity: -9.8
   jumpHeight: 1.2
+  arenaBoundaryRadius: 22.8
+  arenaBoundaryPadding: 0.35
+  arenaFloorHeight: 0.1
+  floorSnapSpeed: 14
+  maxFloorSnapDistance: 0.45
   cam: {fileID: 1788623315372294392}
   sensitivity: 100
   attackDistance: 3
@@ -154,6 +159,8 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 0
   attackRadius: 1.25
+  attackLungeDistance: 0.45
+  hitKnockbackForce: 4.5
   hitEffect: {fileID: 0}
   swordSwing: {fileID: 8300000, guid: 7923190c5e80b4d4d9396acc5d0b48cf, type: 3}
   hitSound: {fileID: 8300000, guid: 11245d3945c564b45a1bafad5ecb70e5, type: 3}

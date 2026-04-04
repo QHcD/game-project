@@ -97,7 +97,7 @@ public class GameManager : MonoBehaviour
     public bool playerTookDamage = false;
     public float levelTime = 0f;
     public ArenaMap selectedMap = ArenaMap.BlacksiteFacility;
-    public PerspectiveMode perspectiveMode = PerspectiveMode.FirstPerson;
+    public PerspectiveMode perspectiveMode = PerspectiveMode.ThirdPerson;
     public MovementScheme movementScheme = MovementScheme.Wasd;
 
     void Awake()
@@ -107,9 +107,9 @@ public class GameManager : MonoBehaviour
             Instance = this;
             DontDestroyOnLoad(gameObject);
             difficulty = PlayerPrefs.GetString("Difficulty", difficulty);
-            selectedMap = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", 0), 0, 2);
-            perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", 0), 0, 1);
-            movementScheme = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", 0), 0, 1);
+            selectedMap = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", (int)selectedMap), 0, 2);
+            perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)perspectiveMode), 0, 1);
+            movementScheme = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", (int)movementScheme), 0, 1);
             currentLevel = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
         }
         else
