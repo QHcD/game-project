@@ -3,151 +3,250 @@ using UnityEngine.InputSystem;
 using UnityEngine.Playables;
 using UnityEngine.Animations;
 
+/// <summary>
+/// Main player controller for the female prisoner character.
+/// Handles movement, camera, combat, weapon management, and animation.
+/// Uses CharacterController for precise, non-physics movement.
+/// </summary>
 public class PlayerController : MonoBehaviour
 {
-    [Header("Compatibility")]
+    // ════════════════════════════════════════════════════════════════════════
+    //  INSPECTOR FIELDS
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Header("Movement")]
+    [Tooltip("Base walking speed in units per second.")]
+    public float moveSpeed = 5f;
+
+    [Tooltip("Multiplier applied when sprint key is held.")]
+    public float sprintMultiplier = 1.55f;
+
+    [Tooltip("Gravity acceleration (negative value).")]
+    public float gravity = -25f;
+
+    [Tooltip("Maximum jump height in units.")]
+    public float jumpHeight = 0.6f;
+
+    [Header("Movement Tuning")]
+    [Tooltip("How fast the character reaches full speed (units/s²).")]
+    public float acceleration = 24f;
+
+    [Tooltip("How fast the character brakes to zero (units/s²).")]
+    public float deceleration = 20f;
+
+    [Header("Camera")]
+    [Tooltip("First-person camera reference.")]
     public Camera firstPersonCam;
+
+    [Tooltip("Third-person camera reference (auto-created if null).")]
     public Camera thirdPersonCam;
+
+    [Tooltip("Mouse look sensitivity.")]
+    public float sensitivity = 100f;
+
+    [Header("Combat")]
+    [Tooltip("Maximum distance for melee/ranged attacks.")]
+    public float attackDistance = 3f;
+
+    [Tooltip("Delay before damage is applied after attack input.")]
+    public float attackDelay = 0.4f;
+
+    [Tooltip("Speed multiplier for attack animations.")]
+    public float attackSpeed = 1f;
+
+    [Tooltip("Base damage per hit.")]
+    public int attackDamage = 1;
+
+    [Tooltip("Physics layer mask for attack raycasts.")]
+    public LayerMask attackLayer;
+
+    [Tooltip("Radius for melee overlap detection.")]
+    public float attackRadius = 1.25f;
+
+    [Tooltip("Forward lunge distance on attack.")]
+    public float attackLungeDistance = 0.45f;
+
+    [Tooltip("Knockback force applied to hit targets.")]
+    public float hitKnockbackForce = 4.5f;
+
+    [Header("Weapon References")]
+    [Tooltip("Current weapon display name (read by HUD).")]
     public string equippedWeaponName = "Combat Knife";
 
-    private PlayerInput playerInput;
-    private PlayerInput.MainActions input;
+    [Tooltip("Optional hit-effect prefab spawned at impact point.")]
+    public GameObject hitEffect;
 
-    private CharacterController controller;
-    private Animator animator;
-    private AudioSource audioSource;
+    [Tooltip("Sound played on attack swing.")]
+    public AudioClip swordSwing;
 
-    [Header("Controller")]
-    public float moveSpeed = 5;
-    public float gravity = -25f;
-    public float jumpHeight = 0.6f;
+    [Tooltip("Sound played on successful hit.")]
+    public AudioClip hitSound;
+
+    [Header("Arena Boundaries")]
     public float arenaBoundaryRadius = 22.8f;
     public float arenaBoundaryPadding = 0.35f;
     public float arenaFloorHeight = 0.1f;
     public float floorSnapSpeed = 14f;
     public float maxFloorSnapDistance = 0.45f;
 
-    private Vector3 playerVelocity;
-    private Vector2 moveInput;
-    private Vector2 smoothedMoveInput;
-    private Vector2 lookInput;
-    private bool wasMoving;
-    private const float MoveSmoothing = 12f;
-    private const float SprintMultiplier = 1.55f;
-    private bool isSprinting;
+    // ════════════════════════════════════════════════════════════════════════
+    //  PRIVATE STATE
+    // ════════════════════════════════════════════════════════════════════════
 
+    // Components
+    private CharacterController controller;
+    private Animator animator;
+    private AudioSource audioSource;
+    private PlayerInput playerInput;
+    private PlayerInput.MainActions input;
+
+    // Movement
+    private Vector3 verticalVelocity;
+    private Vector3 horizontalVelocity;
+    private Vector2 moveInputRaw;
+    private Vector2 moveInputSmoothed;
+    private Vector2 lookInput;
     private bool isGrounded;
+    private bool isSprinting;
+    private bool wasMoving;
+    private const float InputSmoothing = 10f;
+
+    // Camera
+    private float cameraPitch;
+    private Vector3 firstPersonLocalPos;
+    private Quaternion firstPersonLocalRot;
+    private Camera runtimeThirdPersonCamera;
+    private bool isThirdPersonActive;
 
     // Head bob
     private float headBobTimer;
+    private float headBobVelocity;
     private const float HeadBobFrequency = 10f;
     private const float HeadBobAmplitude = 0.038f;
-    private float headBobVelocity;
 
-    [Header("Camera")]
-    public Camera cam;
-    public float sensitivity = 100f;
+    // Camera kick (recoil feedback)
+    private float cameraKickTarget;
+    private float cameraKickCurrent;
 
-    private float xRotation;
-    private Vector3 firstPersonLocalPosition;
-    private Quaternion firstPersonLocalRotation;
-    private Camera runtimeThirdPersonCamera;
-    private GameObject thirdPersonBody;
-    private Renderer[] firstPersonRenderers;
+    // Combat
+    private bool isAttacking;
+    private float comboCooldownTimer;
+    private const float ComboCooldown = 0.15f;
+    private GameManager.WeaponType currentWeaponType = GameManager.WeaponType.Melee;
+    private float explosionRadius;
     private LayerMask resolvedAttackMask;
 
-    // Tracks which view is currently active so V-key toggle knows what to switch to
-    private bool isThirdPersonActive = false;
+    // Third-person body
+    private GameObject thirdPersonBody;
+    private Renderer[] firstPersonRenderers;
+    private GameObject equippedWeaponObject;
+
+    // Animator parameter hashes (connect these in an Animator Controller)
+    private static readonly int AnimSpeed      = Animator.StringToHash("Speed");
+    private static readonly int AnimGrounded   = Animator.StringToHash("IsGrounded");
+    private static readonly int AnimAttacking  = Animator.StringToHash("IsAttacking");
+    private static readonly int AnimSprinting  = Animator.StringToHash("IsSprinting");
+
+    // Legacy animation state names (first-person)
+    public const string IDLE    = "Idle";
+    public const string WALK    = "Walk";
+    public const string ATTACK1 = "Attack 1";
+    public const string ATTACK2 = "Attack 2";
+    private string currentAnimationState;
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  CAMERA PROPERTY — used by the active first/third person camera
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// <summary>Returns whichever camera is currently active.</summary>
+    private Camera ActiveCamera => isThirdPersonActive ? runtimeThirdPersonCamera : firstPersonCam;
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  LIFECYCLE
+    // ════════════════════════════════════════════════════════════════════════
 
     private void Awake()
     {
-        controller = GetComponent<CharacterController>();
-        animator = GetComponentInChildren<Animator>();
-        audioSource = GetComponent<AudioSource>();
+        controller     = GetComponent<CharacterController>();
+        animator       = GetComponentInChildren<Animator>();
+        audioSource    = GetComponent<AudioSource>();
 
+        // Camera setup
         if (firstPersonCam == null)
+            firstPersonCam = GetComponentInChildren<Camera>();
+        if (firstPersonCam != null)
         {
-            firstPersonCam = cam;
-        }
-
-        if (cam == null)
-        {
-            cam = firstPersonCam != null ? firstPersonCam : GetComponentInChildren<Camera>();
-        }
-
-        if (cam != null)
-        {
-            firstPersonLocalPosition = cam.transform.localPosition;
-            firstPersonLocalRotation = cam.transform.localRotation;
+            firstPersonLocalPos = firstPersonCam.transform.localPosition;
+            firstPersonLocalRot = firstPersonCam.transform.localRotation;
         }
 
         firstPersonRenderers = GetComponentsInChildren<Renderer>(true);
-        resolvedAttackMask = ~0;
+        resolvedAttackMask = attackLayer == 0 ? ~0 : attackLayer;
 
+        // Input System
         playerInput = new PlayerInput();
         input = playerInput.Main;
-        AssignInputs();
+        input.Jump.performed   += _ => Jump();
+        input.Attack.started   += _ => Attack();
 
         Cursor.lockState = CursorLockMode.Locked;
-        Cursor.visible = false;
+        Cursor.visible   = false;
     }
 
     private void Start()
     {
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
-        ApplyGameplayPreferences();
+        ApplyPerspectivePreference();
     }
 
     private void Update()
     {
         isGrounded = controller.isGrounded;
-        moveInput = ReadMovementInput();
-        lookInput = input.Look.ReadValue<Vector2>();
 
-        smoothedMoveInput = Vector2.Lerp(smoothedMoveInput, moveInput, MoveSmoothing * Time.deltaTime);
-
-        MoveInput(smoothedMoveInput);
-        LookInput(lookInput);
+        ReadInput();
+        ApplyMovement();
+        ApplyLook();
         UpdateHeadBob();
         UpdateCameraKick();
         UpdateCombatState();
-        SetAnimations();
+        UpdateAnimations();
+        UpdateAnimatorParameters();
 
-        // V key: toggle between first-person and third-person view
+        // Perspective toggle (V key)
         if (Keyboard.current != null && Keyboard.current.vKey.wasPressedThisFrame)
-        {
             TogglePerspective();
-        }
     }
 
-    private void TogglePerspective()
+    private void LateUpdate()
     {
-        if (isThirdPersonActive)
-            EnableFirstPersonView();
-        else
-            EnableThirdPersonView();
+        // ── UPRIGHT STABILITY ──
+        // Lock X and Z rotation so the character never tips over.
+        // Only the Y axis is allowed to rotate (turning left/right).
+        Vector3 euler = transform.eulerAngles;
+        transform.rotation = Quaternion.Euler(0f, euler.y, 0f);
     }
 
-    private void UpdateCameraKick()
+    private void OnEnable()
     {
-        if (cam == null) return;
-
-        // Spring cameraKick back to zero
-        cameraKickCurrent = Mathf.Lerp(cameraKickCurrent, cameraKickTarget, 18f * Time.deltaTime);
-        cameraKickTarget = Mathf.Lerp(cameraKickTarget, 0f, 14f * Time.deltaTime);
-
-        // Apply as additional pitch on top of player aim
-        xRotation += cameraKickCurrent * Time.deltaTime;
-        xRotation = Mathf.Clamp(xRotation, -80f, 80f);
+        if (!input.Get().enabled) input.Enable();
     }
 
-    private Vector2 ReadMovementInput()
+    private void OnDisable()
     {
-        // Always read WASD from the Input System — works regardless of GameManager MovementScheme
+        if (playerInput != null) input.Disable();
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  INPUT
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void ReadInput()
+    {
+        // WASD from Input System
         Vector2 wasd = input.Movement.ReadValue<Vector2>();
 
-        // Also read arrow keys directly so both schemes always work simultaneously
+        // Also read arrow keys directly so both schemes always work
         Vector2 arrows = Vector2.zero;
         if (Keyboard.current != null)
         {
@@ -157,139 +256,98 @@ public class PlayerController : MonoBehaviour
             if (Keyboard.current.rightArrowKey.isPressed) arrows.x += 1f;
         }
 
-        // Use whichever input has greater magnitude — player can use either control scheme
-        Vector2 combined = wasd.sqrMagnitude >= arrows.sqrMagnitude ? wasd : arrows;
-        return Vector2.ClampMagnitude(combined, 1f);
+        // Use whichever has greater magnitude
+        moveInputRaw = wasd.sqrMagnitude >= arrows.sqrMagnitude ? wasd : arrows;
+        moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
+
+        // Smooth the input to remove digital snapping
+        moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, InputSmoothing * Time.deltaTime);
+
+        lookInput = input.Look.ReadValue<Vector2>();
     }
 
-    private void MoveInput(Vector2 inputValue)
+    // ════════════════════════════════════════════════════════════════════════
+    //  MOVEMENT
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void ApplyMovement()
     {
-        // CC settings are configured once by LevelBuilder.SetupPlayer() — do not override per-frame
+        isSprinting = Keyboard.current != null
+                   && Keyboard.current.leftShiftKey.isPressed
+                   && moveInputSmoothed.y > 0.1f;
 
-        isSprinting = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed && inputValue.y > 0.1f;
-        float speed = isSprinting ? moveSpeed * SprintMultiplier : moveSpeed;
+        float targetSpeed = isSprinting ? moveSpeed * sprintMultiplier : moveSpeed;
 
-        Vector3 moveDirection = new Vector3(inputValue.x, 0f, inputValue.y);
-        Vector3 worldMove = transform.TransformDirection(moveDirection) * speed;
+        // Build desired world-space horizontal velocity from smoothed input
+        Vector3 inputDir = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
+        Vector3 targetVelocity = transform.TransformDirection(inputDir) * targetSpeed;
 
-        controller.Move(worldMove * Time.deltaTime);
+        // Accelerate toward target, decelerate when no input
+        float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
+        horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
 
-        if (isGrounded && playerVelocity.y < 0f)
-        {
-            playerVelocity.y = -6f;
-        }
+        // Apply horizontal movement
+        controller.Move(horizontalVelocity * Time.deltaTime);
 
-        playerVelocity.y += gravity * Time.deltaTime;
-        controller.Move(playerVelocity * Time.deltaTime);
+        // Gravity (separate from horizontal so they don't corrupt each other)
+        if (isGrounded && verticalVelocity.y < 0f)
+            verticalVelocity.y = -6f; // constant downward push keeps CC snapped to ground
 
+        verticalVelocity.y += gravity * Time.deltaTime;
+        controller.Move(verticalVelocity * Time.deltaTime);
+
+        // Arena constraints
         ClampInsideArena();
         SnapToArenaFloor();
 
-        wasMoving = moveInput.sqrMagnitude > 0.01f;
+        // Animation state driven by actual velocity, not input
+        wasMoving = horizontalVelocity.sqrMagnitude > 0.1f;
     }
 
-    private void ClampInsideArena()
+    private void Jump()
     {
-        Vector3 planarPosition = transform.position;
-        planarPosition.y = 0f;
-
-        float maxRadius = Mathf.Max(1f, arenaBoundaryRadius - controller.radius - arenaBoundaryPadding);
-        if (planarPosition.sqrMagnitude <= maxRadius * maxRadius)
-        {
-            return;
-        }
-
-        Vector3 clampedPlanar = planarPosition.normalized * maxRadius;
-        Vector3 correctedPosition = new Vector3(clampedPlanar.x, transform.position.y, clampedPlanar.z);
-        transform.position = correctedPosition;
-
-        Vector3 planarVelocity = new Vector3(playerVelocity.x, 0f, playerVelocity.z);
-        if (Vector3.Dot(planarVelocity, planarPosition.normalized) > 0f)
-        {
-            playerVelocity.x = 0f;
-            playerVelocity.z = 0f;
-        }
-
-        if (transform.position.y > arenaFloorHeight + 0.6f)
-        {
-            transform.position = new Vector3(transform.position.x, arenaFloorHeight, transform.position.z);
-            playerVelocity.y = Mathf.Min(playerVelocity.y, 0f);
-        }
+        if (isGrounded)
+            verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
     }
 
-    private void SnapToArenaFloor()
+    // ════════════════════════════════════════════════════════════════════════
+    //  CAMERA / LOOK
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void ApplyLook()
     {
-        // Skip snap when CC is already managing ground contact — prevents micro-jitter
-        if (controller == null || playerVelocity.y > 0.05f || isGrounded)
+        Camera cam = ActiveCamera;
+        if (cam == null) return;
+
+        float mouseX = lookInput.x * sensitivity * Time.deltaTime;
+        float mouseY = lookInput.y * sensitivity * Time.deltaTime;
+
+        // Vertical pitch (clamped)
+        cameraPitch -= mouseY;
+        cameraPitch  = Mathf.Clamp(cameraPitch, -80f, 80f);
+
+        // Apply pitch to first-person camera
+        if (firstPersonCam != null)
+            firstPersonCam.transform.localRotation = Quaternion.Euler(cameraPitch, 0f, 0f);
+
+        // Horizontal rotation on the player body
+        transform.Rotate(Vector3.up * mouseX);
+
+        // Feed pitch to third-person orbit camera
+        if (isThirdPersonActive && runtimeThirdPersonCamera != null)
         {
-            return;
+            CameraController orbitCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
+            if (orbitCtrl != null)
+                orbitCtrl.pitch = cameraPitch * 0.45f;
         }
-
-        Vector3 rayOrigin = transform.position + Vector3.up * 0.25f;
-        if (!Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit floorHit, maxFloorSnapDistance + 0.25f, ~0, QueryTriggerInteraction.Ignore))
-        {
-            return;
-        }
-
-        float targetY = floorHit.point.y;
-        float currentY = transform.position.y;
-        if (Mathf.Abs(currentY - targetY) < 0.01f || currentY < targetY)
-        {
-            return;
-        }
-
-        if (currentY - targetY > maxFloorSnapDistance)
-        {
-            return;
-        }
-
-        float snappedY = Mathf.MoveTowards(currentY, targetY, floorSnapSpeed * Time.deltaTime);
-        transform.position = new Vector3(transform.position.x, snappedY, transform.position.z);
-    }
-
-    private void ApplyAttackLunge()
-    {
-        if (controller == null)
-        {
-            return;
-        }
-
-        Vector3 lunge = transform.forward * attackLungeDistance;
-        controller.Move(lunge);
-        ClampInsideArena();
-    }
-
-    private void ApplyHitReaction(Transform hitTransform, Vector3 hitDirection)
-    {
-        if (hitTransform == null)
-        {
-            return;
-        }
-
-        Vector3 pushDirection = new Vector3(hitDirection.x, 0f, hitDirection.z).normalized;
-        if (pushDirection.sqrMagnitude < 0.001f)
-        {
-            pushDirection = hitTransform.position - transform.position;
-            pushDirection.y = 0f;
-            pushDirection.Normalize();
-        }
-
-        Rigidbody hitBody = hitTransform.GetComponentInParent<Rigidbody>();
-        if (hitBody != null)
-        {
-            hitBody.AddForce(pushDirection * hitKnockbackForce, ForceMode.VelocityChange);
-            return;
-        }
-
-        hitTransform.position += pushDirection * 0.18f;
     }
 
     private void UpdateHeadBob()
     {
-        if (cam == null) return;
+        if (firstPersonCam == null) return;
 
-        float targetVelocity = wasMoving && isGrounded ? 1f : 0f;
-        headBobVelocity = Mathf.Lerp(headBobVelocity, targetVelocity, 8f * Time.deltaTime);
+        float targetVel = wasMoving && isGrounded ? 1f : 0f;
+        headBobVelocity = Mathf.Lerp(headBobVelocity, targetVel, 8f * Time.deltaTime);
 
         if (headBobVelocity > 0.01f)
         {
@@ -301,132 +359,22 @@ public class PlayerController : MonoBehaviour
             headBobTimer = Mathf.MoveTowards(headBobTimer, 0f, Time.deltaTime * HeadBobFrequency);
         }
 
-        float bobOffset = Mathf.Sin(headBobTimer) * HeadBobAmplitude * headBobVelocity;
-        Vector3 basePos = firstPersonLocalPosition;
-        cam.transform.localPosition = new Vector3(basePos.x, basePos.y + bobOffset, basePos.z);
+        float bob = Mathf.Sin(headBobTimer) * HeadBobAmplitude * headBobVelocity;
+        firstPersonCam.transform.localPosition = firstPersonLocalPos + new Vector3(0f, bob, 0f);
     }
 
-    private void LookInput(Vector2 inputValue)
+    private void UpdateCameraKick()
     {
-        if (cam == null)
-        {
-            return;
-        }
-
-        float mouseX = inputValue.x;
-        float mouseY = inputValue.y;
-
-        xRotation -= mouseY * sensitivity * Time.deltaTime;
-        xRotation = Mathf.Clamp(xRotation, -80f, 80f);
-
-        cam.transform.localRotation = Quaternion.Euler(xRotation, 0, 0);
-        transform.Rotate(Vector3.up * (mouseX * sensitivity * Time.deltaTime));
-
-        // Pass vertical pitch to the third-person orbit camera for responsive vertical look
-        if (isThirdPersonActive && runtimeThirdPersonCamera != null)
-        {
-            CameraController camCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
-            if (camCtrl != null)
-                camCtrl.pitch = xRotation * 0.45f;
-        }
+        if (ActiveCamera == null) return;
+        cameraKickCurrent = Mathf.Lerp(cameraKickCurrent, cameraKickTarget, 18f * Time.deltaTime);
+        cameraKickTarget  = Mathf.Lerp(cameraKickTarget, 0f, 14f * Time.deltaTime);
+        cameraPitch += cameraKickCurrent * Time.deltaTime;
+        cameraPitch  = Mathf.Clamp(cameraPitch, -80f, 80f);
     }
 
-    private void OnEnable()
-    {
-        if (input.Get().enabled == false)
-        {
-            input.Enable();
-        }
-    }
-
-    private void OnDisable()
-    {
-        if (playerInput != null)
-        {
-            input.Disable();
-        }
-    }
-
-    private void Jump()
-    {
-        if (isGrounded)
-        {
-            playerVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
-        }
-    }
-
-    private void AssignInputs()
-    {
-        input.Jump.performed += ctx => Jump();
-        input.Attack.started += ctx => Attack();
-    }
-
-    // ---------- //
-    // ANIMATIONS //
-    // ---------- //
-
-    public const string IDLE = "Idle";
-    public const string WALK = "Walk";
-    public const string ATTACK1 = "Attack 1";
-    public const string ATTACK2 = "Attack 2";
-
-    private string currentAnimationState;
-
-    public void ChangeAnimationState(string newState) 
-    {
-        if (animator == null || currentAnimationState == newState || !animator.isActiveAndEnabled || !animator.gameObject.activeInHierarchy)
-        {
-            return;
-        }
-
-        currentAnimationState = newState;
-        animator.CrossFadeInFixedTime(currentAnimationState, 0.2f);
-    }
-
-    private void SetAnimations()
-    {
-        // Don't override first-person animation during combo attacks
-        if (attacking) return;
-
-        if (wasMoving)
-        {
-            ChangeAnimationState(WALK);
-        }
-        else
-        {
-            ChangeAnimationState(IDLE);
-        }
-    }
-
-    // ------------------- //
-    // ATTACKING BEHAVIOUR //
-    // ------------------- //
-
-    [Header("Attacking")]
-    public float attackDistance = 3f;
-    public float attackDelay = 0.4f;
-    public float attackSpeed = 1f;
-    public int attackDamage = 1;
-    public LayerMask attackLayer;
-    public float attackRadius = 1.25f;
-    public float attackLungeDistance = 0.45f;
-    public float hitKnockbackForce = 4.5f;
-
-    public GameObject hitEffect;
-    public AudioClip swordSwing;
-    public AudioClip hitSound;
-
-    private bool attacking;
-
-    // Special weapon state
-    private GameManager.WeaponType currentWeaponType = GameManager.WeaponType.Melee;
-    private float explosionRadius;
-    private float cameraKickTarget;
-    private float cameraKickCurrent;
-
-    // Combo cooldown — matches the video's CoolDown parameter
-    private float comboCooldownTimer;
-    private const float ComboCooldown = 0.15f;
+    // ════════════════════════════════════════════════════════════════════════
+    //  COMBAT
+    // ════════════════════════════════════════════════════════════════════════
 
     public void Attack()
     {
@@ -436,8 +384,8 @@ public class PlayerController : MonoBehaviour
             ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true)
             : null;
 
-        // If already attacking, only allow combo if animation system says we're in the combo window
-        if (attacking)
+        // Combo: if already attacking and in the combo window, chain next hit
+        if (isAttacking)
         {
             if (visualAnim != null && visualAnim.IsComboReady)
             {
@@ -448,15 +396,12 @@ public class PlayerController : MonoBehaviour
         }
 
         // Fresh attack
-        attacking = true;
+        isAttacking = true;
         comboCooldownTimer = ComboCooldown;
 
         if (visualAnim != null)
-        {
             visualAnim.PlayAttack();
-        }
 
-        // First-person animation
         ChangeAnimationState(ATTACK1);
         FireAttack();
     }
@@ -472,7 +417,6 @@ public class PlayerController : MonoBehaviour
             audioSource.PlayOneShot(swordSwing);
         }
 
-        // Delay the damage raycast to sync with animation hit frame
         CancelInvoke(nameof(AttackRaycast));
         Invoke(nameof(AttackRaycast), attackDelay);
     }
@@ -482,102 +426,89 @@ public class PlayerController : MonoBehaviour
         if (comboCooldownTimer > 0f)
             comboCooldownTimer -= Time.deltaTime;
 
-        if (!attacking) return;
+        if (!isAttacking) return;
 
-        // Check if the 3rd-person animation system has auto-reset (normalizedTime > threshold)
         CharacterVisualAnimationPlayer visualAnim = thirdPersonBody != null
             ? thirdPersonBody.GetComponentInChildren<CharacterVisualAnimationPlayer>(true)
             : null;
 
         if (visualAnim != null && !visualAnim.IsAttacking)
-        {
-            attacking = false;
-        }
+            isAttacking = false;
     }
+
+    private void ApplyAttackLunge()
+    {
+        if (controller == null) return;
+        controller.Move(transform.forward * attackLungeDistance);
+        ClampInsideArena();
+    }
+
+    // ── Attack raycasts by weapon type ──
 
     private void AttackRaycast()
     {
+        Camera cam = ActiveCamera;
         if (cam == null) return;
 
         switch (currentWeaponType)
         {
-            case GameManager.WeaponType.Flamethrower:
-                AttackFlamethrower();
-                break;
-            case GameManager.WeaponType.Sniper:
-                AttackSniper();
-                break;
-            case GameManager.WeaponType.Explosive:
-                AttackExplosive();
-                break;
-            default:
-                AttackMelee();
-                break;
+            case GameManager.WeaponType.Flamethrower: AttackFlamethrower(cam); break;
+            case GameManager.WeaponType.Sniper:       AttackSniper(cam);      break;
+            case GameManager.WeaponType.Explosive:    AttackExplosive(cam);   break;
+            default:                                  AttackMelee(cam);       break;
         }
 
-        // Camera kick feedback
-        cameraKickTarget = currentWeaponType == GameManager.WeaponType.Sniper ? -4.5f :
-                           currentWeaponType == GameManager.WeaponType.Explosive ? -3.5f :
-                           currentWeaponType == GameManager.WeaponType.Flamethrower ? -0.6f : -1.2f;
+        cameraKickTarget = currentWeaponType switch
+        {
+            GameManager.WeaponType.Sniper      => -4.5f,
+            GameManager.WeaponType.Explosive   => -3.5f,
+            GameManager.WeaponType.Flamethrower => -0.6f,
+            _ => -1.2f
+        };
     }
 
-    private void AttackMelee()
+    private void AttackMelee(Camera cam)
     {
-        Vector3 hitCenter = cam.transform.position + cam.transform.forward * attackDistance;
-        Collider[] hits = Physics.OverlapSphere(hitCenter, attackRadius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
-        bool landedHit = false;
+        Vector3 center = cam.transform.position + cam.transform.forward * attackDistance;
+        Collider[] hits = Physics.OverlapSphere(center, attackRadius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
+        bool landed = false;
+
         for (int i = 0; i < hits.Length; i++)
         {
             if (TryDamageTarget(hits[i].transform, attackDamage))
             {
                 ApplyHitReaction(hits[i].transform, cam.transform.forward);
-                HitTarget(hits[i].ClosestPoint(hitCenter));
-                landedHit = true;
+                HitTarget(hits[i].ClosestPoint(center));
+                landed = true;
                 break;
             }
         }
 
-        if (!landedHit && Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
-        {
+        if (!landed && Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
             HitTarget(hit.point);
-        }
     }
 
-    // Flamethrower: spray 7 rays in a cone, hit everything in the spread
-    private void AttackFlamethrower()
+    private void AttackFlamethrower(Camera cam)
     {
         int rays = 7;
-        float spread = 12f; // degrees half-angle
-        bool hitAnything = false;
+        float spread = 12f;
+        bool hitAny = false;
 
         for (int r = 0; r < rays; r++)
         {
-            float angleH = Random.Range(-spread, spread);
-            float angleV = Random.Range(-spread * 0.5f, spread * 0.5f);
-            Vector3 dir = Quaternion.Euler(angleV, angleH, 0f) * cam.transform.forward;
-
+            Vector3 dir = Quaternion.Euler(Random.Range(-spread * 0.5f, spread * 0.5f), Random.Range(-spread, spread), 0f) * cam.transform.forward;
             if (Physics.Raycast(cam.transform.position, dir, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
             {
-                if (TryDamageTarget(hit.collider.transform, attackDamage))
-                {
-                    hitAnything = true;
-                }
-
-                if (r == 0)
-                {
-                    HitTarget(hit.point);
-                }
+                if (TryDamageTarget(hit.collider.transform, attackDamage)) hitAny = true;
+                if (r == 0) HitTarget(hit.point);
             }
         }
 
-        if (!hitAnything)
-        {
+        if (!hitAny)
             HitTarget(cam.transform.position + cam.transform.forward * (attackDistance * 0.7f));
-        }
     }
 
-    // Sniper: single precision raycast, extreme range
-    private void AttackSniper()
+    private void AttackSniper(Camera cam)
     {
         if (Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
         {
@@ -586,115 +517,39 @@ public class PlayerController : MonoBehaviour
         }
     }
 
-    // Explosive: raycast to point, then AoE sphere damage around it
-    private void AttackExplosive()
+    private void AttackExplosive(Camera cam)
     {
-        Vector3 blastPoint;
-
+        Vector3 blast;
         if (Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
-        {
-            blastPoint = hit.point;
-        }
+            blast = hit.point;
         else
-        {
-            blastPoint = cam.transform.position + cam.transform.forward * Mathf.Min(attackDistance, 60f);
-        }
+            blast = cam.transform.position + cam.transform.forward * Mathf.Min(attackDistance, 60f);
 
-        HitTarget(blastPoint);
+        HitTarget(blast);
 
         float radius = explosionRadius > 0f ? explosionRadius : 5f;
-        Collider[] blasted = Physics.OverlapSphere(blastPoint, radius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
+        Collider[] blasted = Physics.OverlapSphere(blast, radius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
         for (int i = 0; i < blasted.Length; i++)
         {
-            float dist = Vector3.Distance(blastPoint, blasted[i].transform.position);
+            float dist = Vector3.Distance(blast, blasted[i].transform.position);
             float falloff = 1f - Mathf.Clamp01(dist / radius);
-            int damage = Mathf.RoundToInt(attackDamage * (0.4f + 0.6f * falloff));
-            TryDamageTarget(blasted[i].transform, damage);
+            int dmg = Mathf.RoundToInt(attackDamage * (0.4f + 0.6f * falloff));
+            TryDamageTarget(blasted[i].transform, dmg);
         }
     }
 
-    public void EquipWeaponForLevel(int level)
-    {
-        if (GameManager.Instance == null)
-        {
-            return;
-        }
-
-        equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
-        attackDamage = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(level));
-        attackDistance = GameManager.Instance.GetWeaponRangeForLevel(level);
-        currentWeaponType = GameManager.Instance.GetWeaponTypeForLevel(level);
-        explosionRadius = GameManager.Instance.GetWeaponExplosionRadiusForLevel(level);
-
-        // Adjust attack timing per weapon type
-        switch (currentWeaponType)
-        {
-            case GameManager.WeaponType.Flamethrower:
-                attackSpeed = 0.12f;
-                attackDelay = 0.04f;
-                attackRadius = 1.6f;
-                break;
-            case GameManager.WeaponType.Sniper:
-                attackSpeed = 2.2f;
-                attackDelay = 0.05f;
-                attackRadius = 0f; // precision raycast only
-                break;
-            case GameManager.WeaponType.Explosive:
-                attackSpeed = 1.6f;
-                attackDelay = 0.15f;
-                attackRadius = 0f;
-                break;
-            case GameManager.WeaponType.UltimateMelee:
-                attackSpeed = 0.45f;
-                attackDelay = 0.18f;
-                attackRadius = 1.6f;
-                break;
-            default:
-                attackSpeed = 1.0f;
-                attackDelay = 0.4f;
-                attackRadius = 1.25f;
-                break;
-        }
-
-        // Update 3rd-person weapon model to match current level
-        if (thirdPersonBody != null)
-        {
-            AttachWeaponToHand(thirdPersonBody);
-        }
-    }
-
-    public void RefreshGameplayPreferences()
-    {
-        ApplyGameplayPreferences();
-    }
-
-    private void ApplyGameplayPreferences()
-    {
-        GameManager.PerspectiveMode perspective = GameManager.Instance != null
-            ? GameManager.Instance.GetPerspectiveMode()
-            : GameManager.PerspectiveMode.ThirdPerson;
-
-        if (perspective == GameManager.PerspectiveMode.ThirdPerson)
-        {
-            EnableThirdPersonView();
-        }
-        else
-        {
-            EnableFirstPersonView();
-        }
-    }
-
+    /// <summary>
+    /// Attempts to deal damage to a target. Returns true if damage was applied.
+    /// Passes byPlayer:true so the kill feed only triggers on player kills.
+    /// </summary>
     private bool TryDamageTarget(Transform target, int damage)
     {
-        if (target == null)
-        {
-            return false;
-        }
+        if (target == null) return false;
 
         EnemyController enemy = target.GetComponentInParent<EnemyController>();
         if (enemy != null && enemy.gameObject != gameObject)
         {
-            enemy.TakeDamage(damage);
+            enemy.TakeDamage(damage, byPlayer: true);
             return true;
         }
 
@@ -708,54 +563,188 @@ public class PlayerController : MonoBehaviour
         return false;
     }
 
-    private void EnableFirstPersonView()
+    private void ApplyHitReaction(Transform hitTransform, Vector3 hitDirection)
     {
-        if (cam == null)
+        if (hitTransform == null) return;
+
+        Vector3 push = new Vector3(hitDirection.x, 0f, hitDirection.z).normalized;
+        if (push.sqrMagnitude < 0.001f)
         {
+            push = (hitTransform.position - transform.position);
+            push.y = 0f;
+            push.Normalize();
+        }
+
+        Rigidbody rb = hitTransform.GetComponentInParent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.AddForce(push * hitKnockbackForce, ForceMode.VelocityChange);
             return;
         }
 
+        hitTransform.position += push * 0.18f;
+    }
+
+    private void HitTarget(Vector3 pos)
+    {
+        if (audioSource != null && hitSound != null)
+        {
+            audioSource.pitch = 1f;
+            audioSource.PlayOneShot(hitSound);
+        }
+
+        if (hitEffect != null)
+        {
+            GameObject fx = Instantiate(hitEffect, pos, Quaternion.identity);
+            Destroy(fx, 20f);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  ANIMATION
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Sets Animator parameters so an Animator Controller can drive blended animations.
+    /// Parameters: Speed (float), IsGrounded (bool), IsAttacking (bool), IsSprinting (bool).
+    /// </summary>
+    private void UpdateAnimatorParameters()
+    {
+        if (animator == null) return;
+
+        animator.SetFloat(AnimSpeed, horizontalVelocity.magnitude);
+        animator.SetBool(AnimGrounded, isGrounded);
+        animator.SetBool(AnimAttacking, isAttacking);
+        animator.SetBool(AnimSprinting, isSprinting);
+    }
+
+    private void UpdateAnimations()
+    {
+        if (isAttacking) return;
+
+        if (wasMoving)
+            ChangeAnimationState(WALK);
+        else
+            ChangeAnimationState(IDLE);
+    }
+
+    public void ChangeAnimationState(string newState)
+    {
+        if (animator == null || currentAnimationState == newState
+            || !animator.isActiveAndEnabled || !animator.gameObject.activeInHierarchy)
+            return;
+
+        currentAnimationState = newState;
+        animator.CrossFadeInFixedTime(currentAnimationState, 0.2f);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  ARENA BOUNDARIES
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void ClampInsideArena()
+    {
+        Vector3 planar = transform.position;
+        planar.y = 0f;
+
+        float maxR = Mathf.Max(1f, arenaBoundaryRadius - controller.radius - arenaBoundaryPadding);
+        if (planar.sqrMagnitude <= maxR * maxR) return;
+
+        Vector3 clamped = planar.normalized * maxR;
+        transform.position = new Vector3(clamped.x, transform.position.y, clamped.z);
+
+        // Kill outward horizontal velocity so the character doesn't push into the wall
+        if (Vector3.Dot(horizontalVelocity, planar.normalized) > 0f)
+            horizontalVelocity = Vector3.zero;
+
+        if (transform.position.y > arenaFloorHeight + 0.6f)
+        {
+            transform.position = new Vector3(transform.position.x, arenaFloorHeight, transform.position.z);
+            verticalVelocity.y = Mathf.Min(verticalVelocity.y, 0f);
+        }
+    }
+
+    private void SnapToArenaFloor()
+    {
+        if (controller == null || verticalVelocity.y > 0.05f || isGrounded) return;
+
+        Vector3 origin = transform.position + Vector3.up * 0.25f;
+        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, maxFloorSnapDistance + 0.25f, ~0, QueryTriggerInteraction.Ignore))
+            return;
+
+        float targetY = hit.point.y;
+        float currentY = transform.position.y;
+        if (Mathf.Abs(currentY - targetY) < 0.01f || currentY < targetY) return;
+        if (currentY - targetY > maxFloorSnapDistance) return;
+
+        float snappedY = Mathf.MoveTowards(currentY, targetY, floorSnapSpeed * Time.deltaTime);
+        transform.position = new Vector3(transform.position.x, snappedY, transform.position.z);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  PERSPECTIVE MANAGEMENT
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void TogglePerspective()
+    {
+        if (isThirdPersonActive)
+            EnableFirstPersonView();
+        else
+            EnableThirdPersonView();
+    }
+
+    /// <summary>Called by LevelBuilder after the player is placed in the scene.</summary>
+    public void RefreshGameplayPreferences()
+    {
+        ApplyPerspectivePreference();
+    }
+
+    private void ApplyPerspectivePreference()
+    {
+        GameManager.PerspectiveMode mode = GameManager.Instance != null
+            ? GameManager.Instance.GetPerspectiveMode()
+            : GameManager.PerspectiveMode.ThirdPerson;
+
+        if (mode == GameManager.PerspectiveMode.ThirdPerson)
+            EnableThirdPersonView();
+        else
+            EnableFirstPersonView();
+    }
+
+    private void EnableFirstPersonView()
+    {
+        if (firstPersonCam == null) return;
+
         isThirdPersonActive = false;
-        cam.gameObject.SetActive(true);
-        cam.transform.SetParent(transform, false);
-        cam.transform.localPosition = firstPersonLocalPosition;
-        cam.transform.localRotation = firstPersonLocalRotation;
+        firstPersonCam.gameObject.SetActive(true);
+        firstPersonCam.transform.SetParent(transform, false);
+        firstPersonCam.transform.localPosition = firstPersonLocalPos;
+        firstPersonCam.transform.localRotation = firstPersonLocalRot;
 
         if (runtimeThirdPersonCamera != null)
-        {
             runtimeThirdPersonCamera.gameObject.SetActive(false);
-        }
 
         SetFirstPersonRenderersVisible(true);
         EnsureThirdPersonBody();
         if (thirdPersonBody != null)
-        {
             thirdPersonBody.SetActive(false);
-        }
     }
 
     private void EnableThirdPersonView()
     {
-        if (cam == null)
-        {
-            return;
-        }
+        if (firstPersonCam == null) return;
 
         isThirdPersonActive = true;
         EnsureThirdPersonCamera();
         EnsureThirdPersonBody();
 
-        cam.gameObject.SetActive(false);
+        firstPersonCam.gameObject.SetActive(false);
         if (runtimeThirdPersonCamera != null)
-        {
             runtimeThirdPersonCamera.gameObject.SetActive(true);
-        }
 
         SetFirstPersonRenderersVisible(false);
         if (thirdPersonBody != null)
-        {
             thirdPersonBody.SetActive(true);
-        }
     }
 
     private void EnsureThirdPersonCamera()
@@ -766,68 +755,67 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
-        GameObject cameraObject = new GameObject("RuntimeThirdPersonCamera");
-        runtimeThirdPersonCamera = cameraObject.AddComponent<Camera>();
-        runtimeThirdPersonCamera.fieldOfView = cam.fieldOfView;
-        runtimeThirdPersonCamera.nearClipPlane = cam.nearClipPlane;
-        runtimeThirdPersonCamera.farClipPlane = cam.farClipPlane;
-        runtimeThirdPersonCamera.clearFlags = cam.clearFlags;
-        runtimeThirdPersonCamera.backgroundColor = cam.backgroundColor;
+        GameObject camObj = new GameObject("RuntimeThirdPersonCamera");
+        runtimeThirdPersonCamera = camObj.AddComponent<Camera>();
+        runtimeThirdPersonCamera.fieldOfView   = firstPersonCam.fieldOfView;
+        runtimeThirdPersonCamera.nearClipPlane  = firstPersonCam.nearClipPlane;
+        runtimeThirdPersonCamera.farClipPlane   = firstPersonCam.farClipPlane;
+        runtimeThirdPersonCamera.clearFlags     = firstPersonCam.clearFlags;
+        runtimeThirdPersonCamera.backgroundColor = firstPersonCam.backgroundColor;
         runtimeThirdPersonCamera.tag = "MainCamera";
-        cameraObject.AddComponent<AudioListener>();
+        camObj.AddComponent<AudioListener>();
 
-        CameraController follow = cameraObject.AddComponent<CameraController>();
-        follow.target = transform;
-        follow.offset = new Vector3(0f, 3.2f, -5.8f);
+        CameraController follow = camObj.AddComponent<CameraController>();
+        follow.target      = transform;
+        follow.offset      = new Vector3(0f, 3.2f, -5.8f);
         follow.smoothSpeed = 10f;
 
         thirdPersonCam = runtimeThirdPersonCamera;
     }
 
-    // Track the weapon attached to the player's right hand
-    private GameObject equippedWeaponObject;
+    // ════════════════════════════════════════════════════════════════════════
+    //  THIRD-PERSON BODY
+    // ════════════════════════════════════════════════════════════════════════
 
     private void EnsureThirdPersonBody()
     {
-        if (thirdPersonBody != null)
-        {
-            return;
-        }
+        if (thirdPersonBody != null) return;
 
-        // ── Try Mixamo Ch33 player character first ────────────────────────────
-        GameObject ch33Prefab = Resources.Load<GameObject>("Player/Ch33Player");
-        if (ch33Prefab != null)
+        // ── Try Mixamo Ch28 player character ──
+        GameObject playerPrefab = Resources.Load<GameObject>("Player/Ch28Player");
+        if (playerPrefab != null)
         {
-            thirdPersonBody = Instantiate(ch33Prefab, transform);
+            thirdPersonBody = Instantiate(playerPrefab, transform);
             thirdPersonBody.name = "ThirdPersonBody";
             thirdPersonBody.transform.localPosition = Vector3.zero;
             thirdPersonBody.transform.localRotation = Quaternion.identity;
-            thirdPersonBody.transform.localScale = Vector3.one;
+            thirdPersonBody.transform.localScale    = Vector3.one;
 
-            Animator ch33Animator = thirdPersonBody.GetComponentInChildren<Animator>(true);
-            if (ch33Animator != null)
+            Animator bodyAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
+            if (bodyAnimator != null)
             {
-                // Load humanoid-retargetable animation clips
-                AnimationClip idleClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
+                AnimationClip idleClip   = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
                 AnimationClip attackClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
 
-                // If knight clips not available, try embedded FBX animation
+                if (attackClip == null)
+                    attackClip = Resources.Load<AnimationClip>("Player/Ch28_nonPBR@Standing Melee Attack Downward");
+
                 if (attackClip == null)
                 {
-                    RuntimeAnimatorController rac = ch33Animator.runtimeAnimatorController;
+                    RuntimeAnimatorController rac = bodyAnimator.runtimeAnimatorController;
                     if (rac != null && rac.animationClips.Length > 0)
                         attackClip = rac.animationClips[0];
                 }
 
                 CharacterVisualAnimationPlayer animPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
-                animPlayer.Setup(ch33Animator, idleClip, attackClip);
+                animPlayer.Setup(bodyAnimator, idleClip, attackClip);
             }
 
             AttachWeaponToHand(thirdPersonBody);
             return;
         }
 
-        // ── Fallback: original Paladin knight (without the built-in sword) ───
+        // ── Fallback: Paladin knight ──
         GameObject knightPrefab = Resources.Load<GameObject>("ThirdPersonKnight/Paladin WProp J Nordstrom");
         if (knightPrefab != null)
         {
@@ -835,16 +823,15 @@ public class PlayerController : MonoBehaviour
             thirdPersonBody.name = "ThirdPersonBody";
             thirdPersonBody.transform.localPosition = Vector3.zero;
             thirdPersonBody.transform.localRotation = Quaternion.identity;
-            thirdPersonBody.transform.localScale = new Vector3(0.92f, 0.92f, 0.92f);
+            thirdPersonBody.transform.localScale    = new Vector3(0.92f, 0.92f, 0.92f);
 
-            // Hide the knight's baked-in weapon props so only our attached weapon shows
             HideKnightWeaponProp(thirdPersonBody);
 
             Animator importedAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
             if (importedAnimator != null)
             {
-                CharacterVisualAnimationPlayer animationPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
-                animationPlayer.Setup(importedAnimator,
+                CharacterVisualAnimationPlayer animPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
+                animPlayer.Setup(importedAnimator,
                     Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle"),
                     Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1"));
             }
@@ -855,7 +842,7 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
-        // ── Last resort: primitive mannequin ─────────────────────────────────
+        // ── Last resort: primitive mannequin ──
         thirdPersonBody = new GameObject("ThirdPersonBody");
         thirdPersonBody.transform.SetParent(transform, false);
         thirdPersonBody.transform.localPosition = Vector3.zero;
@@ -875,12 +862,46 @@ public class PlayerController : MonoBehaviour
         AttachWeaponToHand(thirdPersonBody);
     }
 
-    // Find the right-hand bone and attach the correct weapon model
+    // ════════════════════════════════════════════════════════════════════════
+    //  WEAPON SYSTEM
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Equips the weapon for a given level. Called at Start and by WeaponChest.
+    /// Configures damage, range, weapon type, and attaches the visual model.
+    /// </summary>
+    public void EquipWeaponForLevel(int level)
+    {
+        if (GameManager.Instance == null) return;
+
+        equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
+        attackDamage       = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(level));
+        attackDistance      = GameManager.Instance.GetWeaponRangeForLevel(level);
+        currentWeaponType  = GameManager.Instance.GetWeaponTypeForLevel(level);
+        explosionRadius    = GameManager.Instance.GetWeaponExplosionRadiusForLevel(level);
+
+        switch (currentWeaponType)
+        {
+            case GameManager.WeaponType.Flamethrower:
+                attackSpeed = 0.12f; attackDelay = 0.04f; attackRadius = 1.6f; break;
+            case GameManager.WeaponType.Sniper:
+                attackSpeed = 2.2f; attackDelay = 0.05f; attackRadius = 0f; break;
+            case GameManager.WeaponType.Explosive:
+                attackSpeed = 1.6f; attackDelay = 0.15f; attackRadius = 0f; break;
+            case GameManager.WeaponType.UltimateMelee:
+                attackSpeed = 0.45f; attackDelay = 0.18f; attackRadius = 1.6f; break;
+            default:
+                attackSpeed = 1.0f; attackDelay = 0.4f; attackRadius = 1.25f; break;
+        }
+
+        if (thirdPersonBody != null)
+            AttachWeaponToHand(thirdPersonBody);
+    }
+
     private void AttachWeaponToHand(GameObject body)
     {
         if (body == null) return;
 
-        // Remove existing weapon first
         if (equippedWeaponObject != null)
         {
             Destroy(equippedWeaponObject);
@@ -889,13 +910,11 @@ public class PlayerController : MonoBehaviour
 
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
 
-        // Primary method: use Animator humanoid bone mapping (works for all humanoid rigs)
+        // Find right hand bone via Humanoid avatar
         Transform handBone = null;
         Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
         if (bodyAnimator != null && bodyAnimator.isHuman)
-        {
             handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
-        }
 
         // Fallback: search by name
         if (handBone == null)
@@ -906,27 +925,14 @@ public class PlayerController : MonoBehaviour
                     ?? FindBone(body.transform, "right_hand");
         }
 
-        // Last resort: attach to the body root
         Transform attachPoint = handBone != null ? handBone : body.transform;
-
         equippedWeaponObject = BuildWeaponModel(level, attachPoint);
     }
 
-    private Transform FindBone(Transform root, string boneName)
-    {
-        if (root.name == boneName) return root;
-        for (int i = 0; i < root.childCount; i++)
-        {
-            Transform found = FindBone(root.GetChild(i), boneName);
-            if (found != null) return found;
-        }
-        return null;
-    }
+    // ── Weapon model factory ──
 
-    // Build a weapon visual for the given level and parent it to attachPoint
     private GameObject BuildWeaponModel(int level, Transform attachPoint)
     {
-        // Level 2 — try to load the real KnuckleDuster FBX
         if (level == 2)
         {
             GameObject kdPrefab = Resources.Load<GameObject>("Weapons/KnuckleDuster");
@@ -940,8 +946,6 @@ public class PlayerController : MonoBehaviour
                 return kd;
             }
         }
-
-        // Primitive weapon models for all other levels
         return BuildPrimitiveWeapon(level, attachPoint);
     }
 
@@ -952,135 +956,98 @@ public class PlayerController : MonoBehaviour
         root.transform.localPosition = new Vector3(0f, 0.08f, 0.02f);
         root.transform.localRotation = Quaternion.Euler(0f, 0f, -90f);
 
-        Color metalSilver = new Color(0.80f, 0.82f, 0.88f);
-        Color darkMetal   = new Color(0.28f, 0.28f, 0.32f);
-        Color brown       = new Color(0.52f, 0.32f, 0.18f);
-        Color yellow      = new Color(0.95f, 0.80f, 0.20f);
-        Color orange      = new Color(0.92f, 0.42f, 0.14f);
-        Color red         = new Color(0.85f, 0.18f, 0.18f);
+        Color silver = new Color(0.80f, 0.82f, 0.88f);
+        Color dark   = new Color(0.28f, 0.28f, 0.32f);
+        Color brown  = new Color(0.52f, 0.32f, 0.18f);
+        Color yellow = new Color(0.95f, 0.80f, 0.20f);
+        Color orange = new Color(0.92f, 0.42f, 0.14f);
+        Color red    = new Color(0.85f, 0.18f, 0.18f);
 
         switch (level)
         {
-            case 1: // Combat Knife
-                CreateWeaponPart(root.transform, "Blade", PrimitiveType.Cube,
-                    new Vector3(0f, 0f, 0.12f), new Vector3(0.018f, 0.008f, 0.22f), metalSilver);
-                CreateWeaponPart(root.transform, "Guard", PrimitiveType.Cube,
-                    new Vector3(0f, 0f, 0f), new Vector3(0.055f, 0.012f, 0.018f), darkMetal);
-                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cube,
-                    new Vector3(0f, 0f, -0.07f), new Vector3(0.022f, 0.022f, 0.10f), brown);
+            case 1:
+                MakeWeaponPart(root.transform, "Blade",  PrimitiveType.Cube, new Vector3(0f, 0f, 0.12f),  new Vector3(0.018f, 0.008f, 0.22f), silver);
+                MakeWeaponPart(root.transform, "Guard",  PrimitiveType.Cube, Vector3.zero,                 new Vector3(0.055f, 0.012f, 0.018f), dark);
+                MakeWeaponPart(root.transform, "Handle", PrimitiveType.Cube, new Vector3(0f, 0f, -0.07f),  new Vector3(0.022f, 0.022f, 0.10f),  brown);
                 break;
-
-            case 2: // Knuckle Duster (primitive fallback)
+            case 2:
                 for (int i = 0; i < 4; i++)
-                {
-                    CreateWeaponPart(root.transform, "Ring_" + i, PrimitiveType.Cylinder,
-                        new Vector3((i - 1.5f) * 0.026f, 0f, 0.02f),
-                        new Vector3(0.018f, 0.008f, 0.018f), yellow,
-                        new Vector3(90f, 0f, 0f));
-                }
-                CreateWeaponPart(root.transform, "Bar", PrimitiveType.Cube,
-                    new Vector3(0f, -0.02f, 0.02f), new Vector3(0.11f, 0.012f, 0.032f), yellow);
+                    MakeWeaponPart(root.transform, "Ring_" + i, PrimitiveType.Cylinder,
+                        new Vector3((i - 1.5f) * 0.026f, 0f, 0.02f), new Vector3(0.018f, 0.008f, 0.018f), yellow, new Vector3(90f, 0f, 0f));
+                MakeWeaponPart(root.transform, "Bar", PrimitiveType.Cube, new Vector3(0f, -0.02f, 0.02f), new Vector3(0.11f, 0.012f, 0.032f), yellow);
                 break;
-
-            case 3: // Dumbbell
-                CreateWeaponPart(root.transform, "Shaft", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, 0f), new Vector3(0.014f, 0.09f, 0.014f), darkMetal);
-                CreateWeaponPart(root.transform, "WeightL", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0.10f, 0f), new Vector3(0.045f, 0.022f, 0.045f), darkMetal);
-                CreateWeaponPart(root.transform, "WeightR", PrimitiveType.Cylinder,
-                    new Vector3(0f, -0.10f, 0f), new Vector3(0.045f, 0.022f, 0.045f), darkMetal);
+            case 3:
+                MakeWeaponPart(root.transform, "Shaft",   PrimitiveType.Cylinder, Vector3.zero,                new Vector3(0.014f, 0.09f, 0.014f),  dark);
+                MakeWeaponPart(root.transform, "WeightL", PrimitiveType.Cylinder, new Vector3(0f, 0.10f, 0f),  new Vector3(0.045f, 0.022f, 0.045f), dark);
+                MakeWeaponPart(root.transform, "WeightR", PrimitiveType.Cylinder, new Vector3(0f, -0.10f, 0f), new Vector3(0.045f, 0.022f, 0.045f), dark);
                 break;
-
-            case 4: // Boxing Glove
-                CreateWeaponPart(root.transform, "Glove", PrimitiveType.Sphere,
-                    new Vector3(0f, 0f, 0.04f), new Vector3(0.07f, 0.07f, 0.09f), red);
-                CreateWeaponPart(root.transform, "Wrist", PrimitiveType.Cube,
-                    new Vector3(0f, 0f, -0.02f), new Vector3(0.055f, 0.045f, 0.04f), red);
+            case 4:
+                MakeWeaponPart(root.transform, "Glove", PrimitiveType.Sphere, new Vector3(0f, 0f, 0.04f),  new Vector3(0.07f, 0.07f, 0.09f), red);
+                MakeWeaponPart(root.transform, "Wrist", PrimitiveType.Cube,   new Vector3(0f, 0f, -0.02f), new Vector3(0.055f, 0.045f, 0.04f), red);
                 break;
-
-            case 5: // Wrench
-                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, -0.02f), new Vector3(0.014f, 0.10f, 0.014f), metalSilver);
-                CreateWeaponPart(root.transform, "HeadA", PrimitiveType.Cube,
-                    new Vector3(-0.022f, 0f, 0.11f), new Vector3(0.012f, 0.032f, 0.04f), metalSilver);
-                CreateWeaponPart(root.transform, "HeadB", PrimitiveType.Cube,
-                    new Vector3(0.022f, 0f, 0.11f), new Vector3(0.012f, 0.032f, 0.04f), metalSilver);
+            case 5:
+                MakeWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder, new Vector3(0f, 0f, -0.02f), new Vector3(0.014f, 0.10f, 0.014f), silver);
+                MakeWeaponPart(root.transform, "HeadA",  PrimitiveType.Cube,     new Vector3(-0.022f, 0f, 0.11f), new Vector3(0.012f, 0.032f, 0.04f), silver);
+                MakeWeaponPart(root.transform, "HeadB",  PrimitiveType.Cube,     new Vector3(0.022f, 0f, 0.11f),  new Vector3(0.012f, 0.032f, 0.04f), silver);
                 break;
-
-            case 6: // Tennis Racket
-                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, -0.06f), new Vector3(0.014f, 0.10f, 0.014f), brown);
-                CreateWeaponPart(root.transform, "Frame", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, 0.11f), new Vector3(0.11f, 0.008f, 0.14f), metalSilver,
-                    new Vector3(90f, 0f, 0f));
-                CreateWeaponPart(root.transform, "Strings_H", PrimitiveType.Cube,
-                    new Vector3(0f, 0f, 0.11f), new Vector3(0.09f, 0.003f, 0.12f),
-                    new Color(0.95f, 0.95f, 0.75f));
+            case 6:
+                MakeWeaponPart(root.transform, "Handle",  PrimitiveType.Cylinder, new Vector3(0f, 0f, -0.06f), new Vector3(0.014f, 0.10f, 0.014f), brown);
+                MakeWeaponPart(root.transform, "Frame",   PrimitiveType.Cylinder, new Vector3(0f, 0f, 0.11f),  new Vector3(0.11f, 0.008f, 0.14f),  silver, new Vector3(90f, 0f, 0f));
+                MakeWeaponPart(root.transform, "Strings", PrimitiveType.Cube,     new Vector3(0f, 0f, 0.11f),  new Vector3(0.09f, 0.003f, 0.12f),  new Color(0.95f, 0.95f, 0.75f));
                 break;
-
-            case 7: // Baseball Bat
-                CreateWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, -0.05f), new Vector3(0.016f, 0.10f, 0.016f), brown);
-                CreateWeaponPart(root.transform, "Barrel", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, 0.12f), new Vector3(0.038f, 0.12f, 0.038f), brown);
+            case 7:
+                MakeWeaponPart(root.transform, "Handle", PrimitiveType.Cylinder, new Vector3(0f, 0f, -0.05f), new Vector3(0.016f, 0.10f, 0.016f), brown);
+                MakeWeaponPart(root.transform, "Barrel", PrimitiveType.Cylinder, new Vector3(0f, 0f, 0.12f),  new Vector3(0.038f, 0.12f, 0.038f), brown);
                 break;
-
-            default: // Generic club/bar for higher levels
+            default:
                 float barLen = 0.14f + (level - 8) * 0.004f;
-                Color barColor = level >= 16 ? orange : metalSilver;
-                CreateWeaponPart(root.transform, "Bar", PrimitiveType.Cylinder,
-                    new Vector3(0f, 0f, barLen * 0.5f), new Vector3(0.018f, barLen, 0.018f), barColor);
-                if (level >= 15) // Heavy end weight
-                {
-                    CreateWeaponPart(root.transform, "Head", PrimitiveType.Sphere,
-                        new Vector3(0f, 0f, barLen), new Vector3(0.04f, 0.04f, 0.04f), barColor);
-                }
+                Color barCol = level >= 16 ? orange : silver;
+                MakeWeaponPart(root.transform, "Bar", PrimitiveType.Cylinder,
+                    new Vector3(0f, 0f, barLen * 0.5f), new Vector3(0.018f, barLen, 0.018f), barCol);
+                if (level >= 15)
+                    MakeWeaponPart(root.transform, "Head", PrimitiveType.Sphere,
+                        new Vector3(0f, 0f, barLen), new Vector3(0.04f, 0.04f, 0.04f), barCol);
                 break;
         }
-
         return root;
     }
 
-    private void CreateWeaponPart(Transform parent, string name, PrimitiveType type,
-        Vector3 localPos, Vector3 localScale, Color color)
-    {
-        CreateWeaponPart(parent, name, type, localPos, localScale, color, Vector3.zero);
-    }
+    // ════════════════════════════════════════════════════════════════════════
+    //  UTILITY HELPERS
+    // ════════════════════════════════════════════════════════════════════════
 
-    private void CreateWeaponPart(Transform parent, string name, PrimitiveType type,
-        Vector3 localPos, Vector3 localScale, Color color, Vector3 eulerRot)
+    private void SetFirstPersonRenderersVisible(bool visible)
     {
-        GameObject part = GameObject.CreatePrimitive(type);
-        part.name = name;
-        part.transform.SetParent(parent, false);
-        part.transform.localPosition = localPos;
-        part.transform.localRotation = Quaternion.Euler(eulerRot);
-        part.transform.localScale = localScale;
-        // Remove colliders so weapon doesn't interfere with physics
-        Collider col = part.GetComponent<Collider>();
-        if (col != null) Destroy(col);
-        Renderer rend = part.GetComponent<Renderer>();
-        if (rend != null)
+        if (firstPersonRenderers == null) return;
+        for (int i = 0; i < firstPersonRenderers.Length; i++)
         {
-            Material mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-            if (mat == null) mat = new Material(Shader.Find("Standard"));
-            mat.color = color;
-            rend.material = mat;
+            Renderer r = firstPersonRenderers[i];
+            if (r == null) continue;
+            if (thirdPersonBody != null && r.transform.IsChildOf(thirdPersonBody.transform)) continue;
+            r.enabled = visible;
         }
     }
 
-    // Hide sword / shield props on the Paladin knight model
+    private Transform FindBone(Transform root, string boneName)
+    {
+        if (root.name == boneName) return root;
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform found = FindBone(root.GetChild(i), boneName);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     private void HideKnightWeaponProp(GameObject knightBody)
     {
-        string[] propNames = { "Sword", "Shield", "sword", "shield", "Weapon", "weapon",
-                               "Prop", "prop", "WProp", "wprop" };
+        string[] propNames = { "Sword", "Shield", "sword", "shield", "Weapon", "weapon", "Prop", "prop", "WProp", "wprop" };
         foreach (Transform t in knightBody.GetComponentsInChildren<Transform>(true))
         {
             foreach (string n in propNames)
             {
                 if (t.name.IndexOf(n, System.StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    // Disable renderer but keep the transform for bone weighting
                     Renderer r = t.GetComponent<Renderer>();
                     if (r != null) r.enabled = false;
                 }
@@ -1088,77 +1055,62 @@ public class PlayerController : MonoBehaviour
         }
     }
 
-    private GameObject CreateBodyPart(Transform parent, string name, PrimitiveType primitiveType, Vector3 localPosition, Vector3 localScale, Color color)
+    private void MakeWeaponPart(Transform parent, string name, PrimitiveType type,
+        Vector3 pos, Vector3 scale, Color color)
     {
-        return CreateBodyPart(parent, name, primitiveType, localPosition, localScale, color, Vector3.zero);
+        MakeWeaponPart(parent, name, type, pos, scale, color, Vector3.zero);
     }
 
-    private GameObject CreateBodyPart(Transform parent, string name, PrimitiveType primitiveType, Vector3 localPosition, Vector3 localScale, Color color, Vector3 localRotationEuler)
+    private void MakeWeaponPart(Transform parent, string name, PrimitiveType type,
+        Vector3 pos, Vector3 scale, Color color, Vector3 euler)
     {
-        GameObject part = GameObject.CreatePrimitive(primitiveType);
+        GameObject part = GameObject.CreatePrimitive(type);
         part.name = name;
         part.transform.SetParent(parent, false);
-        part.transform.localPosition = localPosition;
-        part.transform.localRotation = Quaternion.Euler(localRotationEuler);
-        part.transform.localScale = localScale;
-
-        Collider partCollider = part.GetComponent<Collider>();
-        if (partCollider != null)
+        part.transform.localPosition = pos;
+        part.transform.localRotation = Quaternion.Euler(euler);
+        part.transform.localScale = scale;
+        Collider col = part.GetComponent<Collider>();
+        if (col != null) Destroy(col);
+        Renderer rend = part.GetComponent<Renderer>();
+        if (rend != null)
         {
-            Destroy(partCollider);
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            Material mat = new Material(shader);
+            mat.color = color;
+            rend.material = mat;
         }
+    }
 
-        Renderer renderer = part.GetComponent<Renderer>();
-        if (renderer != null)
+    private GameObject CreateBodyPart(Transform parent, string name, PrimitiveType type,
+        Vector3 pos, Vector3 scale, Color color, Vector3 euler = default)
+    {
+        GameObject part = GameObject.CreatePrimitive(type);
+        part.name = name;
+        part.transform.SetParent(parent, false);
+        part.transform.localPosition = pos;
+        part.transform.localRotation = Quaternion.Euler(euler);
+        part.transform.localScale = scale;
+        Collider c = part.GetComponent<Collider>();
+        if (c != null) Destroy(c);
+        Renderer r = part.GetComponent<Renderer>();
+        if (r != null)
         {
-            Material material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-            material.color = color;
-            renderer.material = material;
+            Material mat = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
+            mat.color = color;
+            r.material = mat;
         }
-
         return part;
-    }
-
-    private void SetFirstPersonRenderersVisible(bool isVisible)
-    {
-        if (firstPersonRenderers == null)
-        {
-            return;
-        }
-
-        for (int i = 0; i < firstPersonRenderers.Length; i++)
-        {
-            Renderer rendererComponent = firstPersonRenderers[i];
-            if (rendererComponent == null)
-            {
-                continue;
-            }
-
-            if (thirdPersonBody != null && rendererComponent.transform.IsChildOf(thirdPersonBody.transform))
-            {
-                continue;
-            }
-
-            rendererComponent.enabled = isVisible;
-        }
-    }
-
-    private void HitTarget(Vector3 pos)
-    {
-        if (audioSource != null && hitSound != null)
-        {
-            audioSource.pitch = 1f;
-            audioSource.PlayOneShot(hitSound);
-        }
-
-        if (hitEffect != null)
-        {
-            GameObject hitEffectInstance = Instantiate(hitEffect, pos, Quaternion.identity);
-            Destroy(hitEffectInstance, 20f);
-        }
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+//  HELPER COMPONENTS (used by the third-person character body)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Adds a subtle vertical bob to the third-person body based on movement speed.
+/// </summary>
 public class CharacterVisualBob : MonoBehaviour
 {
     private Vector3 baseLocalPosition;
@@ -1172,62 +1124,56 @@ public class CharacterVisualBob : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (actorRoot == null)
-        {
-            return;
-        }
+        if (actorRoot == null) return;
 
-        float planarSpeed = 0f;
-        CharacterController controller = actorRoot.GetComponent<CharacterController>();
-        if (controller != null)
-        {
-            planarSpeed = new Vector2(controller.velocity.x, controller.velocity.z).magnitude;
-        }
+        float speed = 0f;
+        CharacterController cc = actorRoot.GetComponent<CharacterController>();
+        if (cc != null)
+            speed = new Vector2(cc.velocity.x, cc.velocity.z).magnitude;
         else
         {
-            Rigidbody body = actorRoot.GetComponent<Rigidbody>();
-            if (body != null)
-            {
-                planarSpeed = new Vector2(body.linearVelocity.x, body.linearVelocity.z).magnitude;
-            }
+            Rigidbody rb = actorRoot.GetComponent<Rigidbody>();
+            if (rb != null) speed = new Vector2(rb.linearVelocity.x, rb.linearVelocity.z).magnitude;
         }
 
-        float bob = planarSpeed > 0.1f ? Mathf.Sin(Time.time * 10f) * 0.03f : 0f;
+        float bob = speed > 0.1f ? Mathf.Sin(Time.time * 10f) * 0.03f : 0f;
         transform.localPosition = baseLocalPosition + new Vector3(0f, bob, 0f);
     }
 }
 
+/// <summary>
+/// One-shot grounder: on first frame, aligns the model's feet with the parent's Y position.
+/// </summary>
 public class CharacterVisualGrounder : MonoBehaviour
 {
     private bool grounded;
 
     private void LateUpdate()
     {
-        if (grounded)
-        {
-            return;
-        }
+        if (grounded) return;
 
         Renderer[] renderers = GetComponentsInChildren<Renderer>(true);
-        if (renderers.Length == 0)
-        {
-            return;
-        }
+        if (renderers.Length == 0) return;
 
-        float lowestPoint = float.MaxValue;
+        float lowest = float.MaxValue;
         for (int i = 0; i < renderers.Length; i++)
-        {
-            lowestPoint = Mathf.Min(lowestPoint, renderers[i].bounds.min.y);
-        }
+            lowest = Mathf.Min(lowest, renderers[i].bounds.min.y);
 
-        float delta = transform.parent.position.y - lowestPoint;
+        float delta = transform.parent.position.y - lowest;
         transform.position += new Vector3(0f, delta, 0f);
         grounded = true;
     }
 }
 
+/// <summary>
+/// PlayableGraph-based animation system with combo attacks and procedural walk cycle.
+/// Drives idle/walk blend via CharacterController velocity, and supports a multi-clip combo chain.
+/// The procedural walk rotates humanoid leg and arm bones in LateUpdate so the character
+/// walks naturally even without a dedicated walk animation clip.
+/// </summary>
 public class CharacterVisualAnimationPlayer : MonoBehaviour
 {
+    // Playable graph
     private Animator targetAnimator;
     private AnimationClip idleClip;
     private AnimationClip walkClip;
@@ -1240,43 +1186,59 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
     private AnimationMixerPlayable mixer;
     private bool isInitialized;
 
-    // Combat state — mirrors the video's Animator parameter logic
+    // Combat state
     private bool isAttacking;
     private int currentAttackIndex = -1;
     private int comboStep;
     private bool comboQueued;
-    private const float ComboWindowStart = 0.5f; // normalizedTime when combo input opens
-    private const float AutoResetTime = 0.85f;   // normalizedTime when attack auto-resets (like the video's 0.6 threshold)
+    private const float ComboWindowStart = 0.5f;
+    private const float AutoResetTime    = 0.85f;
 
     // Movement blend
     private Transform parentRoot;
     private float currentWalkWeight;
 
-    // Public state for PlayerController to read
+    // Procedural walk bones
+    private Transform leftUpperLeg, rightUpperLeg, leftLowerLeg, rightLowerLeg;
+    private Transform leftUpperArm, rightUpperArm;
+    private Transform hips, spine;
+    private float walkCycleTimer;
+    private const float WalkCycleSpeed = 7.5f;
+    private const float UpperLegSwing  = 22f;
+    private const float LowerLegBend   = 30f;
+    private const float ArmSwing       = 12f;
+    private const float HipBounce      = 0.012f;
+    private const float SpineTilt      = 2f;
+
+    // Public state
     public bool IsAttacking => isAttacking;
     public bool IsComboReady => !isAttacking || (currentAttackIndex >= 0 && GetAttackNormalizedTime() >= ComboWindowStart);
 
+    /// <summary>
+    /// Initialises the PlayableGraph with idle, walk, and attack clips.
+    /// </summary>
     public void Setup(Animator animator, AnimationClip idle, AnimationClip attack)
     {
         targetAnimator = animator;
         idleClip = idle;
 
-        // Load all attack clips for combo chain: Attack1 → Attack2 → Attack3 → Kick
+        // Build combo chain from available clips
         AnimationClip attack1 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
         AnimationClip attack2 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack2");
         AnimationClip attack3 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack3");
         AnimationClip kick    = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Kick");
+        AnimationClip meleeDownward = Resources.Load<AnimationClip>("Player/Ch28_nonPBR@Standing Melee Attack Downward");
 
-        // Build combo chain from available clips
         var clips = new System.Collections.Generic.List<AnimationClip>();
         if (attack1 != null) clips.Add(attack1);
         if (attack2 != null) clips.Add(attack2);
         if (attack3 != null) clips.Add(attack3);
         if (kick != null) clips.Add(kick);
-        if (clips.Count == 0 && attack != null) clips.Add(attack); // fallback to single clip
+        if (meleeDownward != null) clips.Add(meleeDownward);
+        if (clips.Count == 0 && attack != null) clips.Add(attack);
         attackClips = clips.ToArray();
 
-        // Walk clip
+        // Walk clip (fallback to idle if not found)
         walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Block");
         if (walkClip == null) walkClip = idle;
 
@@ -1285,11 +1247,21 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         parentRoot = transform.parent;
         targetAnimator.runtimeAnimatorController = null;
 
+        // Grab humanoid bones for procedural walk
+        leftUpperLeg  = targetAnimator.GetBoneTransform(HumanBodyBones.LeftUpperLeg);
+        rightUpperLeg = targetAnimator.GetBoneTransform(HumanBodyBones.RightUpperLeg);
+        leftLowerLeg  = targetAnimator.GetBoneTransform(HumanBodyBones.LeftLowerLeg);
+        rightLowerLeg = targetAnimator.GetBoneTransform(HumanBodyBones.RightLowerLeg);
+        leftUpperArm  = targetAnimator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
+        rightUpperArm = targetAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+        hips          = targetAnimator.GetBoneTransform(HumanBodyBones.Hips);
+        spine         = targetAnimator.GetBoneTransform(HumanBodyBones.Spine);
+
         // Build PlayableGraph: idle(0), walk(1), attacks(2+)
         int totalInputs = 2 + attackClips.Length;
-        graph = PlayableGraph.Create("CombatAnimPlayer");
+        graph  = PlayableGraph.Create("CombatAnimPlayer");
         output = AnimationPlayableOutput.Create(graph, "Animation", targetAnimator);
-        mixer = AnimationMixerPlayable.Create(graph, totalInputs);
+        mixer  = AnimationMixerPlayable.Create(graph, totalInputs);
 
         idlePlayable = AnimationClipPlayable.Create(graph, idleClip);
         idlePlayable.SetApplyFootIK(false);
@@ -1307,7 +1279,6 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
             graph.Connect(attackPlayables[i], 0, mixer, 2 + i);
         }
 
-        // Start in idle
         mixer.SetInputWeight(0, 1f);
         for (int i = 1; i < totalInputs; i++)
             mixer.SetInputWeight(i, 0f);
@@ -1321,12 +1292,11 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
     {
         if (!isInitialized || !graph.IsValid()) return;
 
-        // ── Auto-reset logic (equivalent to video's DisableParamAfterPlaying) ──
+        // Auto-reset attack when animation finishes
         if (isAttacking && currentAttackIndex >= 0)
         {
             float norm = GetAttackNormalizedTime();
 
-            // Combo window: if player queued next attack and we passed the window threshold
             if (comboQueued && norm >= ComboWindowStart)
             {
                 comboQueued = false;
@@ -1334,21 +1304,17 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
                 return;
             }
 
-            // Auto-reset: animation passed threshold with no combo queued
             if (norm >= AutoResetTime)
-            {
                 ReturnToIdle();
-            }
-            return; // don't blend movement while attacking
+            return;
         }
 
-        // ── Movement blend (equivalent to video's FB/RL parameters) ──
+        // Movement blend
         float speed = 0f;
         if (parentRoot != null)
         {
             CharacterController cc = parentRoot.GetComponent<CharacterController>();
-            if (cc != null)
-                speed = new Vector2(cc.velocity.x, cc.velocity.z).magnitude;
+            if (cc != null) speed = new Vector2(cc.velocity.x, cc.velocity.z).magnitude;
         }
 
         float targetWalk = speed > 0.5f ? 1f : 0f;
@@ -1362,20 +1328,70 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
             walkPlayable.SetSpeed(Mathf.Clamp(speed / 4f, 0.8f, 2f));
     }
 
-    /// <summary>Start a combo attack chain or queue the next hit.</summary>
+    /// <summary>
+    /// Procedural walk applied after PlayableGraph — rotates legs, arms, hips, spine.
+    /// </summary>
+    private void LateUpdate()
+    {
+        if (!isInitialized || isAttacking) return;
+        if (currentWalkWeight < 0.05f)
+        {
+            walkCycleTimer = 0f;
+            return;
+        }
+
+        float w = currentWalkWeight;
+
+        // Sync cycle speed to actual movement
+        float speed = 0f;
+        if (parentRoot != null)
+        {
+            CharacterController cc = parentRoot.GetComponent<CharacterController>();
+            if (cc != null) speed = new Vector2(cc.velocity.x, cc.velocity.z).magnitude;
+        }
+        float cycleRate = Mathf.Clamp(speed / 3.5f, 0.7f, 2.2f) * WalkCycleSpeed;
+        walkCycleTimer += Time.deltaTime * cycleRate;
+
+        float sin = Mathf.Sin(walkCycleTimer);
+        float cos = Mathf.Cos(walkCycleTimer);
+
+        // Upper legs swing forward/backward
+        if (leftUpperLeg != null)  leftUpperLeg.localRotation  *= Quaternion.Euler(sin * UpperLegSwing * w, 0f, 0f);
+        if (rightUpperLeg != null) rightUpperLeg.localRotation *= Quaternion.Euler(-sin * UpperLegSwing * w, 0f, 0f);
+
+        // Knee bend when thigh swings forward
+        float leftKnee  = Mathf.Max(0f, sin)  * LowerLegBend;
+        float rightKnee = Mathf.Max(0f, -sin) * LowerLegBend;
+        if (leftLowerLeg != null)  leftLowerLeg.localRotation  *= Quaternion.Euler(leftKnee * w, 0f, 0f);
+        if (rightLowerLeg != null) rightLowerLeg.localRotation *= Quaternion.Euler(rightKnee * w, 0f, 0f);
+
+        // Arms swing opposite to legs
+        if (leftUpperArm != null)  leftUpperArm.localRotation  *= Quaternion.Euler(-sin * ArmSwing * w, 0f, 0f);
+        if (rightUpperArm != null) rightUpperArm.localRotation *= Quaternion.Euler(sin * ArmSwing * w, 0f, 0f);
+
+        // Hip bounce (double frequency — one bounce per step)
+        if (hips != null)
+        {
+            float bounce = Mathf.Abs(Mathf.Sin(walkCycleTimer * 2f)) * HipBounce;
+            hips.localPosition += new Vector3(0f, -bounce * w, 0f);
+        }
+
+        // Slight forward lean and lateral sway
+        if (spine != null)
+            spine.localRotation *= Quaternion.Euler(SpineTilt * w, 0f, cos * SpineTilt * 0.5f * w);
+    }
+
     public void PlayAttack()
     {
         if (!isInitialized || !graph.IsValid() || attackClips.Length == 0) return;
 
         if (!isAttacking)
         {
-            // Start fresh combo
             comboStep = 0;
             PlayComboStep(0);
         }
         else if (GetAttackNormalizedTime() >= ComboWindowStart * 0.7f)
         {
-            // Queue next combo hit (input buffering like the video)
             comboQueued = true;
         }
     }
@@ -1392,11 +1408,9 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         currentAttackIndex = step;
         comboQueued = false;
 
-        // Zero all weights, full weight on current attack
         SetAllWeights(0f);
         mixer.SetInputWeight(2 + step, 1f);
 
-        // Reset playable to start
         if (attackPlayables[step].IsValid())
         {
             attackPlayables[step].SetTime(0d);
@@ -1409,15 +1423,12 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         if (currentAttackIndex < 0 || currentAttackIndex >= attackClips.Length) return 1f;
         if (!attackPlayables[currentAttackIndex].IsValid()) return 1f;
 
-        float clipLen = attackClips[currentAttackIndex].length;
-        if (clipLen <= 0f) return 1f;
-        return (float)(attackPlayables[currentAttackIndex].GetTime() / clipLen);
+        float len = attackClips[currentAttackIndex].length;
+        if (len <= 0f) return 1f;
+        return (float)(attackPlayables[currentAttackIndex].GetTime() / len);
     }
 
-    public void ResetAttack()
-    {
-        ReturnToIdle();
-    }
+    public void ResetAttack() => ReturnToIdle();
 
     private void ReturnToIdle()
     {
@@ -1425,7 +1436,6 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         currentAttackIndex = -1;
         comboStep = 0;
         comboQueued = false;
-        // Update() will smoothly blend back to idle/walk
     }
 
     private void SetAllWeights(float w)

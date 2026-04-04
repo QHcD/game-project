@@ -31,6 +31,17 @@ public class EnemyController : MonoBehaviour
     private float        _attackTimer;
     private Transform    _target;
 
+    // Tracks whether the killing blow came from the player (not another enemy)
+    private bool _lastHitByPlayer;
+
+    // Re-acquire target every N seconds instead of every frame (performance + stability)
+    private float _retargetTimer;
+    private const float RetargetInterval = 0.3f;
+
+    // Minimum gap before we push away from a neighbour (prevents stacking)
+    private const float SeparationRadius  = 1.4f;
+    private const float SeparationStrength = 3.5f;
+
     // ── Animation parameter hashes (faster than string lookup) ───────────────
     private static readonly int HashSpeed    = Animator.StringToHash("Speed");
     private static readonly int HashAttack   = Animator.StringToHash("Attack");
@@ -76,6 +87,11 @@ public class EnemyController : MonoBehaviour
     // ── State handlers ────────────────────────────────────────────────────────
     private void UpdateIdle()
     {
+        // Only scan for targets on a timer — avoids an OverlapSphere call every frame
+        _retargetTimer -= Time.deltaTime;
+        if (_retargetTimer > 0f) return;
+        _retargetTimer = RetargetInterval;
+
         _target = FindNearestTarget(detectionRadius);
         if (_target != null)
             TransitionTo(State.Chase);
@@ -83,8 +99,13 @@ public class EnemyController : MonoBehaviour
 
     private void UpdateChase()
     {
-        // Re-acquire target every 0.5 s so enemies can swap targets
-        _target = FindNearestTarget(detectionRadius * 1.5f);
+        // Re-acquire target on a timer so enemies can swap targets without per-frame physics queries
+        _retargetTimer -= Time.deltaTime;
+        if (_retargetTimer <= 0f)
+        {
+            _retargetTimer = RetargetInterval;
+            _target = FindNearestTarget(detectionRadius * 1.5f);
+        }
 
         if (_target == null)
         {
@@ -104,6 +125,9 @@ public class EnemyController : MonoBehaviour
         _agent.speed = chaseSpeed;
         _agent.SetDestination(_target.position);
         FaceTarget();
+
+        // Separation: gently push away from overlapping enemies so they don't stack
+        ApplySeparation();
     }
 
     private void UpdateAttack()
@@ -152,9 +176,10 @@ public class EnemyController : MonoBehaviour
         }
     }
 
-    public void TakeDamage(int amount)
+    public void TakeDamage(int amount, bool byPlayer = false)
     {
         if (_state == State.Dead) return;
+        if (byPlayer) _lastHitByPlayer = true;
         _currentHealth -= amount;
         if (_currentHealth <= 0) Die();
     }
@@ -167,7 +192,7 @@ public class EnemyController : MonoBehaviour
 
         if (GameManager.Instance != null)
         {
-            GameManager.Instance.EnemyKilled();
+            GameManager.Instance.EnemyKilled(_lastHitByPlayer);
         }
 
         // Remove collider so enemies don't stack on corpse
@@ -183,6 +208,38 @@ public class EnemyController : MonoBehaviour
         _state = newState;
         if (newState == State.Idle && _agent.enabled)
             _agent.ResetPath();
+    }
+
+    /// <summary>
+    /// Nudges the NavMeshAgent destination away from overlapping enemies so they
+    /// spread out naturally instead of stacking on top of each other.
+    /// </summary>
+    private void ApplySeparation()
+    {
+        if (!_agent.enabled) return;
+
+        Collider[] neighbours = Physics.OverlapSphere(transform.position, SeparationRadius);
+        Vector3 push = Vector3.zero;
+
+        foreach (var nb in neighbours)
+        {
+            if (nb.transform == transform) continue;
+            if (nb.GetComponent<EnemyController>() == null) continue;
+
+            Vector3 away = transform.position - nb.transform.position;
+            away.y = 0f;
+            float dist = away.magnitude;
+            if (dist < 0.001f) continue;
+
+            // Closer enemies push harder (linear falloff)
+            push += away.normalized * (1f - dist / SeparationRadius);
+        }
+
+        if (push.sqrMagnitude > 0.001f)
+        {
+            // Offset the destination rather than teleporting — keeps NavMesh happy
+            _agent.SetDestination(_agent.destination + push.normalized * SeparationStrength * Time.deltaTime);
+        }
     }
 
     private void FaceTarget()

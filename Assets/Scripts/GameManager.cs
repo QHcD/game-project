@@ -257,16 +257,25 @@ public class GameManager : MonoBehaviour
         score += points;
     }
 
-    public void EnemyKilled()
+    public void EnemyKilled(bool byPlayer = false)
     {
         enemiesRemaining = Mathf.Max(0, enemiesRemaining - 1);
-        AddScore(100);
+
+        // Only award score and show kill feed when the PLAYER got the kill
+        if (byPlayer)
+        {
+            AddScore(100);
+        }
 
         if (HUDManager.Instance != null)
         {
             HUDManager.Instance.UpdateEnemyCount(enemiesRemaining);
-            HUDManager.Instance.UpdateScore(score);
-            HUDManager.Instance.RegisterKill();
+
+            if (byPlayer)
+            {
+                HUDManager.Instance.UpdateScore(score);
+                HUDManager.Instance.RegisterKill();
+            }
         }
 
         if (enemiesRemaining <= 0)
@@ -276,6 +285,9 @@ public class GameManager : MonoBehaviour
     void LevelComplete()
     {
         Time.timeScale = 1f;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
         int unlocked = PlayerPrefs.GetInt("UnlockedLevels", 1);
         if (currentLevel >= unlocked)
             PlayerPrefs.SetInt("UnlockedLevels", Mathf.Min(TotalLevels, currentLevel + 1));
@@ -294,6 +306,8 @@ public class GameManager : MonoBehaviour
         if (currentLevel > TotalLevels)
         {
             currentLevel = TotalLevels;
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
             PendingMenuScreen = MenuScreen.Victory;
             SceneManager.LoadScene("MainMenu");
             return;
@@ -307,6 +321,8 @@ public class GameManager : MonoBehaviour
     public void GameOver()
     {
         Time.timeScale = 1f;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
         PendingMenuScreen = MenuScreen.GameOver;
         SceneManager.LoadScene("MainMenu");
     }
@@ -314,6 +330,8 @@ public class GameManager : MonoBehaviour
     public void GoToMainMenu()
     {
         Time.timeScale = 1f;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
         PendingMenuScreen = MenuScreen.MainMenu;
         SceneManager.LoadScene("MainMenu");
     }
