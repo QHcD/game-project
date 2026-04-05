@@ -69,6 +69,16 @@ public class PlayerController : MonoBehaviour
     [Tooltip("Knockback force applied to hit targets.")]
     public float hitKnockbackForce = 4.5f;
 
+    [Header("Ranged Combat")]
+    [Tooltip("Projectile prefab to instantiate on Fire1 (needs a Rigidbody).")]
+    public GameObject bulletPrefab;
+
+    [Tooltip("Spawn point and forward direction for projectiles.")]
+    public Transform firePoint;
+
+    [Tooltip("Force applied to the bullet on spawn (units/s).")]
+    public float bulletForce = 25f;
+
     [Header("Weapon References")]
     [Tooltip("Current weapon display name (read by HUD).")]
     public string equippedWeaponName = "Combat Knife";
@@ -167,9 +177,43 @@ public class PlayerController : MonoBehaviour
 
     private void Awake()
     {
-        controller     = GetComponent<CharacterController>();
-        animator       = GetComponentInChildren<Animator>();
-        audioSource    = GetComponent<AudioSource>();
+        controller  = GetComponent<CharacterController>();
+        audioSource = GetComponent<AudioSource>();
+
+        // ── CharacterController calibration ──────────────────────────────────
+        // Do this in code so it survives Inspector resets and prefab overrides.
+        // height=1.8 → bottom at Y=0 when player.position.y=0
+        // skinWidth=0.04 → minimal float without tunnelling
+        // minMoveDistance=0 → allow sub-mm correction moves every frame
+        if (controller != null)
+        {
+            controller.height          = 1.8f;
+            controller.radius          = 0.4f;
+            controller.center          = new Vector3(0f, 0.92f, 0f);
+            controller.skinWidth       = 0.04f;
+            controller.stepOffset      = 0.25f;
+            controller.minMoveDistance = 0f;
+        }
+
+        // ── Find the correct animator ─────────────────────────────────────────
+        // GetComponentInChildren() picks the FIRST animator it finds — which is
+        // the first-person Arms animator (not humanoid, on a camera child object).
+        // We want the Animator that drives the player's own mesh.
+        // Priority: tagged "Player" → humanoid → anything but Arms.
+        animator = null;
+        foreach (Animator a in GetComponentsInChildren<Animator>(true))
+        {
+            if (a.gameObject.name.IndexOf("Arms", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                continue; // skip first-person arm rig
+            animator = a;
+            break;
+        }
+        // If all animators are Arms-type fall back gracefully
+        if (animator == null)
+            animator = GetComponentInChildren<Animator>(true);
+
+        if (animator != null)
+            animator.applyRootMotion = false; // Prevent Mixamo root curves fighting CharacterController
 
         // Camera setup
         if (firstPersonCam == null)
@@ -195,6 +239,17 @@ public class PlayerController : MonoBehaviour
 
     private void Start()
     {
+        // ── Initial floor settle ──────────────────────────────────────────────
+        // CharacterController.isGrounded is based on the PREVIOUS frame's Move call.
+        // On frame 0 no Move has happened yet, so isGrounded = false and gravity
+        // starts accumulating before the floor is detected — causing first-frame float.
+        // A tiny downward Move here registers the floor contact before Update() runs.
+        if (controller != null)
+        {
+            controller.Move(Vector3.down * 0.02f);
+            verticalVelocity.y = -2f; // pre-load the grounded push value
+        }
+
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
         ApplyPerspectivePreference();
@@ -213,6 +268,10 @@ public class PlayerController : MonoBehaviour
         UpdateAnimations();
         UpdateAnimatorParameters();
 
+        // Ranged shoot (legacy Fire1 / left mouse)
+        if (Input.GetButtonDown("Fire1") && bulletPrefab != null)
+            Shoot();
+
         // Perspective toggle (V key)
         if (Keyboard.current != null && Keyboard.current.vKey.wasPressedThisFrame)
             TogglePerspective();
@@ -221,10 +280,14 @@ public class PlayerController : MonoBehaviour
     private void LateUpdate()
     {
         // ── UPRIGHT STABILITY ──
-        // Lock X and Z rotation so the character never tips over.
-        // Only the Y axis is allowed to rotate (turning left/right).
+        // Runs after Animator writes its output, so it overrides any Mixamo
+        // root curves that would tilt X or Z. Only Y (yaw) is ever allowed to change.
         Vector3 euler = transform.eulerAngles;
         transform.rotation = Quaternion.Euler(0f, euler.y, 0f);
+
+        // Body rotation is handled in Update (ApplyMovement) so it runs
+        // BEFORE CharacterVisualAnimationPlayer.LateUpdate writes bone positions.
+        // Rotating the body AFTER bones are placed causes double-rotation distortion.
     }
 
     private void OnEnable()
@@ -289,11 +352,20 @@ public class PlayerController : MonoBehaviour
         // Apply horizontal movement
         controller.Move(horizontalVelocity * Time.deltaTime);
 
-        // Gravity (separate from horizontal so they don't corrupt each other)
-        if (isGrounded && verticalVelocity.y < 0f)
-            verticalVelocity.y = -6f; // constant downward push keeps CC snapped to ground
-
-        verticalVelocity.y += gravity * Time.deltaTime;
+        // ── Gravity ────────────────────────────────────────────────────────────
+        // Reset UNCONDITIONALLY when grounded (not just when y < 0).
+        // The old "only reset when negative" logic allowed positive velocity
+        // to accumulate on the first frame after a jump lands, causing a
+        // momentary upward push that looked like floating.
+        if (isGrounded)
+        {
+            verticalVelocity.y = -2f; // small constant keeps CC touching floor every frame
+        }
+        else
+        {
+            verticalVelocity.y += gravity * Time.deltaTime; // gravity is negative → accelerates down
+            verticalVelocity.y = Mathf.Max(verticalVelocity.y, -40f); // terminal velocity cap
+        }
         controller.Move(verticalVelocity * Time.deltaTime);
 
         // Arena constraints
@@ -302,6 +374,32 @@ public class PlayerController : MonoBehaviour
 
         // Animation state driven by actual velocity, not input
         wasMoving = horizontalVelocity.sqrMagnitude > 0.1f;
+
+        // ── BODY ROTATION (TPS, runs in Update before any LateUpdate) ──
+        // Rotating in Update guarantees this happens BEFORE CharacterVisualAnimationPlayer
+        // writes bone positions in its own LateUpdate — prevents the double-rotation
+        // distortion that causes the "merged/melted bones" look.
+        if (isThirdPersonActive && thirdPersonBody != null)
+        {
+            Vector3 moveFlat = new Vector3(horizontalVelocity.x, 0f, horizontalVelocity.z);
+
+            if (moveFlat.sqrMagnitude > 0.01f)
+            {
+                float targetY = Quaternion.LookRotation(moveFlat).eulerAngles.y;
+                thirdPersonBody.transform.rotation = Quaternion.Slerp(
+                    thirdPersonBody.transform.rotation,
+                    Quaternion.Euler(0f, targetY, 0f),
+                    10f * Time.deltaTime);
+            }
+            else
+            {
+                // Idle: gradually align body with player root yaw
+                thirdPersonBody.transform.rotation = Quaternion.Slerp(
+                    thirdPersonBody.transform.rotation,
+                    Quaternion.Euler(0f, transform.eulerAngles.y, 0f),
+                    5f * Time.deltaTime);
+            }
+        }
     }
 
     private void Jump()
@@ -404,6 +502,31 @@ public class PlayerController : MonoBehaviour
 
         ChangeAnimationState(ATTACK1);
         FireAttack();
+    }
+
+    /// <summary>
+    /// Spawns a bullet at firePoint and propels it forward. Triggered by Fire1
+    /// when bulletPrefab is assigned. Falls back to melee Attack() otherwise.
+    /// </summary>
+    private void Shoot()
+    {
+        if (firePoint == null)
+        {
+            Debug.LogWarning("[PlayerController] firePoint not assigned – falling back to melee.");
+            Attack();
+            return;
+        }
+
+        GameObject bullet = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
+        Rigidbody rb = bullet.GetComponent<Rigidbody>();
+        if (rb != null)
+            rb.AddForce(firePoint.forward * bulletForce, ForceMode.VelocityChange);
+        else
+            Debug.LogWarning("[PlayerController] bulletPrefab has no Rigidbody – AddForce skipped.");
+
+        // Reuse IsAttacking bool to trigger attack animation
+        isAttacking = true;
+        ChangeAnimationState(ATTACK1);
     }
 
     private void FireAttack()
@@ -666,18 +789,29 @@ public class PlayerController : MonoBehaviour
 
     private void SnapToArenaFloor()
     {
-        if (controller == null || verticalVelocity.y > 0.05f || isGrounded) return;
+        // Skip during upward movement or when CC already detects ground.
+        if (controller == null || verticalVelocity.y > 0.1f || isGrounded) return;
 
-        Vector3 origin = transform.position + Vector3.up * 0.25f;
-        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, maxFloorSnapDistance + 0.25f, ~0, QueryTriggerInteraction.Ignore))
+        // Cast from slightly above the player's feet, downward.
+        // Long ray (maxFloorSnapDistance * 10) catches cases where the character
+        // drifted far above the floor due to a missed grounding frame.
+        Vector3 origin = transform.position + Vector3.up * 0.3f;
+        float   castDist = Mathf.Max(maxFloorSnapDistance * 10f, 5f);
+
+        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, castDist, ~0, QueryTriggerInteraction.Ignore))
             return;
 
-        float targetY = hit.point.y;
+        float targetY  = hit.point.y;
         float currentY = transform.position.y;
-        if (Mathf.Abs(currentY - targetY) < 0.01f || currentY < targetY) return;
-        if (currentY - targetY > maxFloorSnapDistance) return;
 
-        float snappedY = Mathf.MoveTowards(currentY, targetY, floorSnapSpeed * Time.deltaTime);
+        // Only snap DOWN (never push upward with this method)
+        if (currentY <= targetY + 0.01f) return;
+
+        // Snap speed scales with distance so close corrections are smooth
+        // but large gaps (e.g. after floating) close quickly.
+        float dist      = currentY - targetY;
+        float snapSpeed = Mathf.Lerp(floorSnapSpeed, floorSnapSpeed * 8f, Mathf.Clamp01(dist / 3f));
+        float snappedY  = Mathf.MoveTowards(currentY, targetY, snapSpeed * Time.deltaTime);
         transform.position = new Vector3(transform.position.x, snappedY, transform.position.z);
     }
 
@@ -794,6 +928,7 @@ public class PlayerController : MonoBehaviour
             Animator bodyAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
             if (bodyAnimator != null)
             {
+                bodyAnimator.applyRootMotion = false; // Stop Mixamo root curves from drifting the body
                 AnimationClip idleClip   = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
                 AnimationClip attackClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
 
@@ -830,6 +965,7 @@ public class PlayerController : MonoBehaviour
             Animator importedAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
             if (importedAnimator != null)
             {
+                importedAnimator.applyRootMotion = false; // Stop Mixamo root curves from drifting the body
                 CharacterVisualAnimationPlayer animPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
                 animPlayer.Setup(importedAnimator,
                     Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle"),
@@ -910,20 +1046,39 @@ public class PlayerController : MonoBehaviour
 
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
 
-        // Find right hand bone via Humanoid avatar
+        // Find right hand bone — try every possible naming convention Mixamo uses,
+        // then fall back to a case-insensitive contains search so the weapon never
+        // ends up at the character's feet (body.transform = Y:0 = ground level).
         Transform handBone = null;
         Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
+
+        // 1. Humanoid avatar mapping (works only when avatar is set to Humanoid in import)
         if (bodyAnimator != null && bodyAnimator.isHuman)
             handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
 
-        // Fallback: search by name
+        // 2. Exact name search — covers common Mixamo and Unity conventions
         if (handBone == null)
         {
             handBone = FindBone(body.transform, "mixamorig:RightHand")
                     ?? FindBone(body.transform, "RightHand")
                     ?? FindBone(body.transform, "Hand_R")
-                    ?? FindBone(body.transform, "right_hand");
+                    ?? FindBone(body.transform, "right_hand")
+                    ?? FindBone(body.transform, "Bip001 R Hand")
+                    ?? FindBone(body.transform, "Bip01 R Hand")
+                    ?? FindBone(body.transform, "R_Hand")
+                    ?? FindBone(body.transform, "HandRight");
         }
+
+        // 3. Case-insensitive partial-name search — catches any remaining variant
+        if (handBone == null)
+            handBone = FindBoneContaining(body.transform, "righthand")
+                    ?? FindBoneContaining(body.transform, "hand_r")
+                    ?? FindBoneContaining(body.transform, "r_hand");
+
+        // 4. Last resort: right upper arm keeps the weapon near the hand area,
+        //    infinitely better than body.transform which puts it at the feet.
+        if (handBone == null && bodyAnimator != null && bodyAnimator.isHuman)
+            handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
 
         Transform attachPoint = handBone != null ? handBone : body.transform;
         equippedWeaponObject = BuildWeaponModel(level, attachPoint);
@@ -1034,6 +1189,23 @@ public class PlayerController : MonoBehaviour
         for (int i = 0; i < root.childCount; i++)
         {
             Transform found = FindBone(root.GetChild(i), boneName);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Case-insensitive substring search across the entire bone hierarchy.
+    /// Used when exact name matching fails (avatar not Humanoid or unusual naming).
+    /// searchToken must be lowercase.
+    /// </summary>
+    private Transform FindBoneContaining(Transform root, string searchToken)
+    {
+        if (root.name.Replace(":", "").Replace(" ", "").ToLowerInvariant().Contains(searchToken))
+            return root;
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform found = FindBoneContaining(root.GetChild(i), searchToken);
             if (found != null) return found;
         }
         return null;
@@ -1222,6 +1394,19 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         targetAnimator = animator;
         idleClip = idle;
 
+        // Disable root motion BEFORE the PlayableGraph takes control.
+        // Mixamo FBX bakes position/rotation into the root bone — if root motion
+        // is on, the animator moves the body container every frame, which fights
+        // the CharacterController and causes the drifting/tilting/merged-bone look.
+        if (targetAnimator != null)
+        {
+            targetAnimator.applyRootMotion = false;
+            // Also zero the body's local transform here so the mesh sits at the
+            // correct position relative to the Player root (not sunken into ground).
+            targetAnimator.transform.localPosition = Vector3.zero;
+            targetAnimator.transform.localRotation = Quaternion.identity;
+        }
+
         // Build combo chain from available clips
         AnimationClip attack1 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
         AnimationClip attack2 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack2");
@@ -1238,9 +1423,14 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         if (clips.Count == 0 && attack != null) clips.Add(attack);
         attackClips = clips.ToArray();
 
-        // Walk clip (fallback to idle if not found)
-        walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Block");
-        if (walkClip == null) walkClip = idle;
+        // Walk clip — try natural locomotion clips in priority order.
+        // Block.anim was the old (wrong) choice: it has no foot movement.
+        // Equip has natural stepping; SwordIdle is next best; idle is last resort.
+        walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Equip");
+        if (walkClip == null)
+            walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
+        if (walkClip == null)
+            walkClip = idle;
 
         if (targetAnimator == null || idleClip == null) return;
 

@@ -20,7 +20,9 @@
       "Bash(done)",
       "mcp__unity__Unity_GetConsoleLogs",
       "Bash(dir \"C:\\\\Users\\\\97338\\\\PRISM-7\\\\Assets\\\\Scripts\"\")",
-      "mcp__unity__Unity_RunCommand"
+      "mcp__unity__Unity_RunCommand",
+      "Bash(del \"C:\\\\Users\\\\97338\\\\Documents\\\\GitHub\\\\PRISM-7\\\\Assets\\\\Scripts\\\\PlayerController.cs\")",
+      "Bash(del \"C:\\\\Users\\\\97338\\\\Documents\\\\GitHub\\\\PRISM-7\\\\Assets\\\\Scripts\\\\PlayerController.cs.meta\")"
     ]
   }
 }
