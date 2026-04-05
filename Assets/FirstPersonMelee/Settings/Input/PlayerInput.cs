@@ -127,6 +127,24 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
                     ""processors"": """",
                     ""interactions"": ""Press(behavior=2)"",
                     ""initialStateCheck"": false
+                },
+                {
+                    ""name"": ""WeaponEquip"",
+                    ""type"": ""Button"",
+                    ""id"": ""a1b2c3d4-e5f6-7890-abcd-ef1234567890"",
+                    ""expectedControlType"": ""Button"",
+                    ""processors"": """",
+                    ""interactions"": """",
+                    ""initialStateCheck"": false
+                },
+                {
+                    ""name"": ""TestThirdPerson"",
+                    ""type"": ""Button"",
+                    ""id"": ""b2c3d4e5-f678-90ab-cdef-1234567890ab"",
+                    ""expectedControlType"": ""Button"",
+                    ""processors"": """",
+                    ""interactions"": """",
+                    ""initialStateCheck"": false
                 }
             ],
             ""bindings"": [
@@ -217,6 +235,28 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
                     ""action"": ""Attack"",
                     ""isComposite"": false,
                     ""isPartOfComposite"": false
+                },
+                {
+                    ""name"": """",
+                    ""id"": ""q-key-weapon-equip"",
+                    ""path"": ""<Keyboard>/q"",
+                    ""interactions"": """",
+                    ""processors"": """",
+                    ""groups"": """",
+                    ""action"": ""WeaponEquip"",
+                    ""isComposite"": false,
+                    ""isPartOfComposite"": false
+                },
+                {
+                    ""name"": """",
+                    ""id"": ""t-key-third-person"",
+                    ""path"": ""<Keyboard>/t"",
+                    ""interactions"": """",
+                    ""processors"": """",
+                    ""groups"": """",
+                    ""action"": ""TestThirdPerson"",
+                    ""isComposite"": false,
+                    ""isPartOfComposite"": false
                 }
             ]
         }
@@ -235,6 +275,8 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
         m_Main_Jump = m_Main.FindAction("Jump", throwIfNotFound: true);
         m_Main_Look = m_Main.FindAction("Look", throwIfNotFound: true);
         m_Main_Attack = m_Main.FindAction("Attack", throwIfNotFound: true);
+        m_Main_WeaponEquip = m_Main.FindAction("WeaponEquip", throwIfNotFound: true);
+        m_Main_TestThirdPerson = m_Main.FindAction("TestThirdPerson", throwIfNotFound: true);
     }
 
     ~@PlayerInput()
@@ -319,6 +361,8 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
     private readonly InputAction m_Main_Jump;
     private readonly InputAction m_Main_Look;
     private readonly InputAction m_Main_Attack;
+    private readonly InputAction m_Main_WeaponEquip;
+    private readonly InputAction m_Main_TestThirdPerson;
     /// <summary>
     /// Provides access to input actions defined in input action map "Main".
     /// </summary>
@@ -346,6 +390,14 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
         /// Provides access to the underlying input action "Main/Attack".
         /// </summary>
         public InputAction @Attack => m_Wrapper.m_Main_Attack;
+        /// <summary>
+        /// Provides access to the underlying input action "Main/WeaponEquip".
+        /// </summary>
+        public InputAction @WeaponEquip => m_Wrapper.m_Main_WeaponEquip;
+        /// <summary>
+        /// Provides access to the underlying input action "Main/TestThirdPerson".
+        /// </summary>
+        public InputAction @TestThirdPerson => m_Wrapper.m_Main_TestThirdPerson;
         /// <summary>
         /// Provides access to the underlying input action map instance.
         /// </summary>
@@ -384,6 +436,12 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
             @Attack.started += instance.OnAttack;
             @Attack.performed += instance.OnAttack;
             @Attack.canceled += instance.OnAttack;
+            @WeaponEquip.started += instance.OnWeaponEquip;
+            @WeaponEquip.performed += instance.OnWeaponEquip;
+            @WeaponEquip.canceled += instance.OnWeaponEquip;
+            @TestThirdPerson.started += instance.OnTestThirdPerson;
+            @TestThirdPerson.performed += instance.OnTestThirdPerson;
+            @TestThirdPerson.canceled += instance.OnTestThirdPerson;
         }
 
         /// <summary>
@@ -407,6 +465,12 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
             @Attack.started -= instance.OnAttack;
             @Attack.performed -= instance.OnAttack;
             @Attack.canceled -= instance.OnAttack;
+            @WeaponEquip.started -= instance.OnWeaponEquip;
+            @WeaponEquip.performed -= instance.OnWeaponEquip;
+            @WeaponEquip.canceled -= instance.OnWeaponEquip;
+            @TestThirdPerson.started -= instance.OnTestThirdPerson;
+            @TestThirdPerson.performed -= instance.OnTestThirdPerson;
+            @TestThirdPerson.canceled -= instance.OnTestThirdPerson;
         }
 
         /// <summary>
@@ -488,5 +552,19 @@ public partial class @PlayerInput: IInputActionCollection2, IDisposable
         /// <seealso cref="UnityEngine.InputSystem.InputAction.performed" />
         /// <seealso cref="UnityEngine.InputSystem.InputAction.canceled" />
         void OnAttack(InputAction.CallbackContext context);
+        /// <summary>
+        /// Method invoked when associated input action "WeaponEquip" is either <see cref="UnityEngine.InputSystem.InputAction.started" />, <see cref="UnityEngine.InputSystem.InputAction.performed" /> or <see cref="UnityEngine.InputSystem.InputAction.canceled" />.
+        /// </summary>
+        /// <seealso cref="UnityEngine.InputSystem.InputAction.started" />
+        /// <seealso cref="UnityEngine.InputSystem.InputAction.performed" />
+        /// <seealso cref="UnityEngine.InputSystem.InputAction.canceled" />
+        void OnWeaponEquip(InputAction.CallbackContext context);
+        /// <summary>
+        /// Method invoked when associated input action "TestThirdPerson" is either <see cref="UnityEngine.InputSystem.InputAction.started" />, <see cref="UnityEngine.InputSystem.InputAction.performed" /> or <see cref="UnityEngine.InputSystem.InputAction.canceled" />.
+        /// </summary>
+        /// <seealso cref="UnityEngine.InputSystem.InputAction.started" />
+        /// <seealso cref="UnityEngine.InputSystem.InputAction.performed" />
+        /// <seealso cref="UnityEngine.InputSystem.InputAction.canceled" />
+        void OnTestThirdPerson(InputAction.CallbackContext context);
     }
 }

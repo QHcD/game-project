@@ -54,6 +54,7 @@
     <Compile Include="Assets/Scripts/MinimapCameraFollow.cs" />
     <Compile Include="Assets/Scripts/HUDManager.cs" />
     <Compile Include="Assets/Scripts/PlayerHealth.cs" />
+    <Compile Include="Assets/Scripts/WeaponSystemTester.cs" />
     <Compile Include="Assets/Scripts/MenuButtonHoverEffect.cs" />
     <Compile Include="Assets/FirstPersonMelee/Scripts/PlayerController.cs" />
     <Compile Include="Assets/Scripts/LevelSelectBuilder.cs" />
@@ -63,6 +64,7 @@
     <Compile Include="Assets/Scripts/RuntimeMenuBuilder.cs" />
     <Compile Include="Assets/FirstPersonMelee/Settings/Input/PlayerInput.cs" />
     <Compile Include="Assets/Scripts/SettingsBuilder.cs" />
+    <Compile Include="Assets/Scripts/WeaponVisibilityFix.cs" />
     <Compile Include="Assets/Scripts/LevelBuilder.cs" />
     <Compile Include="Assets/Scripts/EnemyController.cs" />
     <Compile Include="Assets/Scripts/WeaponChest.cs" />

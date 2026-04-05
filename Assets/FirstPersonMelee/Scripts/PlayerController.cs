@@ -264,6 +264,10 @@ public class PlayerController : MonoBehaviour
         input = playerInput.Main;
         input.Jump.performed   += _ => Jump();
         input.Attack.started   += _ => Attack();
+        input.WeaponEquip.performed += _ => ReequipCurrentWeapon();
+        
+        // Add T key for testing third person view
+        input.TestThirdPerson.performed += _ => ForceThirdPersonView();
 
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible   = false;
@@ -284,6 +288,9 @@ public class PlayerController : MonoBehaviour
 
         // Apply perspective first so EnsureThirdPersonBody runs before we attach the weapon.
         ApplyPerspectivePreference();
+        
+        // Always ensure third person body exists for weapon attachment
+        EnsureThirdPersonBody();
 
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
@@ -572,6 +579,16 @@ public class PlayerController : MonoBehaviour
         {
             audioSource.pitch = Random.Range(0.9f, 1.1f);
             audioSource.PlayOneShot(swordSwing);
+        }
+
+        // Call the weapon's Attack method to ensure damage is applied
+        if (equippedWeaponObject != null)
+        {
+            WeaponBase weapon = equippedWeaponObject.GetComponent<WeaponBase>();
+            if (weapon != null)
+            {
+                weapon.Attack();
+            }
         }
 
         CancelInvoke(nameof(AttackRaycast));
@@ -1092,9 +1109,85 @@ public class PlayerController : MonoBehaviour
         }
 
         if (thirdPersonBody != null)
+        {
+            // Make sure third person body is active in third person mode
+            if (isThirdPersonActive)
+            {
+                thirdPersonBody.SetActive(true);
+                Debug.Log("[EquipWeaponForLevel] Activated third person body for weapon attachment");
+            }
+            
             AttachWeaponToHand(thirdPersonBody, level);
+        }
+        else
+        {
+            Debug.LogError("[EquipWeaponForLevel] Third person body is NULL! Cannot attach weapon.");
+        }
 
         RefreshFirstPersonWeaponModel(level);
+    }
+
+    /// <summary>
+    /// Re-equips the current level's weapon when pressing Q key.
+    /// This fixes visibility issues and ensures weapon is properly attached.
+    /// </summary>
+    public void ReequipCurrentWeapon()
+    {
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        
+        // Show debug message
+        Debug.Log($"[PlayerController] Re-equipping weapon for level {level}: {GameManager.Instance.GetWeaponNameForLevel(level)}");
+        
+        // Check if third person body exists
+        if (thirdPersonBody != null)
+        {
+            Debug.Log($"[PlayerController] Third person body found: {thirdPersonBody.name}");
+        }
+        else
+        {
+            Debug.LogWarning("[PlayerController] Third person body is NULL! This might be the problem.");
+        }
+        
+        // Force re-equip weapon
+        EquipWeaponForLevel(level);
+    }
+
+    /// <summary>
+    /// Forces third person view for testing weapon visibility.
+    /// </summary>
+    public void ForceThirdPersonView()
+    {
+        Debug.Log("[PlayerController] Forcing third person view for weapon testing");
+        
+        // Force third person mode
+        isThirdPersonActive = true;
+        
+        // Ensure third person body exists and is active
+        EnsureThirdPersonBody();
+        if (thirdPersonBody != null)
+        {
+            thirdPersonBody.SetActive(true);
+            Debug.Log("[PlayerController] Third person body activated");
+        }
+        
+        // Setup third person camera
+        EnsureThirdPersonCamera();
+        if (runtimeThirdPersonCamera != null)
+        {
+            runtimeThirdPersonCamera.gameObject.SetActive(true);
+        }
+        
+        // Hide first person
+        if (firstPersonCam != null)
+        {
+            firstPersonCam.gameObject.SetActive(false);
+        }
+        
+        SetFirstPersonRenderersVisible(false);
+        
+        // Re-equip weapon to ensure it's attached
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        EquipWeaponForLevel(level);
     }
 
     private void AttachWeaponToHand(GameObject body, int weaponLevel = -1)
@@ -1110,6 +1203,8 @@ public class PlayerController : MonoBehaviour
         int level = weaponLevel >= 1
             ? weaponLevel
             : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
+
+        Debug.Log($"[AttachWeaponToHand] Attaching weapon level {level} to body: {body.name}");
 
         // Find right hand bone — try every possible naming convention Mixamo uses,
         // then fall back to a case-insensitive contains search so the weapon never
@@ -1145,22 +1240,39 @@ public class PlayerController : MonoBehaviour
                     ?? FindBoneContaining(body.transform, "hand_r")
                     ?? FindBoneContaining(body.transform, "r_hand");
 
-        // 4. Last resort: right upper arm keeps the weapon near the hand area,
+        // 4. Last resort: right upper arm keeps weapon near the hand area,
         //    infinitely better than body.transform which puts it at the feet.
         if (handBone == null && bodyAnimator != null && bodyAnimator.isHuman)
             handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
 
         Transform attachPoint = handBone != null ? handBone : body.transform;
+        
+        Debug.Log($"[AttachWeaponToHand] Hand bone found: {(handBone != null ? handBone.name : "NULL")}");
+        Debug.Log($"[AttachWeaponToHand] Attach point: {(attachPoint != null ? attachPoint.name : "NULL")}");
+        
         equippedWeaponObject = BuildWeaponModel(level, attachPoint);
+        
+        if (equippedWeaponObject != null)
+        {
+            Debug.Log($"[AttachWeaponToHand] Weapon created successfully: {equippedWeaponObject.name}");
+        }
+        else
+        {
+            Debug.LogError("[AttachWeaponToHand] Failed to create weapon!");
+        }
     }
 
     // ── Weapon model factory ──
 
     private GameObject BuildWeaponModel(int level, Transform attachPoint)
     {
+        Debug.Log($"[BuildWeaponModel] Building weapon level {level}");
+        
         if (level == 1)
         {
             GameObject knifePrefab = ResolveCombatKnifePrefab();
+            Debug.Log($"[BuildWeaponModel] Knife prefab resolved: {(knifePrefab != null ? knifePrefab.name : "NULL")}");
+            
             if (knifePrefab != null)
             {
                 GameObject knife = Instantiate(knifePrefab, attachPoint);
@@ -1168,6 +1280,34 @@ public class PlayerController : MonoBehaviour
                 knife.transform.localPosition    = combatKnifeThirdPersonLocalPos;
                 knife.transform.localRotation    = Quaternion.Euler(combatKnifeThirdPersonLocalEuler);
                 knife.transform.localScale       = combatKnifeThirdPersonLocalScale;
+                
+                Debug.Log($"[BuildWeaponModel] Knife instantiated at position: {knife.transform.localPosition}");
+                
+                // Add WeaponBase component if not already present
+                WeaponBase weaponBase = knife.GetComponent<WeaponBase>();
+                if (weaponBase == null)
+                {
+                    weaponBase = knife.AddComponent<WeaponBase>();
+                    weaponBase.weaponName = equippedWeaponName;
+                    weaponBase.damage = attackDamage;
+                    weaponBase.attackRange = attackDistance;
+                    weaponBase.isRanged = false;
+                }
+                else
+                {
+                    // Update existing WeaponBase with current values
+                    weaponBase.weaponName = equippedWeaponName;
+                    weaponBase.damage = attackDamage;
+                    weaponBase.attackRange = attackDistance;
+                }
+                
+                // Add WeaponVisibilityFix to ensure weapon is visible
+                WeaponVisibilityFix visibilityFix = knife.GetComponent<WeaponVisibilityFix>();
+                if (visibilityFix == null)
+                {
+                    knife.AddComponent<WeaponVisibilityFix>();
+                }
+                
                 return knife;
             }
         }
@@ -1182,6 +1322,32 @@ public class PlayerController : MonoBehaviour
                 kd.transform.localPosition = new Vector3(0f, 0.05f, 0f);
                 kd.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
                 kd.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
+                
+                // Add WeaponBase component if not already present
+                WeaponBase weaponBase = kd.GetComponent<WeaponBase>();
+                if (weaponBase == null)
+                {
+                    weaponBase = kd.AddComponent<WeaponBase>();
+                    weaponBase.weaponName = equippedWeaponName;
+                    weaponBase.damage = attackDamage;
+                    weaponBase.attackRange = attackDistance;
+                    weaponBase.isRanged = false;
+                }
+                else
+                {
+                    // Update existing WeaponBase with current values
+                    weaponBase.weaponName = equippedWeaponName;
+                    weaponBase.damage = attackDamage;
+                    weaponBase.attackRange = attackDistance;
+                }
+                
+                // Add WeaponVisibilityFix to ensure weapon is visible
+                WeaponVisibilityFix visibilityFix = kd.GetComponent<WeaponVisibilityFix>();
+                if (visibilityFix == null)
+                {
+                    kd.AddComponent<WeaponVisibilityFix>();
+                }
+                
                 return kd;
             }
         }
@@ -1190,16 +1356,41 @@ public class PlayerController : MonoBehaviour
 
     private GameObject ResolveCombatKnifePrefab()
     {
+        Debug.Log("[ResolveCombatKnifePrefab] Resolving combat knife prefab...");
+        
         if (combatKnifePrefabOverride != null)
+        {
+            Debug.Log($"[ResolveCombatKnifePrefab] Using override: {combatKnifePrefabOverride.name}");
             return combatKnifePrefabOverride;
+        }
+        
         if (!string.IsNullOrEmpty(combatKnifeResourcePath))
         {
+            Debug.Log($"[ResolveCombatKnifePrefab] Loading from resource path: {combatKnifeResourcePath}");
             GameObject p = Resources.Load<GameObject>(combatKnifeResourcePath);
             if (p != null)
+            {
+                Debug.Log($"[ResolveCombatKnifePrefab] Successfully loaded from Resources: {p.name}");
                 return p;
+            }
+            else
+            {
+                Debug.LogError($"[ResolveCombatKnifePrefab] Failed to load from Resources: {combatKnifeResourcePath}");
+            }
         }
+        
         // Fallback: Blink dagger from DragonSouls pack (always under Resources)
-        return Resources.Load<GameObject>("Weapons/BlinkDaggerPack/_PrefabsDaggers/Dagger4_1_3");
+        Debug.Log("[ResolveCombatKnifePrefab] Using fallback Blink dagger");
+        GameObject fallback = Resources.Load<GameObject>("Weapons/BlinkDaggerPack/_PrefabsDaggers/Dagger4_1_3");
+        if (fallback != null)
+        {
+            Debug.Log($"[ResolveCombatKnifePrefab] Successfully loaded fallback: {fallback.name}");
+        }
+        else
+        {
+            Debug.LogError("[ResolveCombatKnifePrefab] Failed to load fallback dagger!");
+        }
+        return fallback;
     }
 
     private void CacheFirstPersonWeaponSlot()
@@ -1259,6 +1450,22 @@ public class PlayerController : MonoBehaviour
         root.transform.SetParent(attachPoint, false);
         root.transform.localPosition = new Vector3(0f, 0.08f, 0.02f);
         root.transform.localRotation = Quaternion.Euler(0f, 0f, -90f);
+
+        // Add weapon collider for damage detection
+        BoxCollider weaponCollider = root.AddComponent<BoxCollider>();
+        weaponCollider.isTrigger = true;
+        weaponCollider.center = Vector3.zero;
+        weaponCollider.size = Vector3.one * 0.1f;
+
+        // Add WeaponBase component for damage dealing
+        WeaponBase weaponBase = root.AddComponent<WeaponBase>();
+        weaponBase.weaponName = equippedWeaponName;
+        weaponBase.damage = attackDamage;
+        weaponBase.attackRange = attackDistance;
+        weaponBase.isRanged = (currentWeaponType == GameManager.WeaponType.Sniper || currentWeaponType == GameManager.WeaponType.Explosive);
+        
+        // Add WeaponVisibilityFix to ensure weapon is visible
+        WeaponVisibilityFix visibilityFix = root.AddComponent<WeaponVisibilityFix>();
 
         Color silver = new Color(0.80f, 0.82f, 0.88f);
         Color dark   = new Color(0.28f, 0.28f, 0.32f);

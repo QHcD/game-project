@@ -18,18 +18,14 @@ public class WeaponBase : MonoBehaviour
         animator = GetComponentInParent<Animator>();
     }
 
-    void Update()
-    {
-        if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame
-            && Time.time >= nextAttackTime)
-        {
-            nextAttackTime = Time.time + 1f / attackRate;
-            Attack();
-        }
-    }
+    // Remove Update() - let PlayerController handle input and call Attack() directly
 
-    protected virtual void Attack()
+    public virtual void Attack()
     {
+        if (Time.time < nextAttackTime) return;
+        
+        nextAttackTime = Time.time + 1f / attackRate;
+        
         if (animator != null) animator.SetTrigger("Attack");
 
         Collider[] hits = Physics.OverlapSphere(transform.position, attackRange);
