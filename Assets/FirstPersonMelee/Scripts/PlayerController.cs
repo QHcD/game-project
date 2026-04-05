@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.Playables;
@@ -92,6 +93,31 @@ public class PlayerController : MonoBehaviour
     [Tooltip("Sound played on successful hit.")]
     public AudioClip hitSound;
 
+    [Header("Level 1 — Combat knife (FBX)")]
+    [Tooltip("Drag your imported knife prefab/model here, or leave empty to load from Resources.")]
+    public GameObject combatKnifePrefabOverride;
+
+    [Tooltip("Resources path with no extension (file must live under a Resources folder). Default: MWII tactical knife in Resources/Weapons/TacticalKnife/.")]
+    public string combatKnifeResourcePath = "Weapons/TacticalKnife/TacticalKnife";
+
+    [Tooltip("Local position on the third-person right hand.")]
+    public Vector3 combatKnifeThirdPersonLocalPos = new Vector3(0f, 0.08f, 0.02f);
+
+    [Tooltip("Local rotation on the third-person right hand (degrees).")]
+    public Vector3 combatKnifeThirdPersonLocalEuler = new Vector3(0f, 0f, -90f);
+
+    [Tooltip("Local scale on the third-person weapon socket. Use (1,1,1) first; shrink only if the model is huge.")]
+    public Vector3 combatKnifeThirdPersonLocalScale = Vector3.one;
+
+    [Tooltip("Local position on the first-person Weapon socket (camera / arms rig).")]
+    public Vector3 combatKnifeFirstPersonLocalPos;
+
+    [Tooltip("Local rotation on the first-person Weapon socket (degrees).")]
+    public Vector3 combatKnifeFirstPersonLocalEuler;
+
+    [Tooltip("Local scale for the knife in first person.")]
+    public Vector3 combatKnifeFirstPersonLocalScale = Vector3.one;
+
     [Header("Arena Boundaries")]
     public float arenaBoundaryRadius = 22.8f;
     public float arenaBoundaryPadding = 0.35f;
@@ -150,6 +176,10 @@ public class PlayerController : MonoBehaviour
     private GameObject thirdPersonBody;
     private Renderer[] firstPersonRenderers;
     private GameObject equippedWeaponObject;
+
+    private Transform firstPersonWeaponSlot;
+    private MeshRenderer firstPersonWeaponMeshRenderer;
+    private GameObject firstPersonKnifeInstance;
 
     // Animator parameter hashes (connect these in an Animator Controller)
     private static readonly int AnimSpeed      = Animator.StringToHash("Speed");
@@ -224,6 +254,8 @@ public class PlayerController : MonoBehaviour
             firstPersonLocalRot = firstPersonCam.transform.localRotation;
         }
 
+        CacheFirstPersonWeaponSlot();
+
         firstPersonRenderers = GetComponentsInChildren<Renderer>(true);
         resolvedAttackMask = attackLayer == 0 ? ~0 : attackLayer;
 
@@ -250,9 +282,11 @@ public class PlayerController : MonoBehaviour
             verticalVelocity.y = -2f; // pre-load the grounded push value
         }
 
+        // Apply perspective first so EnsureThirdPersonBody runs before we attach the weapon.
+        ApplyPerspectivePreference();
+
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
-        ApplyPerspectivePreference();
     }
 
     private void Update()
@@ -929,9 +963,20 @@ public class PlayerController : MonoBehaviour
             if (bodyAnimator != null)
             {
                 bodyAnimator.applyRootMotion = false;
+                EnsureMeleeAnimEventSink(bodyAnimator.gameObject);
 
-                AnimationClip idleClip   = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Idle");
-                AnimationClip attackClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
+                int lvl = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+                AnimationClip idleClip   = null;
+                AnimationClip attackClip = null;
+                if (lvl == 1)
+                {
+                    idleClip   = KevinMeleeResources.FindClip(KevinMeleeResources.OneHandedFolder, "CombatIdle", "1H@CombatIdle");
+                    attackClip = KevinMeleeResources.FindClip(KevinMeleeResources.RightHandFolder, "Attack01", "RightHand");
+                }
+                if (idleClip == null)
+                    idleClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Idle");
+                if (attackClip == null)
+                    attackClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
 
                 if (attackClip == null)
                 {
@@ -946,7 +991,6 @@ public class PlayerController : MonoBehaviour
 
             thirdPersonBody.AddComponent<CharacterVisualGrounder>();
             thirdPersonBody.AddComponent<CharacterVisualBob>();
-            AttachWeaponToHand(thirdPersonBody);
             return;
         }
 
@@ -966,15 +1010,25 @@ public class PlayerController : MonoBehaviour
             if (importedAnimator != null)
             {
                 importedAnimator.applyRootMotion = false;
+                EnsureMeleeAnimEventSink(importedAnimator.gameObject);
+                int lvl = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+                AnimationClip idleClip   = null;
+                AnimationClip attackClip = null;
+                if (lvl == 1)
+                {
+                    idleClip   = KevinMeleeResources.FindClip(KevinMeleeResources.OneHandedFolder, "CombatIdle", "1H@CombatIdle");
+                    attackClip = KevinMeleeResources.FindClip(KevinMeleeResources.RightHandFolder, "Attack01", "RightHand");
+                }
+                if (idleClip == null)
+                    idleClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Idle");
+                if (attackClip == null)
+                    attackClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
                 CharacterVisualAnimationPlayer animPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
-                animPlayer.Setup(importedAnimator,
-                    Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Idle"),
-                    Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1"));
+                animPlayer.Setup(importedAnimator, idleClip, attackClip);
             }
 
             thirdPersonBody.AddComponent<CharacterVisualGrounder>();
             thirdPersonBody.AddComponent<CharacterVisualBob>();
-            AttachWeaponToHand(thirdPersonBody);
             return;
         }
 
@@ -995,7 +1049,6 @@ public class PlayerController : MonoBehaviour
             new Vector3(-0.18f, 0.30f, 0f), new Vector3(0.18f, 0.62f, 0.18f), new Color(0.10f, 0.10f, 0.12f));
         CreateBodyPart(thirdPersonBody.transform, "RightLeg", PrimitiveType.Cylinder,
             new Vector3(0.18f, 0.30f, 0f), new Vector3(0.18f, 0.62f, 0.18f), new Color(0.10f, 0.10f, 0.12f));
-        AttachWeaponToHand(thirdPersonBody);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1008,33 +1061,43 @@ public class PlayerController : MonoBehaviour
     /// </summary>
     public void EquipWeaponForLevel(int level)
     {
-        if (GameManager.Instance == null) return;
+        level = Mathf.Max(1, level);
 
-        equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
-        attackDamage       = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(level));
-        attackDistance      = GameManager.Instance.GetWeaponRangeForLevel(level);
-        currentWeaponType  = GameManager.Instance.GetWeaponTypeForLevel(level);
-        explosionRadius    = GameManager.Instance.GetWeaponExplosionRadiusForLevel(level);
-
-        switch (currentWeaponType)
+        if (GameManager.Instance != null)
         {
-            case GameManager.WeaponType.Flamethrower:
-                attackSpeed = 0.12f; attackDelay = 0.04f; attackRadius = 1.6f; break;
-            case GameManager.WeaponType.Sniper:
-                attackSpeed = 2.2f; attackDelay = 0.05f; attackRadius = 0f; break;
-            case GameManager.WeaponType.Explosive:
-                attackSpeed = 1.6f; attackDelay = 0.15f; attackRadius = 0f; break;
-            case GameManager.WeaponType.UltimateMelee:
-                attackSpeed = 0.45f; attackDelay = 0.18f; attackRadius = 1.6f; break;
-            default:
-                attackSpeed = 1.0f; attackDelay = 0.4f; attackRadius = 1.25f; break;
+            equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
+            attackDamage       = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(level));
+            attackDistance      = GameManager.Instance.GetWeaponRangeForLevel(level);
+            currentWeaponType  = GameManager.Instance.GetWeaponTypeForLevel(level);
+            explosionRadius    = GameManager.Instance.GetWeaponExplosionRadiusForLevel(level);
+
+            switch (currentWeaponType)
+            {
+                case GameManager.WeaponType.Flamethrower:
+                    attackSpeed = 0.12f; attackDelay = 0.04f; attackRadius = 1.6f; break;
+                case GameManager.WeaponType.Sniper:
+                    attackSpeed = 2.2f; attackDelay = 0.05f; attackRadius = 0f; break;
+                case GameManager.WeaponType.Explosive:
+                    attackSpeed = 1.6f; attackDelay = 0.15f; attackRadius = 0f; break;
+                case GameManager.WeaponType.UltimateMelee:
+                    attackSpeed = 0.45f; attackDelay = 0.18f; attackRadius = 1.6f; break;
+                default:
+                    attackSpeed = 1.0f; attackDelay = 0.4f; attackRadius = 1.25f; break;
+            }
+        }
+        else
+        {
+            equippedWeaponName = "Combat Knife";
+            currentWeaponType  = GameManager.WeaponType.Melee;
         }
 
         if (thirdPersonBody != null)
-            AttachWeaponToHand(thirdPersonBody);
+            AttachWeaponToHand(thirdPersonBody, level);
+
+        RefreshFirstPersonWeaponModel(level);
     }
 
-    private void AttachWeaponToHand(GameObject body)
+    private void AttachWeaponToHand(GameObject body, int weaponLevel = -1)
     {
         if (body == null) return;
 
@@ -1044,7 +1107,9 @@ public class PlayerController : MonoBehaviour
             equippedWeaponObject = null;
         }
 
-        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        int level = weaponLevel >= 1
+            ? weaponLevel
+            : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
 
         // Find right hand bone — try every possible naming convention Mixamo uses,
         // then fall back to a case-insensitive contains search so the weapon never
@@ -1052,8 +1117,13 @@ public class PlayerController : MonoBehaviour
         Transform handBone = null;
         Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
 
+        // 0. Blink / DragonSouls stylized human weapon sockets (designed for props)
+        handBone = FindBone(body.transform, "RIGHT_HAND_REST")
+                ?? FindBone(body.transform, "RIGHT_HAND_COMBAT")
+                ?? FindBoneContaining(body.transform, "right_hand_rest");
+
         // 1. Humanoid avatar mapping (works only when avatar is set to Humanoid in import)
-        if (bodyAnimator != null && bodyAnimator.isHuman)
+        if (handBone == null && bodyAnimator != null && bodyAnimator.isHuman)
             handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
 
         // 2. Exact name search — covers common Mixamo and Unity conventions
@@ -1088,6 +1158,20 @@ public class PlayerController : MonoBehaviour
 
     private GameObject BuildWeaponModel(int level, Transform attachPoint)
     {
+        if (level == 1)
+        {
+            GameObject knifePrefab = ResolveCombatKnifePrefab();
+            if (knifePrefab != null)
+            {
+                GameObject knife = Instantiate(knifePrefab, attachPoint);
+                knife.name = "WeaponModel";
+                knife.transform.localPosition    = combatKnifeThirdPersonLocalPos;
+                knife.transform.localRotation    = Quaternion.Euler(combatKnifeThirdPersonLocalEuler);
+                knife.transform.localScale       = combatKnifeThirdPersonLocalScale;
+                return knife;
+            }
+        }
+
         if (level == 2)
         {
             GameObject kdPrefab = Resources.Load<GameObject>("Weapons/KnuckleDuster");
@@ -1102,6 +1186,71 @@ public class PlayerController : MonoBehaviour
             }
         }
         return BuildPrimitiveWeapon(level, attachPoint);
+    }
+
+    private GameObject ResolveCombatKnifePrefab()
+    {
+        if (combatKnifePrefabOverride != null)
+            return combatKnifePrefabOverride;
+        if (!string.IsNullOrEmpty(combatKnifeResourcePath))
+        {
+            GameObject p = Resources.Load<GameObject>(combatKnifeResourcePath);
+            if (p != null)
+                return p;
+        }
+        // Fallback: Blink dagger from DragonSouls pack (always under Resources)
+        return Resources.Load<GameObject>("Weapons/BlinkDaggerPack/_PrefabsDaggers/Dagger4_1_3");
+    }
+
+    private void CacheFirstPersonWeaponSlot()
+    {
+        firstPersonWeaponSlot = null;
+        firstPersonWeaponMeshRenderer = null;
+        if (firstPersonCam == null) return;
+
+        Transform[] trs = firstPersonCam.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < trs.Length; i++)
+        {
+            if (trs[i].name != "Weapon") continue;
+            firstPersonWeaponSlot = trs[i];
+            firstPersonWeaponMeshRenderer = firstPersonWeaponSlot.GetComponent<MeshRenderer>();
+            break;
+        }
+    }
+
+    private void ClearFirstPersonKnifeVisual()
+    {
+        if (firstPersonKnifeInstance != null)
+        {
+            Destroy(firstPersonKnifeInstance);
+            firstPersonKnifeInstance = null;
+        }
+        if (firstPersonWeaponMeshRenderer != null)
+            firstPersonWeaponMeshRenderer.enabled = true;
+    }
+
+    /// <summary>
+    /// Level 1: show imported knife on the FP "Weapon" socket; other levels restore the default mesh renderer.
+    /// </summary>
+    private void RefreshFirstPersonWeaponModel(int level)
+    {
+        ClearFirstPersonKnifeVisual();
+        if (level != 1 || firstPersonWeaponSlot == null)
+            return;
+
+        GameObject knifePrefab = ResolveCombatKnifePrefab();
+        if (knifePrefab == null)
+            return;
+
+        if (firstPersonWeaponMeshRenderer != null)
+            firstPersonWeaponMeshRenderer.enabled = false;
+
+        firstPersonKnifeInstance = Instantiate(knifePrefab, firstPersonWeaponSlot);
+        firstPersonKnifeInstance.name = "CombatKnifeMesh";
+        Transform t = firstPersonKnifeInstance.transform;
+        t.localPosition = combatKnifeFirstPersonLocalPos;
+        t.localRotation = Quaternion.Euler(combatKnifeFirstPersonLocalEuler);
+        t.localScale    = combatKnifeFirstPersonLocalScale;
     }
 
     private GameObject BuildPrimitiveWeapon(int level, Transform attachPoint)
@@ -1211,6 +1360,13 @@ public class PlayerController : MonoBehaviour
         return null;
     }
 
+    private static void EnsureMeleeAnimEventSink(GameObject animatorHost)
+    {
+        if (animatorHost == null) return;
+        if (animatorHost.GetComponent<MeleeAnimationEventSink>() == null)
+            animatorHost.AddComponent<MeleeAnimationEventSink>();
+    }
+
     private void HideKnightWeaponProp(GameObject knightBody)
     {
         string[] propNames = { "Sword", "Shield", "sword", "shield", "Weapon", "weapon", "Prop", "prop", "WProp", "wprop" };
@@ -1273,6 +1429,35 @@ public class PlayerController : MonoBehaviour
             r.material = mat;
         }
         return part;
+    }
+}
+
+/// <summary>
+/// Kevin Iglesias "Melee Warrior — One Handed" FBX clips (same pack as DragonSouls).
+/// Lives under Resources/Player/KevinMeleeDS so they load at runtime for Level 1 knife.
+/// </summary>
+public static class KevinMeleeResources
+{
+    public const string OneHandedFolder = "Player/KevinMeleeDS/Animations/OneHanded";
+    public const string MovementFolder  = "Player/KevinMeleeDS/Animations/OneHanded/Movement";
+    public const string RightHandFolder = "Player/KevinMeleeDS/Animations/OneHanded/RightHand";
+
+    public static AnimationClip FindClip(string resourcesDir, params string[] nameHintsInOrder)
+    {
+        if (string.IsNullOrEmpty(resourcesDir)) return null;
+        AnimationClip[] clips = Resources.LoadAll<AnimationClip>(resourcesDir);
+        if (clips == null || clips.Length == 0) return null;
+        foreach (string hint in nameHintsInOrder)
+        {
+            for (int i = 0; i < clips.Length; i++)
+            {
+                AnimationClip c = clips[i];
+                if (c == null) continue;
+                if (c.name.IndexOf(hint, System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    return c;
+            }
+        }
+        return null;
     }
 }
 
@@ -1407,32 +1592,50 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
             targetAnimator.transform.localRotation = Quaternion.identity;
         }
 
-        // Build combo chain from available clips (DragonSouls / Explosive RPG pack first, then legacy knight).
-        AnimationClip ds1 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
-        AnimationClip ds2 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack2");
-        AnimationClip ds3 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack3");
-        AnimationClip dsH = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedHeavyAttack1");
-        AnimationClip attack1 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
-        AnimationClip attack2 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack2");
-        AnimationClip attack3 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack3");
-        AnimationClip kick    = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Kick");
-        AnimationClip meleeDownward = Resources.Load<AnimationClip>("Player/Ch28_nonPBR@Standing Melee Attack Downward");
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
 
-        var clips = new System.Collections.Generic.List<AnimationClip>();
-        if (ds1 != null) clips.Add(ds1);
-        if (ds2 != null) clips.Add(ds2);
-        if (ds3 != null) clips.Add(ds3);
-        if (dsH != null) clips.Add(dsH);
-        if (attack1 != null) clips.Add(attack1);
-        if (attack2 != null) clips.Add(attack2);
-        if (attack3 != null) clips.Add(attack3);
-        if (kick != null) clips.Add(kick);
-        if (meleeDownward != null) clips.Add(meleeDownward);
+        var clips = new List<AnimationClip>();
+        if (level == 1)
+        {
+            AnimationClip kRight = KevinMeleeResources.FindClip(KevinMeleeResources.RightHandFolder, "Attack01", "RightHand");
+            if (kRight != null)
+            {
+                clips.Add(kRight);
+                clips.Add(kRight);
+                clips.Add(kRight);
+            }
+        }
+
+        if (clips.Count == 0)
+        {
+            AnimationClip ds1 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
+            AnimationClip ds2 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack2");
+            AnimationClip ds3 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack3");
+            AnimationClip dsH = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedHeavyAttack1");
+            AnimationClip attack1 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
+            AnimationClip attack2 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack2");
+            AnimationClip attack3 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack3");
+            AnimationClip kick    = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Kick");
+            AnimationClip meleeDownward = Resources.Load<AnimationClip>("Player/Ch28_nonPBR@Standing Melee Attack Downward");
+            if (ds1 != null) clips.Add(ds1);
+            if (ds2 != null) clips.Add(ds2);
+            if (ds3 != null) clips.Add(ds3);
+            if (dsH != null) clips.Add(dsH);
+            if (attack1 != null) clips.Add(attack1);
+            if (attack2 != null) clips.Add(attack2);
+            if (attack3 != null) clips.Add(attack3);
+            if (kick != null) clips.Add(kick);
+            if (meleeDownward != null) clips.Add(meleeDownward);
+        }
         if (clips.Count == 0 && attack != null) clips.Add(attack);
         attackClips = clips.ToArray();
 
-        // Walk / locomotion clip priority
-        walkClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Run-Forward");
+        // Walk / locomotion — Level 1: Kevin one-handed run (DragonSouls); else Explosive / knight.
+        walkClip = null;
+        if (level == 1)
+            walkClip = KevinMeleeResources.FindClip(KevinMeleeResources.MovementFolder, "1H@Run", "Run01", "SwordRun", "Sprint");
+        if (walkClip == null)
+            walkClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Run-Forward");
         if (walkClip == null)
             walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Equip");
         if (walkClip == null)

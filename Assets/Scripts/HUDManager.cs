@@ -461,8 +461,12 @@ public class HUDManager : MonoBehaviour
         tmp.textWrappingMode = TextWrappingModes.NoWrap;
         tmp.overflowMode = TextOverflowModes.Overflow;
         if (prismFont != null)
-        {
             tmp.font = prismFont;
+        if (tmp.font == null)
+        {
+            TMP_FontAsset lib = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+            if (lib != null)
+                tmp.font = lib;
         }
 
         RectTransform rect = existing.GetComponent<RectTransform>();
@@ -494,12 +498,15 @@ public class HUDManager : MonoBehaviour
         minimapContentImage.sprite = GetOrCreateCircleSprite();
         minimapContentImage.color = Color.white;
 
+        // Only one Graphic (Image OR RawImage) per GameObject — remove Image before adding RawImage.
         minimapImage = minimapContent.GetComponent<RawImage>();
         if (minimapImage == null)
         {
-            Destroy(minimapContentImage);
+            if (minimapContentImage != null)
+                DestroyImmediate(minimapContentImage);
             minimapImage = minimapContent.AddComponent<RawImage>();
         }
+        minimapImage.color = Color.white;
 
         GameObject arrowObject = CreateImage(minimapRoot.transform, "PlayerArrow",
             new Color(1f, 0.96f, 0.92f, 1f),
@@ -709,16 +716,21 @@ public class HUDManager : MonoBehaviour
 
     private TMP_FontAsset ResolvePrismFont()
     {
+        TMP_FontAsset lib = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        if (lib != null)
+            return lib;
+
         TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
         for (int i = 0; i < fonts.Length; i++)
         {
             TMP_FontAsset font = fonts[i];
             if (font != null && (font.name.Contains("Arizona") || font.name.Contains("Azonix")))
-            {
                 return font;
-            }
         }
 
-        return TMP_Settings.defaultFontAsset;
+        if (TMP_Settings.defaultFontAsset != null)
+            return TMP_Settings.defaultFontAsset;
+
+        return lib;
     }
 }

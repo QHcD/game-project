@@ -399,13 +399,15 @@ public class LevelBuilder : MonoBehaviour
         NavMeshSurface navMeshSurface = FindFirstObjectByType<NavMeshSurface>();
         if (navMeshSurface != null)
         {
+            navMeshSurface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
             return navMeshSurface;
         }
 
         GameObject surfaceObject = new GameObject("NavMesh Surface");
         navMeshSurface = surfaceObject.AddComponent<NavMeshSurface>();
         navMeshSurface.collectObjects = CollectObjects.All;
-        navMeshSurface.useGeometry = NavMeshCollectGeometry.RenderMeshes;
+        // Physics colliders avoid "mesh does not allow read access" on imported / default Plane meshes in builds.
+        navMeshSurface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
         return navMeshSurface;
     }
 
