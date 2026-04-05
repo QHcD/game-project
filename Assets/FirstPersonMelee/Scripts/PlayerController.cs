@@ -1213,9 +1213,9 @@ public class PlayerController : MonoBehaviour
         Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
 
         // 0. Blink / DragonSouls stylized human weapon sockets (designed for props)
-        handBone = FindBone(body.transform, "RIGHT_HAND_REST")
-                ?? FindBone(body.transform, "RIGHT_HAND_COMBAT")
-                ?? FindBoneContaining(body.transform, "right_hand_rest");
+        handBone = FindBone(body.transform, "RIGHT_HAND_COMBAT")
+                ?? FindBone(body.transform, "RIGHT_HAND_REST")
+                ?? FindBoneContaining(body.transform, "right_hand_combat");
 
         // 1. Humanoid avatar mapping (works only when avatar is set to Humanoid in import)
         if (handBone == null && bodyAnimator != null && bodyAnimator.isHuman)

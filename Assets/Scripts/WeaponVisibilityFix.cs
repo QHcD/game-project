@@ -34,6 +34,24 @@ public class WeaponVisibilityFix : MonoBehaviour
             if (!renderer.gameObject.activeInHierarchy)
                 renderer.gameObject.SetActive(true);
         }
+
+        // Handle SkinnedMeshRenderers used by imported FBXs
+        SkinnedMeshRenderer[] skinnedRenderers = GetComponentsInChildren<SkinnedMeshRenderer>(true);
+        foreach (SkinnedMeshRenderer renderer in skinnedRenderers)
+        {
+            if (!renderer.enabled)
+                renderer.enabled = true;
+            
+            if (renderer.materials == null || renderer.materials.Length == 0)
+            {
+                Material defaultMat = new Material(Shader.Find("Standard"));
+                defaultMat.color = Color.white;
+                renderer.material = defaultMat;
+            }
+            
+            if (!renderer.gameObject.activeInHierarchy)
+                renderer.gameObject.SetActive(true);
+        }
         
         // Get all mesh filters
         MeshFilter[] filters = GetComponentsInChildren<MeshFilter>(true);
