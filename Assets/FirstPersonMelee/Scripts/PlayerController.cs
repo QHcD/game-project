@@ -915,11 +915,11 @@ public class PlayerController : MonoBehaviour
     {
         if (thirdPersonBody != null) return;
 
-        // ── Try Mixamo Ch28 player character ──
-        GameObject playerPrefab = Resources.Load<GameObject>("Player/Ch28Player");
-        if (playerPrefab != null)
+        // ── Primary: DragonSouls / Blink stylized human (meshes under Assets/DragonSouls, prefab in Resources) ──
+        GameObject dragonSoulsBodyPrefab = Resources.Load<GameObject>("Player/DragonSoulsThirdPersonBody");
+        if (dragonSoulsBodyPrefab != null)
         {
-            thirdPersonBody = Instantiate(playerPrefab, transform);
+            thirdPersonBody = Instantiate(dragonSoulsBodyPrefab, transform);
             thirdPersonBody.name = "ThirdPersonBody";
             thirdPersonBody.transform.localPosition = Vector3.zero;
             thirdPersonBody.transform.localRotation = Quaternion.identity;
@@ -928,12 +928,10 @@ public class PlayerController : MonoBehaviour
             Animator bodyAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
             if (bodyAnimator != null)
             {
-                bodyAnimator.applyRootMotion = false; // Stop Mixamo root curves from drifting the body
-                AnimationClip idleClip   = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
-                AnimationClip attackClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
+                bodyAnimator.applyRootMotion = false;
 
-                if (attackClip == null)
-                    attackClip = Resources.Load<AnimationClip>("Player/Ch28_nonPBR@Standing Melee Attack Downward");
+                AnimationClip idleClip   = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Idle");
+                AnimationClip attackClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
 
                 if (attackClip == null)
                 {
@@ -946,6 +944,8 @@ public class PlayerController : MonoBehaviour
                 animPlayer.Setup(bodyAnimator, idleClip, attackClip);
             }
 
+            thirdPersonBody.AddComponent<CharacterVisualGrounder>();
+            thirdPersonBody.AddComponent<CharacterVisualBob>();
             AttachWeaponToHand(thirdPersonBody);
             return;
         }
@@ -965,11 +965,11 @@ public class PlayerController : MonoBehaviour
             Animator importedAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
             if (importedAnimator != null)
             {
-                importedAnimator.applyRootMotion = false; // Stop Mixamo root curves from drifting the body
+                importedAnimator.applyRootMotion = false;
                 CharacterVisualAnimationPlayer animPlayer = thirdPersonBody.AddComponent<CharacterVisualAnimationPlayer>();
                 animPlayer.Setup(importedAnimator,
-                    Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle"),
-                    Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1"));
+                    Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Idle"),
+                    Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1"));
             }
 
             thirdPersonBody.AddComponent<CharacterVisualGrounder>();
@@ -1407,7 +1407,11 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
             targetAnimator.transform.localRotation = Quaternion.identity;
         }
 
-        // Build combo chain from available clips
+        // Build combo chain from available clips (DragonSouls / Explosive RPG pack first, then legacy knight).
+        AnimationClip ds1 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
+        AnimationClip ds2 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack2");
+        AnimationClip ds3 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack3");
+        AnimationClip dsH = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedHeavyAttack1");
         AnimationClip attack1 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack1");
         AnimationClip attack2 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack2");
         AnimationClip attack3 = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Attack3");
@@ -1415,6 +1419,10 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         AnimationClip meleeDownward = Resources.Load<AnimationClip>("Player/Ch28_nonPBR@Standing Melee Attack Downward");
 
         var clips = new System.Collections.Generic.List<AnimationClip>();
+        if (ds1 != null) clips.Add(ds1);
+        if (ds2 != null) clips.Add(ds2);
+        if (ds3 != null) clips.Add(ds3);
+        if (dsH != null) clips.Add(dsH);
         if (attack1 != null) clips.Add(attack1);
         if (attack2 != null) clips.Add(attack2);
         if (attack3 != null) clips.Add(attack3);
@@ -1423,10 +1431,10 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         if (clips.Count == 0 && attack != null) clips.Add(attack);
         attackClips = clips.ToArray();
 
-        // Walk clip — try natural locomotion clips in priority order.
-        // Block.anim was the old (wrong) choice: it has no foot movement.
-        // Equip has natural stepping; SwordIdle is next best; idle is last resort.
-        walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Equip");
+        // Walk / locomotion clip priority
+        walkClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Run-Forward");
+        if (walkClip == null)
+            walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/Equip");
         if (walkClip == null)
             walkClip = Resources.Load<AnimationClip>("ThirdPersonKnight/Animations/SwordIdle");
         if (walkClip == null)
