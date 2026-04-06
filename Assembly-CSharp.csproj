@@ -64,12 +64,15 @@
     <Compile Include="Assets/Scripts/RuntimeMenuBuilder.cs" />
     <Compile Include="Assets/FirstPersonMelee/Settings/Input/PlayerInput.cs" />
     <Compile Include="Assets/Scripts/SettingsBuilder.cs" />
+    <Compile Include="Assets/Scripts/WeaponHitbox.cs" />
     <Compile Include="Assets/Scripts/WeaponVisibilityFix.cs" />
     <Compile Include="Assets/Scripts/LevelBuilder.cs" />
     <Compile Include="Assets/Scripts/EnemyController.cs" />
     <Compile Include="Assets/Scripts/WeaponChest.cs" />
+    <Compile Include="Assets/Scripts/WeaponIKHandler.cs" />
     <Compile Include="Assets/TutorialInfo/Scripts/Readme.cs" />
     <Compile Include="Assets/Scripts/CreditsBuilder.cs" />
+    <Compile Include="Assets/Scripts/GunController.cs" />
     <Compile Include="Assets/Scripts/GameManager.cs" />
     <Compile Include="Assets/Scripts/CameraController.cs" />
     <Compile Include="Assets/FirstPersonMelee/Scripts/Actor.cs" />

@@ -101,13 +101,13 @@ public class PlayerController : MonoBehaviour
     public string combatKnifeResourcePath = "Weapons/TacticalKnife/TacticalKnife";
 
     [Tooltip("Local position on the third-person right hand.")]
-    public Vector3 combatKnifeThirdPersonLocalPos = new Vector3(0f, 0.08f, 0.02f);
+    public Vector3 combatKnifeThirdPersonLocalPos = Vector3.zero;
 
     [Tooltip("Local rotation on the third-person right hand (degrees).")]
-    public Vector3 combatKnifeThirdPersonLocalEuler = new Vector3(0f, 0f, -90f);
+    public Vector3 combatKnifeThirdPersonLocalEuler = Vector3.zero;
 
     [Tooltip("Local scale on the third-person weapon socket. Use (1,1,1) first; shrink only if the model is huge.")]
-    public Vector3 combatKnifeThirdPersonLocalScale = Vector3.one;
+    public Vector3 combatKnifeThirdPersonLocalScale = new Vector3(0.02f, 0.02f, 0.02f);
 
     [Tooltip("Local position on the first-person Weapon socket (camera / arms rig).")]
     public Vector3 combatKnifeFirstPersonLocalPos;
@@ -175,7 +175,7 @@ public class PlayerController : MonoBehaviour
     // Third-person body
     private GameObject thirdPersonBody;
     private Renderer[] firstPersonRenderers;
-    private GameObject equippedWeaponObject;
+    [HideInInspector] public GameObject equippedWeaponObject;
 
     private Transform firstPersonWeaponSlot;
     private MeshRenderer firstPersonWeaponMeshRenderer;
@@ -199,7 +199,14 @@ public class PlayerController : MonoBehaviour
     // ════════════════════════════════════════════════════════════════════════
 
     /// <summary>Returns whichever camera is currently active.</summary>
-    private Camera ActiveCamera => isThirdPersonActive ? runtimeThirdPersonCamera : firstPersonCam;
+    public Camera ActiveCamera => isThirdPersonActive ? runtimeThirdPersonCamera : firstPersonCam;
+
+    /// <summary>Returns the third person body GameObject for external scripts.</summary>
+    public GameObject GetThirdPersonBody() => thirdPersonBody;
+
+    /// <summary>Returns true if currently in melee weapon mode (not gun).</summary>
+    public bool IsMeleeWeapon => currentWeaponType == GameManager.WeaponType.Melee
+                              || currentWeaponType == GameManager.WeaponType.UltimateMelee;
 
     // ════════════════════════════════════════════════════════════════════════
     //  LIFECYCLE
@@ -263,11 +270,13 @@ public class PlayerController : MonoBehaviour
         playerInput = new PlayerInput();
         input = playerInput.Main;
         input.Jump.performed   += _ => Jump();
-        input.Attack.started   += _ => Attack();
-        input.WeaponEquip.performed += _ => ReequipCurrentWeapon();
-        
-        // Add T key for testing third person view
-        input.TestThirdPerson.performed += _ => ForceThirdPersonView();
+        input.Attack.started   += _ =>
+        {
+            // Only use melee attack when GunController is NOT handling combat
+            GunController gun = GetComponent<GunController>();
+            if (gun == null || !gun.IsActive)
+                Attack();
+        };
 
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible   = false;
@@ -309,8 +318,12 @@ public class PlayerController : MonoBehaviour
         UpdateAnimations();
         UpdateAnimatorParameters();
 
-        // Ranged shoot (legacy Fire1 / left mouse)
-        if (Input.GetButtonDown("Fire1") && bulletPrefab != null)
+        // Check if GunController is handling combat (ranged weapons)
+        GunController gun = GetComponent<GunController>();
+        bool gunActive = gun != null && gun.IsActive;
+
+        // Only use legacy shoot/melee when gun is NOT active
+        if (!gunActive && Input.GetButtonDown("Fire1") && bulletPrefab != null)
             Shoot();
 
         // Perspective toggle (V key)
@@ -432,14 +445,7 @@ public class PlayerController : MonoBehaviour
                     Quaternion.Euler(0f, targetY, 0f),
                     10f * Time.deltaTime);
             }
-            else
-            {
-                // Idle: gradually align body with player root yaw
-                thirdPersonBody.transform.rotation = Quaternion.Slerp(
-                    thirdPersonBody.transform.rotation,
-                    Quaternion.Euler(0f, transform.eulerAngles.y, 0f),
-                    5f * Time.deltaTime);
-            }
+            // Keep last facing on idle to avoid snap-back when strafing.
         }
     }
 
@@ -586,13 +592,29 @@ public class PlayerController : MonoBehaviour
         {
             WeaponBase weapon = equippedWeaponObject.GetComponent<WeaponBase>();
             if (weapon != null)
-            {
                 weapon.Attack();
+
+            // Enable weapon hitbox during the swing window (fallback for clips without events)
+            WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
+            if (hitbox != null)
+            {
+                hitbox.EnableHitbox();
+                CancelInvoke(nameof(DisableWeaponHitbox));
+                Invoke(nameof(DisableWeaponHitbox), attackDelay + 0.3f);
             }
         }
 
         CancelInvoke(nameof(AttackRaycast));
         Invoke(nameof(AttackRaycast), attackDelay);
+    }
+
+    private void DisableWeaponHitbox()
+    {
+        if (equippedWeaponObject != null)
+        {
+            WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
+            if (hitbox != null) hitbox.DisableHitbox();
+        }
     }
 
     private void UpdateCombatState()
@@ -629,6 +651,7 @@ public class PlayerController : MonoBehaviour
             case GameManager.WeaponType.Flamethrower: AttackFlamethrower(cam); break;
             case GameManager.WeaponType.Sniper:       AttackSniper(cam);      break;
             case GameManager.WeaponType.Explosive:    AttackExplosive(cam);   break;
+            case GameManager.WeaponType.Rifle:        AttackSniper(cam);      break;
             default:                                  AttackMelee(cam);       break;
         }
 
@@ -637,24 +660,41 @@ public class PlayerController : MonoBehaviour
             GameManager.WeaponType.Sniper      => -4.5f,
             GameManager.WeaponType.Explosive   => -3.5f,
             GameManager.WeaponType.Flamethrower => -0.6f,
+            GameManager.WeaponType.Rifle       => -2.0f,
             _ => -1.2f
         };
     }
 
     private void AttackMelee(Camera cam)
     {
-        Vector3 center = cam.transform.position + cam.transform.forward * attackDistance;
-        Collider[] hits = Physics.OverlapSphere(center, attackRadius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
+        Vector3 centerA = cam.transform.position + cam.transform.forward * attackDistance;
+        Vector3 centerB = transform.position + Vector3.up * 1.0f + transform.forward * (attackDistance * 0.5f);
+        Collider[] hitsA = Physics.OverlapSphere(centerA, attackRadius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
+        Collider[] hitsB = Physics.OverlapSphere(centerB, attackRadius * 1.1f, resolvedAttackMask, QueryTriggerInteraction.Ignore);
         bool landed = false;
 
-        for (int i = 0; i < hits.Length; i++)
+        for (int i = 0; i < hitsA.Length; i++)
         {
-            if (TryDamageTarget(hits[i].transform, attackDamage))
+            if (TryDamageTarget(hitsA[i].transform, attackDamage))
             {
-                ApplyHitReaction(hits[i].transform, cam.transform.forward);
-                HitTarget(hits[i].ClosestPoint(center));
+                ApplyHitReaction(hitsA[i].transform, cam.transform.forward);
+                HitTarget(hitsA[i].ClosestPoint(centerA));
                 landed = true;
                 break;
+            }
+        }
+
+        if (!landed)
+        {
+            for (int i = 0; i < hitsB.Length; i++)
+            {
+                if (TryDamageTarget(hitsB[i].transform, attackDamage))
+                {
+                    ApplyHitReaction(hitsB[i].transform, transform.forward);
+                    HitTarget(hitsB[i].ClosestPoint(centerB));
+                    landed = true;
+                    break;
+                }
             }
         }
 
@@ -983,9 +1023,16 @@ public class PlayerController : MonoBehaviour
                 EnsureMeleeAnimEventSink(bodyAnimator.gameObject);
 
                 int lvl = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+                GameManager.WeaponType wType = GameManager.Instance != null
+                    ? GameManager.Instance.GetWeaponTypeForLevel(lvl)
+                    : GameManager.WeaponType.Melee;
+                bool isMelee = (wType == GameManager.WeaponType.Melee || wType == GameManager.WeaponType.UltimateMelee);
+
                 AnimationClip idleClip   = null;
                 AnimationClip attackClip = null;
-                if (lvl == 1)
+
+                // Use one-handed weapon combat animations for ALL melee levels
+                if (isMelee)
                 {
                     idleClip   = KevinMeleeResources.FindClip(KevinMeleeResources.OneHandedFolder, "CombatIdle", "1H@CombatIdle");
                     attackClip = KevinMeleeResources.FindClip(KevinMeleeResources.RightHandFolder, "Attack01", "RightHand");
@@ -1029,9 +1076,14 @@ public class PlayerController : MonoBehaviour
                 importedAnimator.applyRootMotion = false;
                 EnsureMeleeAnimEventSink(importedAnimator.gameObject);
                 int lvl = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+                GameManager.WeaponType wType = GameManager.Instance != null
+                    ? GameManager.Instance.GetWeaponTypeForLevel(lvl)
+                    : GameManager.WeaponType.Melee;
+                bool isMelee = (wType == GameManager.WeaponType.Melee || wType == GameManager.WeaponType.UltimateMelee);
+
                 AnimationClip idleClip   = null;
                 AnimationClip attackClip = null;
-                if (lvl == 1)
+                if (isMelee)
                 {
                     idleClip   = KevinMeleeResources.FindClip(KevinMeleeResources.OneHandedFolder, "CombatIdle", "1H@CombatIdle");
                     attackClip = KevinMeleeResources.FindClip(KevinMeleeResources.RightHandFolder, "Attack01", "RightHand");
@@ -1098,6 +1150,8 @@ public class PlayerController : MonoBehaviour
                     attackSpeed = 1.6f; attackDelay = 0.15f; attackRadius = 0f; break;
                 case GameManager.WeaponType.UltimateMelee:
                     attackSpeed = 0.45f; attackDelay = 0.18f; attackRadius = 1.6f; break;
+                case GameManager.WeaponType.Rifle:
+                    attackSpeed = 0.3f; attackDelay = 0.05f; attackRadius = 0f; break;
                 default:
                     attackSpeed = 1.0f; attackDelay = 0.4f; attackRadius = 1.25f; break;
             }
@@ -1116,8 +1170,11 @@ public class PlayerController : MonoBehaviour
                 thirdPersonBody.SetActive(true);
                 Debug.Log("[EquipWeaponForLevel] Activated third person body for weapon attachment");
             }
-            
+
             AttachWeaponToHand(thirdPersonBody, level);
+
+            // Setup two-handed IK for ranged weapons
+            SetupWeaponIK(currentWeaponType);
         }
         else
         {
@@ -1125,6 +1182,54 @@ public class PlayerController : MonoBehaviour
         }
 
         RefreshFirstPersonWeaponModel(level);
+
+        // Activate/deactivate GunController based on weapon type
+        SetupGunController(currentWeaponType, level);
+    }
+
+    /// <summary>
+    /// Sets up the WeaponIKHandler on the third-person body for two-handed weapon grip.
+    /// </summary>
+    private void SetupWeaponIK(GameManager.WeaponType weaponType)
+    {
+        if (thirdPersonBody == null) return;
+
+        WeaponIKHandler ikHandler = thirdPersonBody.GetComponent<WeaponIKHandler>();
+        if (ikHandler == null)
+            ikHandler = thirdPersonBody.AddComponent<WeaponIKHandler>();
+
+        if (equippedWeaponObject != null)
+            ikHandler.SetupForWeapon(equippedWeaponObject, weaponType);
+        else
+            ikHandler.DisableIK();
+    }
+
+    /// <summary>
+    /// Activates GunController for ranged levels, deactivates for melee.
+    /// </summary>
+    private void SetupGunController(GameManager.WeaponType weaponType, int level)
+    {
+        bool isRanged = weaponType != GameManager.WeaponType.Melee
+                     && weaponType != GameManager.WeaponType.UltimateMelee;
+
+        GunController gun = GetComponent<GunController>();
+
+        if (isRanged)
+        {
+            if (gun == null)
+                gun = gameObject.AddComponent<GunController>();
+
+            gun.Activate(attackDamage, attackDistance, weaponType);
+            Debug.Log($"[PlayerController] GunController activated for {equippedWeaponName}");
+        }
+        else
+        {
+            if (gun != null)
+            {
+                gun.Deactivate();
+                Debug.Log("[PlayerController] GunController deactivated (melee weapon)");
+            }
+        }
     }
 
     /// <summary>
@@ -1206,22 +1311,29 @@ public class PlayerController : MonoBehaviour
 
         Debug.Log($"[AttachWeaponToHand] Attaching weapon level {level} to body: {body.name}");
 
-        // Find right hand bone — try every possible naming convention Mixamo uses,
-        // then fall back to a case-insensitive contains search so the weapon never
-        // ends up at the character's feet (body.transform = Y:0 = ground level).
+        // Find the best weapon socket — prefer dedicated weapon joints (jointItemR),
+        // then humanoid hand bone, then naming convention fallbacks.
         Transform handBone = null;
         Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
 
-        // 0. Blink / DragonSouls stylized human weapon sockets (designed for props)
-        handBone = FindBone(body.transform, "RIGHT_HAND_COMBAT")
-                ?? FindBone(body.transform, "RIGHT_HAND_REST")
-                ?? FindBoneContaining(body.transform, "right_hand_combat");
+        // 0. Dedicated weapon socket joints (DragonSouls / Blink models)
+        handBone = FindBone(body.transform, "jointItemR")
+                ?? FindBone(body.transform, "RIGHT_HAND_COMBAT");
 
-        // 1. Humanoid avatar mapping (works only when avatar is set to Humanoid in import)
+        // 1. Humanoid avatar mapping
         if (handBone == null && bodyAnimator != null && bodyAnimator.isHuman)
             handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
 
-        // 2. Exact name search — covers common Mixamo and Unity conventions
+        // 2. DragonSouls / Blink bone names
+        if (handBone == null)
+        {
+            handBone = FindBone(body.transform, "Wrist_R")
+                    ?? FindBone(body.transform, "RIGHT_HAND_REST")
+                    ?? FindBoneContaining(body.transform, "right_hand_combat")
+                    ?? FindBoneContaining(body.transform, "right_hand_rest");
+        }
+
+        // 3. Exact name search — Mixamo and Unity conventions
         if (handBone == null)
         {
             handBone = FindBone(body.transform, "mixamorig:RightHand")
@@ -1234,14 +1346,15 @@ public class PlayerController : MonoBehaviour
                     ?? FindBone(body.transform, "HandRight");
         }
 
-        // 3. Case-insensitive partial-name search — catches any remaining variant
+        // 4. Case-insensitive partial-name search
         if (handBone == null)
             handBone = FindBoneContaining(body.transform, "righthand")
                     ?? FindBoneContaining(body.transform, "hand_r")
-                    ?? FindBoneContaining(body.transform, "r_hand");
+                    ?? FindBoneContaining(body.transform, "r_hand")
+                    ?? FindBoneContaining(body.transform, "wrist_r")
+                    ?? FindBoneContaining(body.transform, "jointitemr");
 
-        // 4. Last resort: right upper arm keeps weapon near the hand area,
-        //    infinitely better than body.transform which puts it at the feet.
+        // 5. Last resort: right upper arm keeps weapon near the hand area
         if (handBone == null && bodyAnimator != null && bodyAnimator.isHuman)
             handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
 
@@ -1264,93 +1377,175 @@ public class PlayerController : MonoBehaviour
 
     // ── Weapon model factory ──
 
+    // Target max dimension (meters) for each weapon so it fits naturally in the hand.
+    private static readonly float[] WeaponTargetSize = {
+        0.30f, // 1  Tactical Knife
+        0.95f, // 2  Katana
+        1.00f, // 3  Shovel
+        0.85f, // 4  Baseball Bat
+        0.30f, // 5  Nunchucks
+        0.40f, // 6  Wrench
+        0.55f, // 7  Crowbar
+        0.85f, // 8  Hammer
+        0.70f, // 9  Axe
+        1.40f, // 10 Spear
+        0.30f, // 11 Spoon
+        0.40f, // 12 Saw
+        0.35f, // 13 Sickle
+        0.80f, // 14 Minigun
+        0.95f, // 15 RPG
+        1.10f, // 16 Bazooka
+        0.75f, // 17 Flamethrower
+        0.90f, // 18 M16
+        0.28f, // 19 TYR (revolver)
+        1.30f  // 20 Sniper M82
+    };
+
+    // Local Euler rotation offsets per weapon for correct grip orientation.
+    private static readonly Vector3[] WeaponRotationOffset = {
+        new Vector3(-90f,   0f,   0f), // 1  Knife — blade forward
+        new Vector3(-90f,   0f,   0f), // 2  Katana — blade forward
+        new Vector3(-90f,   0f,   0f), // 3  Shovel
+        new Vector3(-90f,   0f,   0f), // 4  Baseball Bat
+        new Vector3(-90f,   0f,   0f), // 5  Nunchucks
+        new Vector3(-90f,   0f,   0f), // 6  Wrench
+        new Vector3(-90f,   0f,   0f), // 7  Crowbar
+        new Vector3(-90f,   0f,   0f), // 8  Hammer
+        new Vector3(-90f,   0f,   0f), // 9  Axe
+        new Vector3(-90f,   0f,   0f), // 10 Spear
+        new Vector3(-90f,   0f,   0f), // 11 Spoon
+        new Vector3(-90f,   0f,   0f), // 12 Saw
+        new Vector3(-90f,   0f,   0f), // 13 Sickle
+        new Vector3(  0f,  90f,   0f), // 14 Minigun — barrel forward
+        new Vector3(  0f,  90f,   0f), // 15 RPG — barrel forward
+        new Vector3(  0f,  90f,   0f), // 16 Bazooka — barrel forward
+        new Vector3(  0f,  90f,   0f), // 17 Flamethrower — nozzle forward
+        new Vector3(  0f,  90f,   0f), // 18 M16 — barrel forward
+        new Vector3(  0f,  90f,   0f), // 19 TYR — barrel forward
+        new Vector3(  0f,  90f,   0f)  // 20 Sniper — barrel forward
+    };
+
+    // Local position offsets per weapon for hand grip alignment.
+    private static readonly Vector3[] WeaponPositionOffset = {
+        new Vector3( 0.00f,  0.05f,  0.00f), // 1  Knife
+        new Vector3( 0.00f,  0.05f,  0.00f), // 2  Katana
+        new Vector3( 0.00f,  0.05f,  0.00f), // 3  Shovel
+        new Vector3( 0.00f,  0.05f,  0.00f), // 4  Baseball Bat
+        new Vector3( 0.00f,  0.05f,  0.00f), // 5  Nunchucks
+        new Vector3( 0.00f,  0.05f,  0.00f), // 6  Wrench
+        new Vector3( 0.00f,  0.05f,  0.00f), // 7  Crowbar
+        new Vector3( 0.00f,  0.05f,  0.00f), // 8  Hammer
+        new Vector3( 0.00f,  0.05f,  0.00f), // 9  Axe
+        new Vector3( 0.00f,  0.05f,  0.00f), // 10 Spear
+        new Vector3( 0.00f,  0.05f,  0.00f), // 11 Spoon
+        new Vector3( 0.00f,  0.05f,  0.00f), // 12 Saw
+        new Vector3( 0.00f,  0.05f,  0.00f), // 13 Sickle
+        new Vector3( 0.00f,  0.02f,  0.10f), // 14 Minigun
+        new Vector3( 0.00f,  0.02f,  0.10f), // 15 RPG
+        new Vector3( 0.00f,  0.02f,  0.10f), // 16 Bazooka
+        new Vector3( 0.00f,  0.02f,  0.10f), // 17 Flamethrower
+        new Vector3( 0.00f,  0.02f,  0.08f), // 18 M16
+        new Vector3( 0.00f,  0.03f,  0.05f), // 19 TYR
+        new Vector3( 0.00f,  0.02f,  0.10f)  // 20 Sniper
+    };
+
+    private void NormalizeWeaponScale(GameObject weapon, float targetMaxDimension)
+    {
+        // Temporarily unparent so we measure the model at identity transform
+        // without any parent bone scale distortion.
+        Transform savedParent = weapon.transform.parent;
+        weapon.transform.SetParent(null, false);
+        weapon.transform.position = Vector3.zero;
+        weapon.transform.rotation = Quaternion.identity;
+        weapon.transform.localScale = Vector3.one;
+
+        // Measure bounds from mesh data (reliable even before first render)
+        Bounds combinedBounds = new Bounds(Vector3.zero, Vector3.zero);
+        bool hasAny = false;
+
+        foreach (MeshFilter mf in weapon.GetComponentsInChildren<MeshFilter>(true))
+        {
+            if (mf.sharedMesh == null) continue;
+            Bounds mb = mf.sharedMesh.bounds;
+            // Transform mesh-local bounds center to weapon-local space
+            Vector3 worldCenter = mf.transform.TransformPoint(mb.center);
+            Vector3 worldExtents = Vector3.Scale(mb.extents, mf.transform.lossyScale);
+            Bounds wb = new Bounds(worldCenter, worldExtents * 2f);
+            if (!hasAny) { combinedBounds = wb; hasAny = true; }
+            else combinedBounds.Encapsulate(wb);
+        }
+
+        foreach (SkinnedMeshRenderer smr in weapon.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            if (smr.sharedMesh == null) continue;
+            Bounds mb = smr.sharedMesh.bounds;
+            Vector3 worldCenter = smr.transform.TransformPoint(mb.center);
+            Vector3 worldExtents = Vector3.Scale(mb.extents, smr.transform.lossyScale);
+            Bounds wb = new Bounds(worldCenter, worldExtents * 2f);
+            if (!hasAny) { combinedBounds = wb; hasAny = true; }
+            else combinedBounds.Encapsulate(wb);
+        }
+
+        // Reparent before applying changes
+        weapon.transform.SetParent(savedParent, false);
+
+        if (!hasAny) return;
+
+        float maxDim = Mathf.Max(combinedBounds.size.x, Mathf.Max(combinedBounds.size.y, combinedBounds.size.z));
+        if (maxDim < 0.001f) return;
+
+        float scale = targetMaxDimension / maxDim;
+        weapon.transform.localScale = Vector3.one * scale;
+
+        Debug.Log($"[NormalizeWeaponScale] Native size={maxDim:F2}m, target={targetMaxDimension:F2}m, applied scale={scale:F4}");
+    }
+
     private GameObject BuildWeaponModel(int level, Transform attachPoint)
     {
         Debug.Log($"[BuildWeaponModel] Building weapon level {level}");
-        
-        if (level == 1)
+
+        GameObject levelPrefab = ResolveWeaponPrefabForLevel(level);
+        if (levelPrefab != null)
         {
-            GameObject knifePrefab = ResolveCombatKnifePrefab();
-            Debug.Log($"[BuildWeaponModel] Knife prefab resolved: {(knifePrefab != null ? knifePrefab.name : "NULL")}");
-            
-            if (knifePrefab != null)
+            GameObject weapon = Instantiate(levelPrefab, attachPoint);
+            weapon.name = "WeaponModel";
+
+            int idx = Mathf.Clamp(level - 1, 0, WeaponTargetSize.Length - 1);
+            NormalizeWeaponScale(weapon, WeaponTargetSize[idx]);
+            weapon.transform.localPosition = WeaponPositionOffset[idx];
+            weapon.transform.localRotation = Quaternion.Euler(WeaponRotationOffset[idx]);
+
+            WeaponBase weaponBase = weapon.GetComponent<WeaponBase>();
+            if (weaponBase == null)
+                weaponBase = weapon.AddComponent<WeaponBase>();
+            weaponBase.weaponName = equippedWeaponName;
+            weaponBase.damage = attackDamage;
+            weaponBase.attackRange = attackDistance;
+            weaponBase.isRanged = (currentWeaponType != GameManager.WeaponType.Melee
+                                && currentWeaponType != GameManager.WeaponType.UltimateMelee);
+
+            if (weapon.GetComponent<WeaponVisibilityFix>() == null)
+                weapon.AddComponent<WeaponVisibilityFix>();
+
+            // Add hitbox collider for swing-based damage detection
+            if (currentWeaponType == GameManager.WeaponType.Melee || currentWeaponType == GameManager.WeaponType.UltimateMelee)
             {
-                GameObject knife = Instantiate(knifePrefab, attachPoint);
-                knife.name = "WeaponModel";
-                knife.transform.localPosition    = combatKnifeThirdPersonLocalPos;
-                knife.transform.localRotation    = Quaternion.Euler(combatKnifeThirdPersonLocalEuler);
-                knife.transform.localScale       = combatKnifeThirdPersonLocalScale;
-                
-                Debug.Log($"[BuildWeaponModel] Knife instantiated at position: {knife.transform.localPosition}");
-                
-                // Add WeaponBase component if not already present
-                WeaponBase weaponBase = knife.GetComponent<WeaponBase>();
-                if (weaponBase == null)
-                {
-                    weaponBase = knife.AddComponent<WeaponBase>();
-                    weaponBase.weaponName = equippedWeaponName;
-                    weaponBase.damage = attackDamage;
-                    weaponBase.attackRange = attackDistance;
-                    weaponBase.isRanged = false;
-                }
-                else
-                {
-                    // Update existing WeaponBase with current values
-                    weaponBase.weaponName = equippedWeaponName;
-                    weaponBase.damage = attackDamage;
-                    weaponBase.attackRange = attackDistance;
-                }
-                
-                // Add WeaponVisibilityFix to ensure weapon is visible
-                WeaponVisibilityFix visibilityFix = knife.GetComponent<WeaponVisibilityFix>();
-                if (visibilityFix == null)
-                {
-                    knife.AddComponent<WeaponVisibilityFix>();
-                }
-                
-                return knife;
+                WeaponHitbox hitbox = weapon.GetComponent<WeaponHitbox>();
+                if (hitbox == null)
+                    hitbox = weapon.AddComponent<WeaponHitbox>();
+                hitbox.damage = attackDamage;
             }
+
+            // Invalidate MeleeAnimationEventSink cache so it finds the new hitbox
+            if (thirdPersonBody != null)
+            {
+                MeleeAnimationEventSink sink = thirdPersonBody.GetComponentInChildren<MeleeAnimationEventSink>(true);
+                if (sink != null) sink.ClearCache();
+            }
+
+            return weapon;
         }
 
-        if (level == 2)
-        {
-            GameObject kdPrefab = Resources.Load<GameObject>("Weapons/KnuckleDuster");
-            if (kdPrefab != null)
-            {
-                GameObject kd = Instantiate(kdPrefab, attachPoint);
-                kd.name = "WeaponModel";
-                kd.transform.localPosition = new Vector3(0f, 0.05f, 0f);
-                kd.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
-                kd.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
-                
-                // Add WeaponBase component if not already present
-                WeaponBase weaponBase = kd.GetComponent<WeaponBase>();
-                if (weaponBase == null)
-                {
-                    weaponBase = kd.AddComponent<WeaponBase>();
-                    weaponBase.weaponName = equippedWeaponName;
-                    weaponBase.damage = attackDamage;
-                    weaponBase.attackRange = attackDistance;
-                    weaponBase.isRanged = false;
-                }
-                else
-                {
-                    // Update existing WeaponBase with current values
-                    weaponBase.weaponName = equippedWeaponName;
-                    weaponBase.damage = attackDamage;
-                    weaponBase.attackRange = attackDistance;
-                }
-                
-                // Add WeaponVisibilityFix to ensure weapon is visible
-                WeaponVisibilityFix visibilityFix = kd.GetComponent<WeaponVisibilityFix>();
-                if (visibilityFix == null)
-                {
-                    kd.AddComponent<WeaponVisibilityFix>();
-                }
-                
-                return kd;
-            }
-        }
         return BuildPrimitiveWeapon(level, attachPoint);
     }
 
@@ -1393,6 +1588,63 @@ public class PlayerController : MonoBehaviour
         return fallback;
     }
 
+    private GameObject ResolveWeaponPrefabForLevel(int level)
+    {
+        // Primary: load from the Imported folder (all 20 weapons are there)
+        string importedPath = GetImportedWeaponResourcePath(level);
+        if (!string.IsNullOrEmpty(importedPath))
+        {
+            GameObject imported = Resources.Load<GameObject>(importedPath);
+            if (imported != null) return imported;
+            Debug.LogWarning($"[ResolveWeaponPrefabForLevel] Failed to load imported weapon at: {importedPath}");
+        }
+
+        // Fallback: try by weapon name in Resources/Weapons/
+        string weaponName = GameManager.Instance != null
+            ? GameManager.Instance.GetWeaponNameForLevel(level)
+            : string.Empty;
+
+        string sanitized = string.IsNullOrWhiteSpace(weaponName)
+            ? string.Empty
+            : weaponName.Replace(" ", string.Empty).Replace("-", string.Empty);
+
+        if (!string.IsNullOrEmpty(sanitized))
+        {
+            GameObject byName = Resources.Load<GameObject>("Weapons/" + sanitized);
+            if (byName != null) return byName;
+        }
+
+        return null;
+    }
+
+    private static string GetImportedWeaponResourcePath(int level)
+    {
+        switch (level)
+        {
+            case 1:  return "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife";
+            case 2:  return "Weapons/Imported/Katana(level2)/source/melee";
+            case 3:  return "Weapons/Imported/shovel(level3)/source/Shovel/Shovel";
+            case 4:  return "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k";
+            case 5:  return "Weapons/Imported/nunchucks(level5)/source/extracted/\u043d\u0443\u043d\u0447\u0430\u043a\u0438/export/Nunchucks";
+            case 6:  return "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal";
+            case 7:  return "Weapons/Imported/crowbar(level7)/source/CrowbarV2";
+            case 8:  return "Weapons/Imported/Hammer(level8)l/source/Sledgehammer/Sledge hammer";
+            case 9:  return "Weapons/Imported/axe(level9)/source/axe";
+            case 10: return "Weapons/Imported/Spear(level10)/source/Spear/Spear";
+            case 11: return "Weapons/Imported/Spoon(level11)/source/Spoon/Spoon";
+            case 12: return "Weapons/Imported/saw(level12)/source/extracted/saw_low";
+            case 13: return "Weapons/Imported/sickle(level13)/source/Sickle";
+            case 14: return "Weapons/Imported/minigun(level14)/source/Minigun/Minigun";
+            case 15: return "Weapons/Imported/rpg(level15)/source/RPG7/RPG-7";
+            case 16: return "Weapons/Imported/Bazooka-pila(level16)/source/Pila/PILA";
+            case 17: return "Weapons/Imported/flamethrower(level17)/source/Flamethrower/Flamethrower";
+            case 18: return "Weapons/Imported/m16(level18)/source/M16/M16";
+            case 19: return "Weapons/Imported/tyr(level19)/source/TYR/TYR";
+            case 20: return "Weapons/Imported/Sniper(level20)/source/M82/M82";
+            default: return null;
+        }
+    }
+
     private void CacheFirstPersonWeaponSlot()
     {
         firstPersonWeaponSlot = null;
@@ -1421,27 +1673,29 @@ public class PlayerController : MonoBehaviour
     }
 
     /// <summary>
-    /// Level 1: show imported knife on the FP "Weapon" socket; other levels restore the default mesh renderer.
+    /// Shows the imported weapon model on the first-person "Weapon" socket for all levels.
     /// </summary>
     private void RefreshFirstPersonWeaponModel(int level)
     {
         ClearFirstPersonKnifeVisual();
-        if (level != 1 || firstPersonWeaponSlot == null)
+        if (firstPersonWeaponSlot == null)
             return;
 
-        GameObject knifePrefab = ResolveCombatKnifePrefab();
-        if (knifePrefab == null)
+        GameObject weaponPrefab = ResolveWeaponPrefabForLevel(level);
+        if (weaponPrefab == null)
             return;
 
         if (firstPersonWeaponMeshRenderer != null)
             firstPersonWeaponMeshRenderer.enabled = false;
 
-        firstPersonKnifeInstance = Instantiate(knifePrefab, firstPersonWeaponSlot);
-        firstPersonKnifeInstance.name = "CombatKnifeMesh";
+        firstPersonKnifeInstance = Instantiate(weaponPrefab, firstPersonWeaponSlot);
+        firstPersonKnifeInstance.name = "FirstPersonWeaponMesh";
+        int idx = Mathf.Clamp(level - 1, 0, WeaponTargetSize.Length - 1);
+        float fpScale = WeaponTargetSize[idx] * 0.7f;
+        NormalizeWeaponScale(firstPersonKnifeInstance, fpScale);
         Transform t = firstPersonKnifeInstance.transform;
-        t.localPosition = combatKnifeFirstPersonLocalPos;
-        t.localRotation = Quaternion.Euler(combatKnifeFirstPersonLocalEuler);
-        t.localScale    = combatKnifeFirstPersonLocalScale;
+        t.localPosition = new Vector3(0.02f, -0.05f, 0.15f);
+        t.localRotation = Quaternion.Euler(WeaponRotationOffset[idx]);
     }
 
     private GameObject BuildPrimitiveWeapon(int level, Transform attachPoint)
@@ -1737,7 +1991,10 @@ public class CharacterVisualGrounder : MonoBehaviour
 /// </summary>
 public class CharacterVisualAnimationPlayer : MonoBehaviour
 {
-    // Playable graph
+    // Playable graph — uses AnimationLayerMixerPlayable for upper/lower body split.
+    // Layer 0: Locomotion (idle/walk) — full body
+    // Layer 1: Combat (attack clips) — upper body only (via AvatarMask)
+    // This prevents "paralyzed legs" during attacks.
     private Animator targetAnimator;
     private AnimationClip idleClip;
     private AnimationClip walkClip;
@@ -1747,7 +2004,10 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
     private AnimationClipPlayable idlePlayable;
     private AnimationClipPlayable walkPlayable;
     private AnimationClipPlayable[] attackPlayables;
-    private AnimationMixerPlayable mixer;
+    private AnimationMixerPlayable locoMixer;     // idle/walk blend (layer 0)
+    private AnimationMixerPlayable attackMixer;    // attack clips (layer 1)
+    private AnimationLayerMixerPlayable layerMixer; // combines layers with avatar mask
+    private AvatarMask upperBodyMask;
     private bool isInitialized;
 
     // Combat state
@@ -1800,19 +2060,39 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         }
 
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        GameManager.WeaponType wType = GameManager.Instance != null
+            ? GameManager.Instance.GetWeaponTypeForLevel(level)
+            : GameManager.WeaponType.Melee;
+        bool isMelee = (wType == GameManager.WeaponType.Melee || wType == GameManager.WeaponType.UltimateMelee);
 
         var clips = new List<AnimationClip>();
-        if (level == 1)
+
+        // For melee weapon levels: use one-handed weapon swing animations
+        if (isMelee)
         {
             AnimationClip kRight = KevinMeleeResources.FindClip(KevinMeleeResources.RightHandFolder, "Attack01", "RightHand");
-            if (kRight != null)
+            if (kRight != null) clips.Add(kRight);
+
+            // Blink one-handed melee swing (copied to Resources/Player/WeaponAnimations)
+            AnimationClip[] blinkClips = Resources.LoadAll<AnimationClip>("Player/WeaponAnimations");
+            if (blinkClips != null)
             {
-                clips.Add(kRight);
-                clips.Add(kRight);
-                clips.Add(kRight);
+                foreach (AnimationClip bc in blinkClips)
+                {
+                    if (bc != null && bc.name.IndexOf("Melee", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                        clips.Add(bc);
+                }
+            }
+
+            // Pad to 3 combo steps if we have at least 1 clip
+            if (clips.Count > 0)
+            {
+                while (clips.Count < 3)
+                    clips.Add(clips[clips.Count - 1]);
             }
         }
 
+        // Fallback to unarmed clips (for ranged weapons or if no weapon swing clips found)
         if (clips.Count == 0)
         {
             AnimationClip ds1 = Resources.Load<AnimationClip>("Player/DragonSoulsClips/UnarmedLightAttack1");
@@ -1837,9 +2117,9 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         if (clips.Count == 0 && attack != null) clips.Add(attack);
         attackClips = clips.ToArray();
 
-        // Walk / locomotion — Level 1: Kevin one-handed run (DragonSouls); else Explosive / knight.
+        // Walk / locomotion — use one-handed weapon run for melee levels.
         walkClip = null;
-        if (level == 1)
+        if (isMelee)
             walkClip = KevinMeleeResources.FindClip(KevinMeleeResources.MovementFolder, "1H@Run", "Run01", "SwordRun", "Sprint");
         if (walkClip == null)
             walkClip = Resources.Load<AnimationClip>("Player/DragonSoulsClips/Unarmed-Run-Forward");
@@ -1865,33 +2145,62 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         hips          = targetAnimator.GetBoneTransform(HumanBodyBones.Hips);
         spine         = targetAnimator.GetBoneTransform(HumanBodyBones.Spine);
 
-        // Build PlayableGraph: idle(0), walk(1), attacks(2+)
-        int totalInputs = 2 + attackClips.Length;
+        // Build PlayableGraph with upper/lower body split:
+        // Layer 0: Locomotion (idle + walk blend) — drives full body including legs
+        // Layer 1: Attack clips — masked to upper body only so legs keep walking
+
         graph  = PlayableGraph.Create("CombatAnimPlayer");
         output = AnimationPlayableOutput.Create(graph, "Animation", targetAnimator);
-        mixer  = AnimationMixerPlayable.Create(graph, totalInputs);
+
+        // ── Layer 0: Locomotion (idle / walk) ──
+        locoMixer = AnimationMixerPlayable.Create(graph, 2);
 
         idlePlayable = AnimationClipPlayable.Create(graph, idleClip);
         idlePlayable.SetApplyFootIK(false);
-        graph.Connect(idlePlayable, 0, mixer, 0);
+        graph.Connect(idlePlayable, 0, locoMixer, 0);
 
         walkPlayable = AnimationClipPlayable.Create(graph, walkClip);
         walkPlayable.SetApplyFootIK(false);
-        graph.Connect(walkPlayable, 0, mixer, 1);
+        graph.Connect(walkPlayable, 0, locoMixer, 1);
 
-        attackPlayables = new AnimationClipPlayable[attackClips.Length];
-        for (int i = 0; i < attackClips.Length; i++)
+        locoMixer.SetInputWeight(0, 1f);
+        locoMixer.SetInputWeight(1, 0f);
+
+        // ── Layer 1: Attack clips (upper body only) ──
+        int attackCount = attackClips.Length;
+        attackMixer = AnimationMixerPlayable.Create(graph, attackCount > 0 ? attackCount : 1);
+
+        attackPlayables = new AnimationClipPlayable[attackCount];
+        for (int i = 0; i < attackCount; i++)
         {
             attackPlayables[i] = AnimationClipPlayable.Create(graph, attackClips[i]);
             attackPlayables[i].SetApplyFootIK(false);
-            graph.Connect(attackPlayables[i], 0, mixer, 2 + i);
+            graph.Connect(attackPlayables[i], 0, attackMixer, i);
+            attackMixer.SetInputWeight(i, 0f);
         }
 
-        mixer.SetInputWeight(0, 1f);
-        for (int i = 1; i < totalInputs; i++)
-            mixer.SetInputWeight(i, 0f);
+        // ── Layer mixer: combines locomotion (full body) + attack (upper body) ──
+        layerMixer = AnimationLayerMixerPlayable.Create(graph, 2);
+        graph.Connect(locoMixer, 0, layerMixer, 0);
+        graph.Connect(attackMixer, 0, layerMixer, 1);
 
-        output.SetSourcePlayable(mixer);
+        layerMixer.SetInputWeight(0, 1f);  // Locomotion always active
+        layerMixer.SetInputWeight(1, 0f);  // Attack layer off by default
+
+        // Create upper body avatar mask at runtime
+        upperBodyMask = new AvatarMask();
+        // Enable only upper body parts for the attack layer
+        for (int i = 0; i < (int)AvatarMaskBodyPart.LastBodyPart; i++)
+            upperBodyMask.SetHumanoidBodyPartActive((AvatarMaskBodyPart)i, false);
+        upperBodyMask.SetHumanoidBodyPartActive(AvatarMaskBodyPart.Body, true);
+        upperBodyMask.SetHumanoidBodyPartActive(AvatarMaskBodyPart.Head, true);
+        upperBodyMask.SetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftArm, true);
+        upperBodyMask.SetHumanoidBodyPartActive(AvatarMaskBodyPart.RightArm, true);
+
+        // Apply mask to attack layer
+        layerMixer.SetLayerMaskFromAvatarMask(1, upperBodyMask);
+
+        output.SetSourcePlayable(layerMixer);
         graph.Play();
         isInitialized = true;
     }
@@ -1909,15 +2218,17 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
             {
                 comboQueued = false;
                 PlayNextCombo();
-                return;
+                // Don't return — still update locomotion below so legs keep walking
             }
-
-            if (norm >= AutoResetTime)
+            else if (norm >= AutoResetTime)
+            {
                 ReturnToIdle();
-            return;
+            }
         }
 
-        // Movement blend
+        // ── Locomotion blend (Layer 0) — always runs, even during attacks ──
+        // The avatar mask on layer 1 ensures attacks only affect the upper body,
+        // so locomotion (idle/walk) continues driving the legs at all times.
         float speed = 0f;
         if (parentRoot != null)
         {
@@ -1928,9 +2239,8 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         float targetWalk = speed > 0.5f ? 1f : 0f;
         currentWalkWeight = Mathf.MoveTowards(currentWalkWeight, targetWalk, 6f * Time.deltaTime);
 
-        SetAllWeights(0f);
-        mixer.SetInputWeight(0, 1f - currentWalkWeight);
-        mixer.SetInputWeight(1, currentWalkWeight);
+        locoMixer.SetInputWeight(0, 1f - currentWalkWeight);
+        locoMixer.SetInputWeight(1, currentWalkWeight);
 
         if (walkPlayable.IsValid() && speed > 0.5f)
             walkPlayable.SetSpeed(Mathf.Clamp(speed / 4f, 0.8f, 2f));
@@ -1938,10 +2248,13 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
 
     /// <summary>
     /// Procedural walk applied after PlayableGraph — rotates legs, arms, hips, spine.
+    /// With the layer system, legs keep walking during attacks (layer 0 locomotion is
+    /// never masked out). Upper body procedural motion is skipped during attacks
+    /// because the attack animation (layer 1) owns those bones.
     /// </summary>
     private void LateUpdate()
     {
-        if (!isInitialized || isAttacking) return;
+        if (!isInitialized) return;
         if (currentWalkWeight < 0.05f)
         {
             walkCycleTimer = 0f;
@@ -1963,6 +2276,7 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         float sin = Mathf.Sin(walkCycleTimer);
         float cos = Mathf.Cos(walkCycleTimer);
 
+        // ── Legs: always apply, even during attacks ──
         // Upper legs swing forward/backward
         if (leftUpperLeg != null)  leftUpperLeg.localRotation  *= Quaternion.Euler(sin * UpperLegSwing * w, 0f, 0f);
         if (rightUpperLeg != null) rightUpperLeg.localRotation *= Quaternion.Euler(-sin * UpperLegSwing * w, 0f, 0f);
@@ -1973,10 +2287,6 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         if (leftLowerLeg != null)  leftLowerLeg.localRotation  *= Quaternion.Euler(leftKnee * w, 0f, 0f);
         if (rightLowerLeg != null) rightLowerLeg.localRotation *= Quaternion.Euler(rightKnee * w, 0f, 0f);
 
-        // Arms swing opposite to legs
-        if (leftUpperArm != null)  leftUpperArm.localRotation  *= Quaternion.Euler(-sin * ArmSwing * w, 0f, 0f);
-        if (rightUpperArm != null) rightUpperArm.localRotation *= Quaternion.Euler(sin * ArmSwing * w, 0f, 0f);
-
         // Hip bounce (double frequency — one bounce per step)
         if (hips != null)
         {
@@ -1984,9 +2294,19 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
             hips.localPosition += new Vector3(0f, -bounce * w, 0f);
         }
 
-        // Slight forward lean and lateral sway
-        if (spine != null)
-            spine.localRotation *= Quaternion.Euler(SpineTilt * w, 0f, cos * SpineTilt * 0.5f * w);
+        // ── Upper body: only apply when NOT attacking ──
+        // During attacks, the attack layer (layer 1) drives arms/spine via avatar mask.
+        // Adding procedural motion on top would fight the attack animation.
+        if (!isAttacking)
+        {
+            // Arms swing opposite to legs
+            if (leftUpperArm != null)  leftUpperArm.localRotation  *= Quaternion.Euler(-sin * ArmSwing * w, 0f, 0f);
+            if (rightUpperArm != null) rightUpperArm.localRotation *= Quaternion.Euler(sin * ArmSwing * w, 0f, 0f);
+
+            // Slight forward lean and lateral sway
+            if (spine != null)
+                spine.localRotation *= Quaternion.Euler(SpineTilt * w, 0f, cos * SpineTilt * 0.5f * w);
+        }
     }
 
     public void PlayAttack()
@@ -2016,8 +2336,13 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         currentAttackIndex = step;
         comboQueued = false;
 
-        SetAllWeights(0f);
-        mixer.SetInputWeight(2 + step, 1f);
+        // Clear all attack clip weights, then activate the current step
+        ClearAttackWeights();
+        attackMixer.SetInputWeight(step, 1f);
+
+        // Enable the attack layer (upper body override)
+        if (layerMixer.IsValid())
+            layerMixer.SetInputWeight(1, 1f);
 
         if (attackPlayables[step].IsValid())
         {
@@ -2044,13 +2369,24 @@ public class CharacterVisualAnimationPlayer : MonoBehaviour
         currentAttackIndex = -1;
         comboStep = 0;
         comboQueued = false;
+
+        // Disable the attack layer so locomotion (layer 0) drives the full body
+        if (layerMixer.IsValid())
+            layerMixer.SetInputWeight(1, 0f);
+
+        // Zero out all attack clip weights
+        ClearAttackWeights();
     }
 
-    private void SetAllWeights(float w)
+    /// <summary>
+    /// Zeros all attack clip weights in the attack mixer.
+    /// </summary>
+    private void ClearAttackWeights()
     {
-        int count = mixer.GetInputCount();
+        if (!attackMixer.IsValid()) return;
+        int count = attackMixer.GetInputCount();
         for (int i = 0; i < count; i++)
-            mixer.SetInputWeight(i, w);
+            attackMixer.SetInputWeight(i, 0f);
     }
 
     private void OnDestroy()
