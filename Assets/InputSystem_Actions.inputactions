@@ -286,7 +286,7 @@
                 },
                 {
                     "name": "",
-                    "id": "space-key-attack",
+                    "id": "7f6c4fd2-d171-40c5-8c33-0bf9f8b5b6d1",
                     "path": "<Keyboard>/space",
                     "interactions": "",
                     "processors": "",
@@ -462,7 +462,7 @@
                 },
                 {
                     "name": "",
-                    "id": "q-key-weapon",
+                    "id": "8c7f0ea1-00dd-40bf-97df-6cd4ad6e7aa2",
                     "path": "<Keyboard>/q",
                     "interactions": "",
                     "processors": "",

@@ -70,16 +70,6 @@ public class PlayerController : MonoBehaviour
     [Tooltip("Knockback force applied to hit targets.")]
     public float hitKnockbackForce = 4.5f;
 
-    [Header("Ranged Combat")]
-    [Tooltip("Projectile prefab to instantiate on Fire1 (needs a Rigidbody).")]
-    public GameObject bulletPrefab;
-
-    [Tooltip("Spawn point and forward direction for projectiles.")]
-    public Transform firePoint;
-
-    [Tooltip("Force applied to the bullet on spawn (units/s).")]
-    public float bulletForce = 25f;
-
     [Header("Weapon References")]
     [Tooltip("Current weapon display name (read by HUD).")]
     public string equippedWeaponName = "Combat Knife";
@@ -133,9 +123,6 @@ public class PlayerController : MonoBehaviour
     private CharacterController controller;
     private Animator animator;
     private AudioSource audioSource;
-    private PlayerInput playerInput;
-    private PlayerInput.MainActions input;
-
     // Movement
     private Vector3 verticalVelocity;
     private Vector3 horizontalVelocity;
@@ -169,7 +156,6 @@ public class PlayerController : MonoBehaviour
     private float comboCooldownTimer;
     private const float ComboCooldown = 0.15f;
     private GameManager.WeaponType currentWeaponType = GameManager.WeaponType.Melee;
-    private float explosionRadius;
     private LayerMask resolvedAttackMask;
 
     // Third-person body
@@ -266,18 +252,6 @@ public class PlayerController : MonoBehaviour
         firstPersonRenderers = GetComponentsInChildren<Renderer>(true);
         resolvedAttackMask = attackLayer == 0 ? ~0 : attackLayer;
 
-        // Input System
-        playerInput = new PlayerInput();
-        input = playerInput.Main;
-        input.Jump.performed   += _ => Jump();
-        input.Attack.started   += _ =>
-        {
-            // Only use melee attack when GunController is NOT handling combat
-            GunController gun = GetComponent<GunController>();
-            if (gun == null || !gun.IsActive)
-                Attack();
-        };
-
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible   = false;
     }
@@ -310,6 +284,7 @@ public class PlayerController : MonoBehaviour
         isGrounded = controller.isGrounded;
 
         ReadInput();
+        HandleActionInput();
         ApplyMovement();
         ApplyLook();
         UpdateHeadBob();
@@ -317,18 +292,6 @@ public class PlayerController : MonoBehaviour
         UpdateCombatState();
         UpdateAnimations();
         UpdateAnimatorParameters();
-
-        // Check if GunController is handling combat (ranged weapons)
-        GunController gun = GetComponent<GunController>();
-        bool gunActive = gun != null && gun.IsActive;
-
-        // Only use legacy shoot/melee when gun is NOT active
-        if (!gunActive && Input.GetButtonDown("Fire1") && bulletPrefab != null)
-            Shoot();
-
-        // Perspective toggle (V key)
-        if (Keyboard.current != null && Keyboard.current.vKey.wasPressedThisFrame)
-            TogglePerspective();
     }
 
     private void LateUpdate()
@@ -344,43 +307,51 @@ public class PlayerController : MonoBehaviour
         // Rotating the body AFTER bones are placed causes double-rotation distortion.
     }
 
-    private void OnEnable()
-    {
-        if (!input.Get().enabled) input.Enable();
-    }
-
-    private void OnDisable()
-    {
-        if (playerInput != null) input.Disable();
-    }
-
     // ════════════════════════════════════════════════════════════════════════
     //  INPUT
     // ════════════════════════════════════════════════════════════════════════
 
     private void ReadInput()
     {
-        // WASD from Input System
-        Vector2 wasd = input.Movement.ReadValue<Vector2>();
-
-        // Also read arrow keys directly so both schemes always work
-        Vector2 arrows = Vector2.zero;
-        if (Keyboard.current != null)
-        {
-            if (Keyboard.current.upArrowKey.isPressed)    arrows.y += 1f;
-            if (Keyboard.current.downArrowKey.isPressed)  arrows.y -= 1f;
-            if (Keyboard.current.leftArrowKey.isPressed)  arrows.x -= 1f;
-            if (Keyboard.current.rightArrowKey.isPressed) arrows.x += 1f;
-        }
-
-        // Use whichever has greater magnitude
-        moveInputRaw = wasd.sqrMagnitude >= arrows.sqrMagnitude ? wasd : arrows;
+        // Read devices directly here because the generated PlayerInput action map
+        // throws during binding resolution in this project/editor setup.
+        moveInputRaw = ReadMovementInput();
         moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
 
         // Smooth the input to remove digital snapping
         moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, InputSmoothing * Time.deltaTime);
 
-        lookInput = input.Look.ReadValue<Vector2>();
+        lookInput = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
+    }
+
+    private void HandleActionInput()
+    {
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.spaceKey.wasPressedThisFrame)
+                Jump();
+
+            if (Keyboard.current.vKey.wasPressedThisFrame)
+                TogglePerspective();
+        }
+
+        if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+            Attack();
+    }
+
+    private static Vector2 ReadMovementInput()
+    {
+        if (Keyboard.current == null)
+            return Vector2.zero;
+
+        Vector2 movement = Vector2.zero;
+
+        if (Keyboard.current.wKey.isPressed || Keyboard.current.upArrowKey.isPressed) movement.y += 1f;
+        if (Keyboard.current.sKey.isPressed || Keyboard.current.downArrowKey.isPressed) movement.y -= 1f;
+        if (Keyboard.current.aKey.isPressed || Keyboard.current.leftArrowKey.isPressed) movement.x -= 1f;
+        if (Keyboard.current.dKey.isPressed || Keyboard.current.rightArrowKey.isPressed) movement.x += 1f;
+
+        return movement;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -551,31 +522,6 @@ public class PlayerController : MonoBehaviour
         FireAttack();
     }
 
-    /// <summary>
-    /// Spawns a bullet at firePoint and propels it forward. Triggered by Fire1
-    /// when bulletPrefab is assigned. Falls back to melee Attack() otherwise.
-    /// </summary>
-    private void Shoot()
-    {
-        if (firePoint == null)
-        {
-            Debug.LogWarning("[PlayerController] firePoint not assigned – falling back to melee.");
-            Attack();
-            return;
-        }
-
-        GameObject bullet = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
-        Rigidbody rb = bullet.GetComponent<Rigidbody>();
-        if (rb != null)
-            rb.AddForce(firePoint.forward * bulletForce, ForceMode.VelocityChange);
-        else
-            Debug.LogWarning("[PlayerController] bulletPrefab has no Rigidbody – AddForce skipped.");
-
-        // Reuse IsAttacking bool to trigger attack animation
-        isAttacking = true;
-        ChangeAnimationState(ATTACK1);
-    }
-
     private void FireAttack()
     {
         comboCooldownTimer = ComboCooldown;
@@ -646,23 +592,8 @@ public class PlayerController : MonoBehaviour
         Camera cam = ActiveCamera;
         if (cam == null) return;
 
-        switch (currentWeaponType)
-        {
-            case GameManager.WeaponType.Flamethrower: AttackFlamethrower(cam); break;
-            case GameManager.WeaponType.Sniper:       AttackSniper(cam);      break;
-            case GameManager.WeaponType.Explosive:    AttackExplosive(cam);   break;
-            case GameManager.WeaponType.Rifle:        AttackSniper(cam);      break;
-            default:                                  AttackMelee(cam);       break;
-        }
-
-        cameraKickTarget = currentWeaponType switch
-        {
-            GameManager.WeaponType.Sniper      => -4.5f,
-            GameManager.WeaponType.Explosive   => -3.5f,
-            GameManager.WeaponType.Flamethrower => -0.6f,
-            GameManager.WeaponType.Rifle       => -2.0f,
-            _ => -1.2f
-        };
+        AttackMelee(cam);
+        cameraKickTarget = -1.2f;
     }
 
     private void AttackMelee(Camera cam)
@@ -700,56 +631,6 @@ public class PlayerController : MonoBehaviour
 
         if (!landed && Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
             HitTarget(hit.point);
-    }
-
-    private void AttackFlamethrower(Camera cam)
-    {
-        int rays = 7;
-        float spread = 12f;
-        bool hitAny = false;
-
-        for (int r = 0; r < rays; r++)
-        {
-            Vector3 dir = Quaternion.Euler(Random.Range(-spread * 0.5f, spread * 0.5f), Random.Range(-spread, spread), 0f) * cam.transform.forward;
-            if (Physics.Raycast(cam.transform.position, dir, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
-            {
-                if (TryDamageTarget(hit.collider.transform, attackDamage)) hitAny = true;
-                if (r == 0) HitTarget(hit.point);
-            }
-        }
-
-        if (!hitAny)
-            HitTarget(cam.transform.position + cam.transform.forward * (attackDistance * 0.7f));
-    }
-
-    private void AttackSniper(Camera cam)
-    {
-        if (Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
-        {
-            TryDamageTarget(hit.collider.transform, attackDamage);
-            HitTarget(hit.point);
-        }
-    }
-
-    private void AttackExplosive(Camera cam)
-    {
-        Vector3 blast;
-        if (Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
-            blast = hit.point;
-        else
-            blast = cam.transform.position + cam.transform.forward * Mathf.Min(attackDistance, 60f);
-
-        HitTarget(blast);
-
-        float radius = explosionRadius > 0f ? explosionRadius : 5f;
-        Collider[] blasted = Physics.OverlapSphere(blast, radius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
-        for (int i = 0; i < blasted.Length; i++)
-        {
-            float dist = Vector3.Distance(blast, blasted[i].transform.position);
-            float falloff = 1f - Mathf.Clamp01(dist / radius);
-            int dmg = Mathf.RoundToInt(attackDamage * (0.4f + 0.6f * falloff));
-            TryDamageTarget(blasted[i].transform, dmg);
-        }
     }
 
     /// <summary>
@@ -1136,25 +1017,9 @@ public class PlayerController : MonoBehaviour
         {
             equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
             attackDamage       = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(level));
-            attackDistance      = GameManager.Instance.GetWeaponRangeForLevel(level);
-            currentWeaponType  = GameManager.Instance.GetWeaponTypeForLevel(level);
-            explosionRadius    = GameManager.Instance.GetWeaponExplosionRadiusForLevel(level);
-
-            switch (currentWeaponType)
-            {
-                case GameManager.WeaponType.Flamethrower:
-                    attackSpeed = 0.12f; attackDelay = 0.04f; attackRadius = 1.6f; break;
-                case GameManager.WeaponType.Sniper:
-                    attackSpeed = 2.2f; attackDelay = 0.05f; attackRadius = 0f; break;
-                case GameManager.WeaponType.Explosive:
-                    attackSpeed = 1.6f; attackDelay = 0.15f; attackRadius = 0f; break;
-                case GameManager.WeaponType.UltimateMelee:
-                    attackSpeed = 0.45f; attackDelay = 0.18f; attackRadius = 1.6f; break;
-                case GameManager.WeaponType.Rifle:
-                    attackSpeed = 0.3f; attackDelay = 0.05f; attackRadius = 0f; break;
-                default:
-                    attackSpeed = 1.0f; attackDelay = 0.4f; attackRadius = 1.25f; break;
-            }
+            attackDistance     = GameManager.Instance.GetWeaponRangeForLevel(level);
+            currentWeaponType  = GameManager.WeaponType.Melee;
+            attackSpeed = 1.0f; attackDelay = 0.4f; attackRadius = 1.25f;
         }
         else
         {
@@ -1205,30 +1070,15 @@ public class PlayerController : MonoBehaviour
     }
 
     /// <summary>
-    /// Activates GunController for ranged levels, deactivates for melee.
+    /// All levels are now melee — GunController is always deactivated/removed.
     /// </summary>
     private void SetupGunController(GameManager.WeaponType weaponType, int level)
     {
-        bool isRanged = weaponType != GameManager.WeaponType.Melee
-                     && weaponType != GameManager.WeaponType.UltimateMelee;
-
         GunController gun = GetComponent<GunController>();
-
-        if (isRanged)
+        if (gun != null)
         {
-            if (gun == null)
-                gun = gameObject.AddComponent<GunController>();
-
-            gun.Activate(attackDamage, attackDistance, weaponType);
-            Debug.Log($"[PlayerController] GunController activated for {equippedWeaponName}");
-        }
-        else
-        {
-            if (gun != null)
-            {
-                gun.Deactivate();
-                Debug.Log("[PlayerController] GunController deactivated (melee weapon)");
-            }
+            gun.Deactivate();
+            Debug.Log("[PlayerController] GunController deactivated — all weapons are melee.");
         }
     }
 
@@ -1389,64 +1239,52 @@ public class PlayerController : MonoBehaviour
         0.85f, // 8  Hammer
         0.70f, // 9  Axe
         1.40f, // 10 Spear
-        0.30f, // 11 Spoon
+        1.00f, // 11 Nailed Plank
         0.40f, // 12 Saw
         0.35f, // 13 Sickle
-        0.80f, // 14 Minigun
-        0.95f, // 15 RPG
-        1.10f, // 16 Bazooka
-        0.75f, // 17 Flamethrower
-        0.90f, // 18 M16
-        0.28f, // 19 TYR (revolver)
-        1.30f  // 20 Sniper M82
+        0.50f, // 14 Morgenstern (flail)
+        0.60f, // 15 L3FTE
+        0.90f  // 16 Riot Shield
     };
 
-    // Local Euler rotation offsets per weapon for correct grip orientation.
+    // Local Euler rotation offsets per weapon for correct melee grip orientation.
     private static readonly Vector3[] WeaponRotationOffset = {
-        new Vector3(-90f,   0f,   0f), // 1  Knife — blade forward
-        new Vector3(-90f,   0f,   0f), // 2  Katana — blade forward
-        new Vector3(-90f,   0f,   0f), // 3  Shovel
-        new Vector3(-90f,   0f,   0f), // 4  Baseball Bat
-        new Vector3(-90f,   0f,   0f), // 5  Nunchucks
-        new Vector3(-90f,   0f,   0f), // 6  Wrench
-        new Vector3(-90f,   0f,   0f), // 7  Crowbar
-        new Vector3(-90f,   0f,   0f), // 8  Hammer
-        new Vector3(-90f,   0f,   0f), // 9  Axe
-        new Vector3(-90f,   0f,   0f), // 10 Spear
-        new Vector3(-90f,   0f,   0f), // 11 Spoon
-        new Vector3(-90f,   0f,   0f), // 12 Saw
-        new Vector3(-90f,   0f,   0f), // 13 Sickle
-        new Vector3(  0f,  90f,   0f), // 14 Minigun — barrel forward
-        new Vector3(  0f,  90f,   0f), // 15 RPG — barrel forward
-        new Vector3(  0f,  90f,   0f), // 16 Bazooka — barrel forward
-        new Vector3(  0f,  90f,   0f), // 17 Flamethrower — nozzle forward
-        new Vector3(  0f,  90f,   0f), // 18 M16 — barrel forward
-        new Vector3(  0f,  90f,   0f), // 19 TYR — barrel forward
-        new Vector3(  0f,  90f,   0f)  // 20 Sniper — barrel forward
+        new Vector3(-90f, 0f, 0f), // 1  Tactical Knife — blade forward
+        new Vector3(-90f, 0f, 0f), // 2  Katana — blade forward
+        new Vector3(-90f, 0f, 0f), // 3  Shovel
+        new Vector3(-90f, 0f, 0f), // 4  Baseball Bat
+        new Vector3(-90f, 0f, 0f), // 5  Nunchucks
+        new Vector3(-90f, 0f, 0f), // 6  Wrench
+        new Vector3(-90f, 0f, 0f), // 7  Crowbar
+        new Vector3(-90f, 0f, 0f), // 8  Hammer
+        new Vector3(-90f, 0f, 0f), // 9  Axe
+        new Vector3(-90f, 0f, 0f), // 10 Spear
+        new Vector3(-90f, 0f, 0f), // 11 Nailed Plank
+        new Vector3(-90f, 0f, 0f), // 12 Saw
+        new Vector3(-90f, 0f, 0f), // 13 Sickle
+        new Vector3(-90f, 0f, 0f), // 14 Morgenstern — held upright
+        new Vector3(-90f, 0f, 0f), // 15 L3FTE — melee grip
+        new Vector3(-90f, 0f, 0f)  // 16 Riot Shield — held in front
     };
 
     // Local position offsets per weapon for hand grip alignment.
     private static readonly Vector3[] WeaponPositionOffset = {
-        new Vector3( 0.00f,  0.05f,  0.00f), // 1  Knife
-        new Vector3( 0.00f,  0.05f,  0.00f), // 2  Katana
-        new Vector3( 0.00f,  0.05f,  0.00f), // 3  Shovel
-        new Vector3( 0.00f,  0.05f,  0.00f), // 4  Baseball Bat
-        new Vector3( 0.00f,  0.05f,  0.00f), // 5  Nunchucks
-        new Vector3( 0.00f,  0.05f,  0.00f), // 6  Wrench
-        new Vector3( 0.00f,  0.05f,  0.00f), // 7  Crowbar
-        new Vector3( 0.00f,  0.05f,  0.00f), // 8  Hammer
-        new Vector3( 0.00f,  0.05f,  0.00f), // 9  Axe
-        new Vector3( 0.00f,  0.05f,  0.00f), // 10 Spear
-        new Vector3( 0.00f,  0.05f,  0.00f), // 11 Spoon
-        new Vector3( 0.00f,  0.05f,  0.00f), // 12 Saw
-        new Vector3( 0.00f,  0.05f,  0.00f), // 13 Sickle
-        new Vector3( 0.00f,  0.02f,  0.10f), // 14 Minigun
-        new Vector3( 0.00f,  0.02f,  0.10f), // 15 RPG
-        new Vector3( 0.00f,  0.02f,  0.10f), // 16 Bazooka
-        new Vector3( 0.00f,  0.02f,  0.10f), // 17 Flamethrower
-        new Vector3( 0.00f,  0.02f,  0.08f), // 18 M16
-        new Vector3( 0.00f,  0.03f,  0.05f), // 19 TYR
-        new Vector3( 0.00f,  0.02f,  0.10f)  // 20 Sniper
+        new Vector3(0.00f, 0.05f, 0.00f), // 1  Knife
+        new Vector3(0.00f, 0.05f, 0.00f), // 2  Katana
+        new Vector3(0.00f, 0.05f, 0.00f), // 3  Shovel
+        new Vector3(0.00f, 0.05f, 0.00f), // 4  Baseball Bat
+        new Vector3(0.00f, 0.05f, 0.00f), // 5  Nunchucks
+        new Vector3(0.00f, 0.05f, 0.00f), // 6  Wrench
+        new Vector3(0.00f, 0.05f, 0.00f), // 7  Crowbar
+        new Vector3(0.00f, 0.05f, 0.00f), // 8  Hammer
+        new Vector3(0.00f, 0.05f, 0.00f), // 9  Axe
+        new Vector3(0.00f, 0.05f, 0.00f), // 10 Spear
+        new Vector3(0.00f, 0.05f, 0.00f), // 11 Nailed Plank
+        new Vector3(0.00f, 0.05f, 0.00f), // 12 Saw
+        new Vector3(0.00f, 0.05f, 0.00f), // 13 Sickle
+        new Vector3(0.00f, 0.05f, 0.00f), // 14 Morgenstern
+        new Vector3(0.00f, 0.05f, 0.00f), // 15 L3FTE
+        new Vector3(0.00f, 0.05f, 0.00f)  // 16 Riot Shield
     };
 
     private void NormalizeWeaponScale(GameObject weapon, float targetMaxDimension)
@@ -1621,26 +1459,22 @@ public class PlayerController : MonoBehaviour
     {
         switch (level)
         {
-            case 1:  return "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife";
-            case 2:  return "Weapons/Imported/Katana(level2)/source/melee";
-            case 3:  return "Weapons/Imported/shovel(level3)/source/Shovel/Shovel";
-            case 4:  return "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k";
-            case 5:  return "Weapons/Imported/nunchucks(level5)/source/extracted/\u043d\u0443\u043d\u0447\u0430\u043a\u0438/export/Nunchucks";
-            case 6:  return "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal";
-            case 7:  return "Weapons/Imported/crowbar(level7)/source/CrowbarV2";
-            case 8:  return "Weapons/Imported/Hammer(level8)l/source/Sledgehammer/Sledge hammer";
-            case 9:  return "Weapons/Imported/axe(level9)/source/axe";
+            case  1: return "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife";
+            case  2: return "Weapons/Imported/Katana(level2)/source/melee";
+            case  3: return "Weapons/Imported/shovel(level3)/source/Shovel/Shovel";
+            case  4: return "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k";
+            case  5: return "Weapons/Imported/nunchucks(level5)/Nunchucks";
+            case  6: return "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal";
+            case  7: return "Weapons/Imported/crowbar(level7)/source/CrowbarV2";
+            case  8: return "Weapons/Imported/Hammer(level8)l/source/Sledgehammer/Sledge hammer";
+            case  9: return "Weapons/Imported/axe(level9)/source/axe";
             case 10: return "Weapons/Imported/Spear(level10)/source/Spear/Spear";
-            case 11: return "Weapons/Imported/Spoon(level11)/source/Spoon/Spoon";
+            case 11: return "Weapons/Imported/nailed-plank(level11)/source/NailedPlank/NailedPlank";
             case 12: return "Weapons/Imported/saw(level12)/source/extracted/saw_low";
             case 13: return "Weapons/Imported/sickle(level13)/source/Sickle";
-            case 14: return "Weapons/Imported/minigun(level14)/source/Minigun/Minigun";
-            case 15: return "Weapons/Imported/rpg(level15)/source/RPG7/RPG-7";
-            case 16: return "Weapons/Imported/Bazooka-pila(level16)/source/Pila/PILA";
-            case 17: return "Weapons/Imported/flamethrower(level17)/source/Flamethrower/Flamethrower";
-            case 18: return "Weapons/Imported/m16(level18)/source/M16/M16";
-            case 19: return "Weapons/Imported/tyr(level19)/source/TYR/TYR";
-            case 20: return "Weapons/Imported/Sniper(level20)/source/M82/M82";
+            case 14: return "Weapons/Imported/medieval(level14)/source/Medieval_morgenstern_low2 scene";
+            case 15: return "Weapons/Imported/l3fte(level15)/source/L3FT_E";
+            case 16: return "Weapons/Imported/shield(level16)/source/RiotShield/Riot Shield";
             default: return null;
         }
     }

@@ -16,7 +16,23 @@ public class CameraController : MonoBehaviour
 
     void LateUpdate()
     {
-        if (target == null) return;
+        // Auto-find the player if target was never assigned or was destroyed.
+        if (target == null)
+        {
+            GameObject player = GameObject.FindWithTag("Player");
+            if (player != null)
+            {
+                target = player.transform;
+                // Snap immediately so the camera doesn't lerp from the origin.
+                Quaternion rot = Quaternion.Euler(pitch, target.eulerAngles.y, 0f);
+                transform.position = target.position + rot * offset;
+                transform.LookAt(target.position + Vector3.up * 1.35f);
+            }
+            else
+            {
+                return;
+            }
+        }
 
         // Build orbit rotation: horizontal from the player's current Y rotation, vertical from pitch
         // This lets the camera orbit both horizontally (by rotating the player body) and vertically

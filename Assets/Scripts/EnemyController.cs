@@ -72,9 +72,6 @@ public class EnemyController : MonoBehaviour
     private float _flashTimer;
     private const float FlashDuration = 0.15f;
 
-    // Death
-    private bool _ragdollActive;
-
     // Animator hashes
     private static readonly int HashSpeed    = Animator.StringToHash("Speed");
     private static readonly int HashAttack   = Animator.StringToHash("Attack");
@@ -330,8 +327,6 @@ public class EnemyController : MonoBehaviour
     /// </summary>
     private void ActivateRagdoll()
     {
-        _ragdollActive = true;
-
         // Disable Animator so physics takes over
         if (_anim != null)
             _anim.enabled = false;

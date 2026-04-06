@@ -151,7 +151,7 @@
                 },
                 {
                     "name": "",
-                    "id": "q-key-weapon-equip",
+                    "id": "be7e8157-c438-4a56-8d7e-3c673a29b3c2",
                     "path": "<Keyboard>/q",
                     "interactions": "",
                     "processors": "",
@@ -162,7 +162,7 @@
                 },
                 {
                     "name": "",
-                    "id": "t-key-third-person",
+                    "id": "399d46bd-37b0-47b0-b3ef-170c4a104d17",
                     "path": "<Keyboard>/t",
                     "interactions": "",
                     "processors": "",

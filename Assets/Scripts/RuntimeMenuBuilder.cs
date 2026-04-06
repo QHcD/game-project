@@ -12,6 +12,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
     void Start()
     {
+        customFont = ResolveMenuFont();
         EnsureEventSystem();
         BuildCurrentScreen();
     }
@@ -521,6 +522,29 @@ public class RuntimeMenuBuilder : MonoBehaviour
 #else
         Application.Quit();
 #endif
+    }
+
+    TMP_FontAsset ResolveMenuFont()
+    {
+        if (customFont != null)
+            return customFont;
+
+        TMP_FontAsset lib = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        if (lib != null)
+            return lib;
+
+        TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+        for (int i = 0; i < fonts.Length; i++)
+        {
+            TMP_FontAsset font = fonts[i];
+            if (font != null && (font.name.Contains("Arizona") || font.name.Contains("Azonix")))
+                return font;
+        }
+
+        if (TMP_Settings.defaultFontAsset != null)
+            return TMP_Settings.defaultFontAsset;
+
+        return null;
     }
 
 }

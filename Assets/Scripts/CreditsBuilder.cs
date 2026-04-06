@@ -12,6 +12,7 @@ public class CreditsBuilder : MonoBehaviour
 
     void Start()
     {
+        prismFont = ResolvePrismFont();
         EnsureEventSystem();
 
         GameObject existing = GameObject.Find("CreditsCanvas");
@@ -139,6 +140,29 @@ public class CreditsBuilder : MonoBehaviour
         rect.anchorMin = Vector2.zero;
         rect.anchorMax = Vector2.one;
         rect.offsetMin = rect.offsetMax = Vector2.zero;
+    }
+
+    TMP_FontAsset ResolvePrismFont()
+    {
+        if (prismFont != null)
+            return prismFont;
+
+        TMP_FontAsset lib = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        if (lib != null)
+            return lib;
+
+        TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+        for (int i = 0; i < fonts.Length; i++)
+        {
+            TMP_FontAsset font = fonts[i];
+            if (font != null && (font.name.Contains("Arizona") || font.name.Contains("Azonix")))
+                return font;
+        }
+
+        if (TMP_Settings.defaultFontAsset != null)
+            return TMP_Settings.defaultFontAsset;
+
+        return null;
     }
 
 }

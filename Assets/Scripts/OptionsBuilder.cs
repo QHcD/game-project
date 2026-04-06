@@ -21,6 +21,7 @@ public class OptionsBuilder : MonoBehaviour
 
     private void Start()
     {
+        prismFont = ResolvePrismFont();
         EnsureEventSystem();
         BuildOptionsMenu();
     }
@@ -416,5 +417,28 @@ public class OptionsBuilder : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = Vector2.zero;
         rect.offsetMax = Vector2.zero;
+    }
+
+    private TMP_FontAsset ResolvePrismFont()
+    {
+        if (prismFont != null)
+            return prismFont;
+
+        TMP_FontAsset lib = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        if (lib != null)
+            return lib;
+
+        TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+        for (int i = 0; i < fonts.Length; i++)
+        {
+            TMP_FontAsset font = fonts[i];
+            if (font != null && (font.name.Contains("Arizona") || font.name.Contains("Azonix")))
+                return font;
+        }
+
+        if (TMP_Settings.defaultFontAsset != null)
+            return TMP_Settings.defaultFontAsset;
+
+        return null;
     }
 }
