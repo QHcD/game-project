@@ -52,10 +52,10 @@ public class GunController : MonoBehaviour
     public float adsTransitionSpeed = 10f;
 
     [Tooltip("Camera offset when aiming (over-right-shoulder).")]
-    public Vector3 adsCameraOffset = new Vector3(0.6f, 2.0f, -2.0f);
+    public Vector3 adsCameraOffset = new Vector3(0.75f, 2.25f, -2.8f);
 
     [Tooltip("Normal third-person camera offset.")]
-    public Vector3 normalCameraOffset = new Vector3(0f, 3.2f, -5.8f);
+    public Vector3 normalCameraOffset = new Vector3(0f, 3.4f, -7.2f);
 
     [Header("Recoil")]
     [Tooltip("Vertical recoil per shot (degrees).")]

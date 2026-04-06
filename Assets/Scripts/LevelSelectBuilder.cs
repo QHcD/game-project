@@ -12,6 +12,12 @@ public class LevelSelectBuilder : MonoBehaviour
     private Button _map1Btn;
     private Button _map2Btn;
 
+    // Tracks which level button is selected
+    private int _selectedLevel = -1;
+    private Button[] _levelButtons;
+    private Button _playBtn;
+    private TextMeshProUGUI _selectionLabel;
+
     void Start()
     {
         prismFont = ResolvePrismFont();
@@ -63,7 +69,7 @@ public class LevelSelectBuilder : MonoBehaviour
         panel.transform.SetParent(canvasObj.transform, false);
         panel.color = new Color(0.1f, 0.1f, 0.2f, 0.5f);
         RectTransform panelRect = panel.GetComponent<RectTransform>();
-        panelRect.anchorMin = new Vector2(0.15f, 0.13f);
+        panelRect.anchorMin = new Vector2(0.15f, 0.18f);
         panelRect.anchorMax = new Vector2(0.85f, 0.73f);
         panelRect.offsetMin = panelRect.offsetMax = Vector2.zero;
 
@@ -78,25 +84,89 @@ public class LevelSelectBuilder : MonoBehaviour
         grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
         grid.constraintCount = 4;
 
-        // 16 level buttons (all melee)
+        // 16 level buttons — clicking only SELECTS the level (does NOT start the game)
+        _levelButtons = new Button[16];
         for (int i = 1; i <= 16; i++)
         {
             int lvl = i;
-            MakeLevelButton(panel.transform, lvl.ToString(), () =>
+            _levelButtons[i - 1] = MakeLevelButton(panel.transform, lvl.ToString(), () =>
             {
-                if (GameManager.Instance != null)
-                {
-                    GameManager.Instance.currentLevel = lvl;
-                    GameManager.Instance.levelTime = 0;
-                }
-                SceneManager.LoadScene("GameScene");
+                _selectedLevel = lvl;
+                RefreshLevelHighlight();
+                RefreshPlayButton();
             });
         }
 
-        // ── Return Button ─────────────────────────────────────────────────────
+        // ── Selection Summary Label ──────────────────────────────────────────
+        _selectionLabel = MakeText(canvasObj.transform, "Select a level and map, then press PLAY",
+            22, new Color(0.9f, 0.85f, 0.5f, 1f),
+            new Vector2(0.22f, 0.10f), new Vector2(0.78f, 0.17f), false);
+
+        // ── PLAY Button (disabled until level is selected) ───────────────────
+        _playBtn = MakeButton(canvasObj.transform, "PLAY",
+            new Vector2(0.35f, 0.03f), new Vector2(0.65f, 0.10f),
+            OnPlayClicked,
+            new Color(0.2f, 0.75f, 0.2f, 1f));  // green
+        _playBtn.interactable = false;
+        // Dim the button until ready
+        _playBtn.GetComponent<Image>().color = new Color(0.3f, 0.3f, 0.3f, 1f);
+
+        // ── Return Button ────────────────────────────────────────────────────
         MakeButton(canvasObj.transform, "RETURN",
-            new Vector2(0.05f, 0.04f), new Vector2(0.22f, 0.11f),
+            new Vector2(0.05f, 0.03f), new Vector2(0.22f, 0.10f),
             () => SceneManager.LoadScene("MainMenu"));
+    }
+
+    // ── Play clicked ─────────────────────────────────────────────────────────
+
+    private void OnPlayClicked()
+    {
+        if (_selectedLevel < 1) return;
+
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.currentLevel = _selectedLevel;
+            GameManager.Instance.levelTime = 0;
+        }
+        SceneManager.LoadScene("GameScene");
+    }
+
+    // ── Level highlight ──────────────────────────────────────────────────────
+
+    private void RefreshLevelHighlight()
+    {
+        Color selectedCol = new Color(0.35f, 0.18f, 0.85f, 1f);
+        Color defaultCol  = new Color(0.8f, 0.8f, 0.8f, 1f);
+
+        for (int i = 0; i < _levelButtons.Length; i++)
+        {
+            if (_levelButtons[i] == null) continue;
+            Image img = _levelButtons[i].GetComponent<Image>();
+            TextMeshProUGUI txt = _levelButtons[i].GetComponentInChildren<TextMeshProUGUI>();
+            bool selected = (i + 1) == _selectedLevel;
+            img.color = selected ? selectedCol : defaultCol;
+            if (txt != null) txt.color = selected ? Color.white : new Color(0.2f, 0.2f, 0.2f, 1f);
+        }
+    }
+
+    private void RefreshPlayButton()
+    {
+        bool ready = _selectedLevel >= 1;
+        _playBtn.interactable = ready;
+        _playBtn.GetComponent<Image>().color = ready
+            ? new Color(0.2f, 0.75f, 0.2f, 1f)
+            : new Color(0.3f, 0.3f, 0.3f, 1f);
+
+        string mapName = GameManager.Instance != null &&
+                         GameManager.Instance.GetSelectedMap() == GameManager.ArenaMap.Map2
+            ? "City" : "NukeTown";
+
+        if (_selectionLabel != null)
+        {
+            _selectionLabel.text = ready
+                ? $"Level {_selectedLevel}  |  {mapName}  \u2014  Press PLAY to start"
+                : "Select a level and map, then press PLAY";
+        }
     }
 
     // ── Map selection ─────────────────────────────────────────────────────────
@@ -106,6 +176,7 @@ public class LevelSelectBuilder : MonoBehaviour
         if (GameManager.Instance != null)
             GameManager.Instance.SetSelectedMap(map);
         RefreshMapHighlight();
+        RefreshPlayButton();
     }
 
     private void RefreshMapHighlight()
@@ -156,7 +227,7 @@ public class LevelSelectBuilder : MonoBehaviour
         return btn;
     }
 
-    void MakeLevelButton(Transform parent, string label, UnityEngine.Events.UnityAction action)
+    Button MakeLevelButton(Transform parent, string label, UnityEngine.Events.UnityAction action)
     {
         var obj = new GameObject("Btn_" + label);
         obj.transform.SetParent(parent, false);
@@ -172,9 +243,11 @@ public class LevelSelectBuilder : MonoBehaviour
         tmp.alignment = TextAlignmentOptions.Center;
         if (prismFont) tmp.font = prismFont;
         Stretch(txt.GetComponent<RectTransform>());
+
+        return btn;
     }
 
-    void MakeText(Transform parent, string text, float size, Color color,
+    TextMeshProUGUI MakeText(Transform parent, string text, float size, Color color,
         Vector2 aMin, Vector2 aMax, bool isTitle = false)
     {
         var obj = new GameObject("Txt"); obj.transform.SetParent(parent, false);
@@ -185,22 +258,25 @@ public class LevelSelectBuilder : MonoBehaviour
         if (isTitle) { tmp.fontStyle = FontStyles.Bold; obj.AddComponent<Outline>().effectColor = Color.white; }
         var r = obj.GetComponent<RectTransform>();
         r.anchorMin = aMin; r.anchorMax = aMax; r.offsetMin = r.offsetMax = Vector2.zero;
+        return tmp;
     }
 
-    void MakeButton(Transform parent, string label, Vector2 aMin, Vector2 aMax,
-        UnityEngine.Events.UnityAction action)
+    Button MakeButton(Transform parent, string label, Vector2 aMin, Vector2 aMax,
+        UnityEngine.Events.UnityAction action, Color? bgColor = null)
     {
         var obj = new GameObject("Btn_" + label); obj.transform.SetParent(parent, false);
-        var img = obj.AddComponent<Image>(); img.color = Color.white;
+        var img = obj.AddComponent<Image>(); img.color = bgColor ?? Color.white;
         var btn = obj.AddComponent<Button>(); btn.onClick.AddListener(action);
         var txt = new GameObject("Txt"); txt.transform.SetParent(obj.transform, false);
         var tmp = txt.AddComponent<TextMeshProUGUI>();
-        tmp.text = label; tmp.fontSize = 28; tmp.color = new Color(0.1f, 0.1f, 0.3f, 1f);
+        tmp.text = label; tmp.fontSize = 32; tmp.color = Color.white;
+        tmp.fontStyle = FontStyles.Bold;
         tmp.alignment = TextAlignmentOptions.Center;
         if (prismFont) tmp.font = prismFont;
         Stretch(txt.GetComponent<RectTransform>());
         var r = obj.GetComponent<RectTransform>();
         r.anchorMin = aMin; r.anchorMax = aMax; r.offsetMin = r.offsetMax = Vector2.zero;
+        return btn;
     }
 
     void Stretch(RectTransform r)

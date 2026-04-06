@@ -1,4 +1,3 @@
-using System.Collections;
 using Unity.AI.Navigation;
 using UnityEngine;
 using UnityEngine.AI;
@@ -29,66 +28,133 @@ public class LevelBuilder : MonoBehaviour
         DontDestroyOnLoad(gameObject);
     }
 
+    // Guard: the last frame on which we built, so we never double-build.
+    private int _lastBuiltFrame = -1;
+
+    // Public accessor so scene-local fallback can reach us.
+    public static LevelBuilder Instance => instance;
+
     private void OnEnable()  { SceneManager.sceneLoaded += OnSceneLoaded; }
     private void OnDisable() { SceneManager.sceneLoaded -= OnSceneLoaded; }
 
-    private void Start() { HandleScene(SceneManager.GetActiveScene()); }
+    private void Start()
+    {
+        HandleScene(SceneManager.GetActiveScene());
+    }
 
-    private void OnSceneLoaded(Scene scene, LoadSceneMode mode) { HandleScene(scene); }
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        HandleScene(scene);
+    }
 
+    /// <summary>
+    /// Handles scene build DIRECTLY from the callback — no deferral to
+    /// Update(), which was proven unreliable on DDOL objects after scene
+    /// transitions in certain Unity versions.
+    /// </summary>
     private void HandleScene(Scene scene)
     {
         if (!scene.IsValid() || !scene.isLoaded) return;
-        StopAllCoroutines();
+
+        // Prevent double-build in the same frame (Start + OnSceneLoaded both fire).
+        if (_lastBuiltFrame == Time.frameCount) return;
+        _lastBuiltFrame = Time.frameCount;
+
+        Debug.Log($"[LevelBuilder] HandleScene '{scene.name}' on frame {Time.frameCount}");
+
         if (scene.name == "GameScene")
         {
-            EnsureGameManager();
-            GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
-            StartCoroutine(BuildGameSceneNextFrame());
+            Debug.Log("[LevelBuilder] Building GameScene (synchronous)...");
+            BuildGameScene();
         }
         else if (scene.name == "MainMenu")
         {
-            StartCoroutine(CleanupMainMenuNextFrame());
+            CleanupMainMenu();
         }
     }
 
-    private IEnumerator BuildGameSceneNextFrame()
+    /// <summary>
+    /// Public entry point so the scene-local fallback trigger can call us.
+    /// </summary>
+    public void TriggerBuild()
     {
-        yield return null;
-        EnsureGameManager();
-
-        Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
-        Transform arenaRoot    = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
-        Transform enemyRoot    = GetOrCreateChildRoot(gameplayRoot, EnemyRootName);
-
-        ClearChildren(arenaRoot);
-        ClearChildren(enemyRoot);
-
-        GameObject plane = GameObject.Find("Plane");
-        if (plane != null)
+        if (_lastBuiltFrame == Time.frameCount) return;
+        Scene active = SceneManager.GetActiveScene();
+        if (active.name == "GameScene")
         {
-            plane.transform.position   = Vector3.zero;
-            plane.transform.localScale = new Vector3(6f, 1f, 6f);
+            _lastBuiltFrame = Time.frameCount;
+            Debug.Log("[LevelBuilder] TriggerBuild called from scene-local fallback.");
+            BuildGameScene();
         }
-
-        BuildArena(arenaRoot);
-        EnsureMinimapCamera();
-
-        // Build NavMesh FIRST — both player and enemies need it to find
-        // the actual ground level on the auto-scaled FBX map.
-        NavMeshSurface navMeshSurface = EnsureNavMeshSurface();
-        if (navMeshSurface != null)
-            navMeshSurface.BuildNavMesh();
-
-        // Now place player and enemies ON the baked NavMesh.
-        ConfigurePlayer();
-        SpawnEnemies(enemyRoot);
-        EnsureHud();
     }
 
-    private IEnumerator CleanupMainMenuNextFrame()
+    /// <summary>
+    /// Synchronous GameScene build. Replaces the old coroutine approach
+    /// that was silently dying during DDOL scene transitions.
+    /// </summary>
+    private void BuildGameScene()
     {
-        yield return null;
+        Debug.Log("[LevelBuilder] ===== BUILD START =====");
+        try
+        {
+            EnsureGameManager();
+            Debug.Log("[LevelBuilder] Step 1: GameManager ensured");
+
+            GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
+
+            Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
+            Transform arenaRoot    = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
+            Transform enemyRoot    = GetOrCreateChildRoot(gameplayRoot, EnemyRootName);
+            ClearChildren(arenaRoot);
+            ClearChildren(enemyRoot);
+            Debug.Log("[LevelBuilder] Step 2: Roots created");
+
+            GameObject plane = GameObject.Find("Plane");
+            if (plane != null)
+            {
+                plane.transform.position   = Vector3.zero;
+                plane.transform.localScale = new Vector3(6f, 1f, 6f);
+            }
+
+            BuildArena(arenaRoot);
+            Debug.Log("[LevelBuilder] Step 3: Arena built");
+
+            // Spawn environmental props BEFORE NavMesh so they become walkable surfaces
+            Transform propRoot = GetOrCreateChildRoot(gameplayRoot, "PropsRoot");
+            ClearChildren(propRoot);
+            SpawnEnvironmentProps(propRoot);
+            Debug.Log("[LevelBuilder] Step 4: Props spawned");
+
+            EnsureMinimapCamera();
+            Debug.Log("[LevelBuilder] Step 5: Minimap camera");
+
+            NavMeshSurface navMeshSurface = EnsureNavMeshSurface();
+            if (navMeshSurface != null)
+                navMeshSurface.BuildNavMesh();
+            Debug.Log("[LevelBuilder] Step 6: NavMesh built");
+
+            ConfigurePlayer();
+            Debug.Log("[LevelBuilder] Step 7: Player configured");
+
+            SpawnEnemies(enemyRoot);
+            Debug.Log("[LevelBuilder] Step 8: Enemies spawned: " +
+                (GameManager.Instance != null ? GameManager.Instance.enemiesRemaining.ToString() : "?"));
+
+            EnsureHud();
+            Debug.Log("[LevelBuilder] ===== BUILD COMPLETE =====");
+        }
+        catch (System.Exception e)
+        {
+            string errorMsg = $"[LevelBuilder] BUILD FAILED: {e.GetType().Name}: {e.Message}\n{e.StackTrace}";
+            Debug.LogError(errorMsg);
+            // Also write to file so we can read it even if console logs are unreachable
+            try { System.IO.File.WriteAllText(Application.dataPath + "/../build_error.log", errorMsg); }
+            catch { }
+        }
+    }
+
+    private void CleanupMainMenu()
+    {
         GameObject urbanArenaRoot = GameObject.Find(ArenaRootName);
         if (urbanArenaRoot != null) urbanArenaRoot.SetActive(false);
         GameObject enemiesRoot = GameObject.Find(EnemyRootName);
@@ -166,6 +232,18 @@ public class LevelBuilder : MonoBehaviour
         mapInstance.name = "FbxMap";
         mapInstance.transform.localPosition = Vector3.zero;
         mapInstance.transform.localRotation = Quaternion.identity;
+
+        // Destroy any cameras baked into the FBX so they don't compete with
+        // our runtime cameras (RuntimeThirdPersonCamera, MinimapCamera).
+        foreach (Camera embeddedCam in mapInstance.GetComponentsInChildren<Camera>(true))
+        {
+            Debug.Log($"[LevelBuilder] Removing embedded camera '{embeddedCam.name}' from FBX map.");
+            Object.Destroy(embeddedCam.gameObject);
+        }
+
+        // Also destroy any AudioListener that shipped with the FBX
+        foreach (AudioListener al in mapInstance.GetComponentsInChildren<AudioListener>(true))
+            Object.Destroy(al);
 
         // Auto-scale so the map fills roughly the 44×44 arena
         AutoScaleMap(mapInstance, 40f);
@@ -331,6 +409,23 @@ public class LevelBuilder : MonoBehaviour
                 enemyObject.name = "Enemy_" + (i + 1);
                 enemyObject.transform.position = spawnPos;
                 NormalizeEnemyScale(enemyObject, 1.8f);
+
+                // Assign animator controller so enemies aren't stuck in T-pose
+                Animator anim = enemyObject.GetComponentInChildren<Animator>();
+                if (anim != null)
+                {
+                    RuntimeAnimatorController animCtrl =
+                        Resources.Load<RuntimeAnimatorController>("Enemy/CrosbyAnimator");
+                    if (animCtrl != null)
+                    {
+                        anim.runtimeAnimatorController = animCtrl;
+                        Debug.Log($"[LevelBuilder] Animator assigned to Enemy_{i + 1}");
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[LevelBuilder] CrosbyAnimator controller not found in Resources/Enemy/");
+                    }
+                }
             }
             else
             {
@@ -368,22 +463,11 @@ public class LevelBuilder : MonoBehaviour
             controller.attackDamage = enemyDamage;
             controller.maxHealth   = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
 
-            // Snap to actual NavMesh surface — fixes enemies floating above the map.
-            // Search up to 8 units above/below the spawn point so scaled FBX maps work.
-            NavMeshHit navHit;
-            Vector3 sampleOrigin = spawnPos + Vector3.up * 4f;
-            if (NavMesh.SamplePosition(sampleOrigin, out navHit, 8f, NavMesh.AllAreas))
-            {
-                enemyObject.transform.position = navHit.position;
-                agent.Warp(navHit.position);
-            }
-            else
-            {
-                // Fallback: place slightly above origin so CharacterController settles
-                enemyObject.transform.position = spawnPos + Vector3.up * 0.05f;
-                Debug.LogWarning($"[LevelBuilder] No NavMesh found near {spawnPos} for Enemy_{i + 1}. " +
-                                 "Ensure the NavMesh covers all spawn areas.");
-            }
+            // Find an open-air spawn point (not inside buildings)
+            Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i);
+            enemyObject.transform.position = openSpawn;
+            agent.Warp(openSpawn);
+            Debug.Log($"[LevelBuilder] Enemy_{i + 1} spawned at {openSpawn}");
 
             // Attach the same melee weapon the player is using
             AttachWeaponToEnemy(enemyObject, currentLvl);
@@ -413,21 +497,99 @@ public class LevelBuilder : MonoBehaviour
         Transform handBone = FindRightHandBone(enemy.transform);
         Transform attachPoint = handBone != null ? handBone : enemy.transform;
 
-        GameObject weapon = Instantiate(weaponPrefab, attachPoint);
+        // Instantiate at world root first (NOT parented) to avoid scale inheritance
+        GameObject weapon = Instantiate(weaponPrefab);
         weapon.name = "EnemyWeapon";
         weapon.layer = enemy.layer;
+        weapon.transform.position = Vector3.zero;
+        weapon.transform.rotation = Quaternion.identity;
+        weapon.transform.localScale = Vector3.one;
 
-        // Scale weapon to a natural hand-held size
+        // ── Strip arm rigs / armatures that ship inside weapon FBX files ──
+        // These contain SkinnedMeshRenderers of character arms that explode
+        // in scale when parented to a different character's hand bone.
+        StripWeaponArmature(weapon);
+
+        // Scale weapon to a natural hand-held size BEFORE parenting
         float targetSize = GetWeaponTargetSize(level);
         NormalizeWeaponScale(weapon, targetSize);
 
+        // NOW parent to hand — use worldPositionStays=true so scale is preserved
+        weapon.transform.SetParent(attachPoint, true);
+
         // Orient weapon so it points forward from the hand (melee grip)
-        weapon.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
         weapon.transform.localPosition = new Vector3(0f, 0.05f, 0f);
+        weapon.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+
+        // Safety clamp — if lossy scale is still insane, force it small
+        ClampWeaponWorldScale(weapon, targetSize * 2f);
 
         // Remove any colliders from the weapon so it doesn't interfere with NavMesh
         foreach (Collider col in weapon.GetComponentsInChildren<Collider>(true))
             col.enabled = false;
+
+        Debug.Log($"[LevelBuilder] Enemy weapon attached. localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
+    }
+
+    /// <summary>
+    /// Destroys arm rigs, armatures, and SkinnedMeshRenderers that ship inside
+    /// weapon FBX files. These are character arm meshes meant for first-person
+    /// view — they must NOT exist when the weapon is attached to a different
+    /// character's skeleton, or they'll create giant floating geometry.
+    /// </summary>
+    private static void StripWeaponArmature(GameObject weapon)
+    {
+        // Destroy any child whose name contains arm/rig/armature keywords
+        string[] poisonKeywords = { "_ARM", "_Arm", "_arm", "Armature", "armature", "_Rig", "_rig" };
+        var toDestroy = new System.Collections.Generic.List<GameObject>();
+
+        foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
+        {
+            if (child == weapon.transform) continue;
+            string n = child.name;
+            foreach (string keyword in poisonKeywords)
+            {
+                if (n.Contains(keyword))
+                {
+                    toDestroy.Add(child.gameObject);
+                    Debug.Log($"[StripWeaponArmature] Removing '{n}' from weapon '{weapon.name}'");
+                    break;
+                }
+            }
+        }
+
+        // Also destroy ALL SkinnedMeshRenderers — weapon blades use MeshFilter/MeshRenderer,
+        // SkinnedMeshRenderers are always character arm skins
+        foreach (SkinnedMeshRenderer smr in weapon.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            if (!toDestroy.Contains(smr.gameObject))
+            {
+                toDestroy.Add(smr.gameObject);
+                Debug.Log($"[StripWeaponArmature] Removing SkinnedMeshRenderer '{smr.gameObject.name}'");
+            }
+        }
+
+        foreach (GameObject obj in toDestroy)
+        {
+            if (obj != null && obj != weapon)
+                Object.DestroyImmediate(obj);
+        }
+    }
+
+    /// <summary>
+    /// Safety net: if the weapon's world-space (lossy) scale exceeds maxWorldSize
+    /// in any axis, force localScale down proportionally.
+    /// </summary>
+    private static void ClampWeaponWorldScale(GameObject weapon, float maxWorldSize)
+    {
+        Vector3 lossy = weapon.transform.lossyScale;
+        float maxAxis = Mathf.Max(Mathf.Abs(lossy.x), Mathf.Max(Mathf.Abs(lossy.y), Mathf.Abs(lossy.z)));
+        if (maxAxis > maxWorldSize && maxAxis > 0.001f)
+        {
+            float clampFactor = maxWorldSize / maxAxis;
+            weapon.transform.localScale *= clampFactor;
+            Debug.LogWarning($"[ClampWeaponWorldScale] Clamped '{weapon.name}' from lossy {lossy} (max={maxAxis:F1}) by {clampFactor:F4}");
+        }
     }
 
     /// <summary>Searches the transform hierarchy for a right-hand bone.</summary>
@@ -605,46 +767,26 @@ public class LevelBuilder : MonoBehaviour
             playerController.gameObject.tag = "Player";
 
         // ── CharacterController must be DISABLED to set transform.position ──
-        // When a CC is enabled, Unity blocks direct position writes. If the
-        // player spawns inside geometry, all Move() calls silently fail →
-        // frozen player, camera staring at a wall, instant death.
+        // Handled cleanly by PlayerController.TeleportTo
         CharacterController cc = playerController.GetComponent<CharacterController>();
-        if (cc != null) cc.enabled = false;
 
-        // ── Find safe spawn on the NavMesh ──────────────────────────────────
-        // Try the preferred spawn first; fall back to centre of map if no
-        // NavMesh triangle exists near the preferred point.
-        Vector3 preferredSpawn = new Vector3(0f, 5f, -14f);
-        Vector3 safeSpawn = preferredSpawn;
+        // ── Find safe spawn on OPEN ground (not inside buildings) ──────────
+        // Try many candidate positions spread across the arena. For each one,
+        // check NavMesh AND verify there's open sky above (no roof/wall).
+        Vector3 safeSpawn = FindOpenSpawnPoint(new Vector3(0f, 0.15f, 0f));
+        Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn}");
 
-        NavMeshHit navHit;
-        if (NavMesh.SamplePosition(preferredSpawn, out navHit, 15f, NavMesh.AllAreas))
-        {
-            safeSpawn = navHit.position + Vector3.up * 0.1f;
-            Debug.Log($"[LevelBuilder] Player spawn snapped to NavMesh at {safeSpawn}");
-        }
-        else if (NavMesh.SamplePosition(Vector3.up * 5f, out navHit, 20f, NavMesh.AllAreas))
-        {
-            // Fallback: centre of the arena
-            safeSpawn = navHit.position + Vector3.up * 0.1f;
-            Debug.LogWarning("[LevelBuilder] Preferred spawn off-NavMesh — using map centre.");
-        }
-        else
-        {
-            safeSpawn = new Vector3(0f, 2f, 0f);
-            Debug.LogWarning("[LevelBuilder] No NavMesh found for player — using raw fallback.");
-        }
-
-        playerController.transform.position = safeSpawn;
+        playerController.TeleportTo(safeSpawn);
         playerController.transform.rotation = Quaternion.identity;
+        Physics.SyncTransforms();
 
-        // ── Configure CharacterController dimensions, then re-enable ────────
+        // ── Configure CharacterController dimensions ────────
         if (cc != null)
         {
             cc.center = new Vector3(0f, 1f, 0f);
             cc.height = 2f;
             cc.radius = 0.4f;
-            cc.enabled = true;
+            // cc.enabled is already toggled safely inside TeleportTo
         }
 
         EnsureComponent<PlayerHealth>(playerController.gameObject);
@@ -660,11 +802,7 @@ public class LevelBuilder : MonoBehaviour
             if (camCtrl != null)
             {
                 camCtrl.target = playerController.transform;
-                // Snap immediately instead of lerping from origin
-                Vector3 orbitOffset = camCtrl.offset;
-                Quaternion orbitRot = Quaternion.Euler(0f, playerController.transform.eulerAngles.y, 0f);
-                tpCam.transform.position = playerController.transform.position + orbitRot * orbitOffset;
-                tpCam.transform.LookAt(playerController.transform.position + Vector3.up * 1.35f);
+                camCtrl.SnapToTarget();
             }
         }
 
@@ -730,6 +868,263 @@ public class LevelBuilder : MonoBehaviour
             rend.material = mat;
         }
         return primitive;
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  ENVIRONMENT PROPS — crates, barriers, ramps, vehicles
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void SpawnEnvironmentProps(Transform propRoot)
+    {
+        // ── Crate clusters (scattered cover) ─────────────────────────────
+        Vector3[] cratePositions = new Vector3[]
+        {
+            new Vector3(  5f, 0.5f,   3f),
+            new Vector3(  5f, 0.5f,   4.2f),
+            new Vector3(  5f, 1.5f,   3.6f),   // stacked on top
+            new Vector3( -6f, 0.5f,  -4f),
+            new Vector3( -6f, 0.5f,  -2.8f),
+            new Vector3( 12f, 0.5f,   9f),
+            new Vector3( 12f, 0.5f,  10.2f),
+            new Vector3( 12f, 1.5f,   9.6f),   // stacked
+            new Vector3(-10f, 0.5f,  12f),
+            new Vector3(  0f, 0.5f, -12f),
+            new Vector3(  8f, 0.5f, -10f),
+            new Vector3( -8f, 0.5f,   8f),
+        };
+
+        Color crateColor = new Color(0.55f, 0.35f, 0.15f);  // wood brown
+        for (int i = 0; i < cratePositions.Length; i++)
+        {
+            GameObject crate = CreatePrimitive(propRoot, $"Crate_{i + 1}",
+                PrimitiveType.Cube, cratePositions[i], Vector3.one, crateColor);
+            crate.isStatic = true;
+        }
+
+        // ── Barrier walls (waist-high cover) ─────────────────────────────
+        Vector3[] barrierPos   = { new Vector3(3f,0.6f,-6f), new Vector3(-4f,0.6f,6f), new Vector3(10f,0.6f,-2f), new Vector3(-12f,0.6f,-8f), new Vector3(7f,0.6f,14f) };
+        Vector3[] barrierScale = { new Vector3(4f,1.2f,0.3f), new Vector3(5f,1.2f,0.3f), new Vector3(3f,1.2f,0.3f), new Vector3(4f,1.2f,0.3f), new Vector3(6f,1.2f,0.3f) };
+        float[]   barrierYRot  = { 0f, 30f, 90f, 45f, 0f };
+
+        Color barrierColor = new Color(0.45f, 0.45f, 0.50f);  // concrete grey
+        for (int i = 0; i < barrierPos.Length; i++)
+        {
+            GameObject wall = CreatePrimitive(propRoot, $"Barrier_{i + 1}",
+                PrimitiveType.Cube, barrierPos[i], barrierScale[i], barrierColor);
+            wall.transform.rotation = Quaternion.Euler(0f, barrierYRot[i], 0f);
+            wall.isStatic = true;
+        }
+
+        // ── Ramps / stairs (climbable surfaces) ──────────────────────────
+        Vector3[] rampPos   = { new Vector3(-2f,0.4f,-10f), new Vector3(14f,0.4f,5f), new Vector3(-9f,0.4f,-2f) };
+        Vector3[] rampScale = { new Vector3(2f,0.2f,4f), new Vector3(2f,0.2f,4f), new Vector3(2f,0.2f,4f) };
+        Vector3[] rampRot   = { new Vector3(15f,0f,0f), new Vector3(15f,90f,0f), new Vector3(15f,180f,0f) };
+
+        Color rampColor = new Color(0.40f, 0.38f, 0.35f);  // dark stone
+        for (int i = 0; i < rampPos.Length; i++)
+        {
+            GameObject ramp = CreatePrimitive(propRoot, $"Ramp_{i + 1}",
+                PrimitiveType.Cube, rampPos[i], rampScale[i], rampColor);
+            ramp.transform.rotation = Quaternion.Euler(rampRot[i]);
+            ramp.isStatic = true;
+        }
+
+        // ── Vehicle husks (large cover, built from grouped cubes) ────────
+        SpawnVehicleHusk(propRoot, "Car_1", new Vector3( 8f, 0f, -7f),   0f);
+        SpawnVehicleHusk(propRoot, "Car_2", new Vector3(-5f, 0f, 10f),  45f);
+        SpawnVehicleHusk(propRoot, "Car_3", new Vector3(15f, 0f,  2f), -30f);
+
+        // ── Barrels (cylindrical cover) ──────────────────────────────────
+        Vector3[] barrelPositions = new Vector3[]
+        {
+            new Vector3(  2f, 0.6f,   7f),
+            new Vector3(  2.8f, 0.6f, 7f),
+            new Vector3( -7f, 0.6f,  -7f),
+            new Vector3( 11f, 0.6f,  12f),
+            new Vector3(-14f, 0.6f,   0f),
+            new Vector3(  0f, 0.6f,  15f),
+        };
+
+        Color barrelColor = new Color(0.25f, 0.30f, 0.20f);  // military green
+        for (int i = 0; i < barrelPositions.Length; i++)
+        {
+            GameObject barrel = CreatePrimitive(propRoot, $"Barrel_{i + 1}",
+                PrimitiveType.Cylinder, barrelPositions[i],
+                new Vector3(0.5f, 0.6f, 0.5f), barrelColor);
+            barrel.isStatic = true;
+        }
+
+        Debug.Log($"[LevelBuilder] Environment props placed: " +
+            $"{cratePositions.Length} crates, {barrierPos.Length} barriers, " +
+            $"{rampPos.Length} ramps, 3 cars, {barrelPositions.Length} barrels");
+    }
+
+    /// <summary>
+    /// Builds a simple car-shaped husk from box primitives (body + roof + 4 wheels).
+    /// </summary>
+    private void SpawnVehicleHusk(Transform parent, string name, Vector3 position, float yRotation)
+    {
+        GameObject car = new GameObject(name);
+        car.transform.SetParent(parent, false);
+        car.transform.position = position;
+        car.transform.rotation = Quaternion.Euler(0f, yRotation, 0f);
+        car.isStatic = true;
+
+        Color bodyColor  = new Color(0.20f, 0.22f, 0.28f);  // dark steel
+        Color roofColor  = new Color(0.15f, 0.15f, 0.20f);
+        Color wheelColor = new Color(0.10f, 0.10f, 0.10f);
+
+        // Car body
+        CreatePrimitive(car.transform, "Body",
+            PrimitiveType.Cube, new Vector3(0f, 0.5f, 0f),
+            new Vector3(3.8f, 1.0f, 1.6f), bodyColor).isStatic = true;
+
+        // Roof / cabin
+        CreatePrimitive(car.transform, "Roof",
+            PrimitiveType.Cube, new Vector3(-0.2f, 1.3f, 0f),
+            new Vector3(1.8f, 0.8f, 1.4f), roofColor).isStatic = true;
+
+        // 4 wheels
+        string[] wheelNames = { "WheelFL", "WheelFR", "WheelBL", "WheelBR" };
+        Vector3[] wheelOffsets = {
+            new Vector3( 1.2f, 0.2f,  0.8f),
+            new Vector3( 1.2f, 0.2f, -0.8f),
+            new Vector3(-1.2f, 0.2f,  0.8f),
+            new Vector3(-1.2f, 0.2f, -0.8f),
+        };
+        for (int w = 0; w < 4; w++)
+        {
+            CreatePrimitive(car.transform, wheelNames[w],
+                PrimitiveType.Cylinder, wheelOffsets[w],
+                new Vector3(0.4f, 0.1f, 0.4f), wheelColor).isStatic = true;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  OPEN-AIR SPAWN LOGIC — avoids spawning inside buildings
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Finds an outdoor, NavMesh-valid spawn point. Tests many candidates
+    /// across the arena and picks the first one that:
+    ///   1) Has valid NavMesh below it
+    ///   2) Has open sky above it (no roof/geometry)
+    ///   3) Has enough horizontal clearance (no walls within 1m)
+    /// </summary>
+    private static Vector3 FindOpenSpawnPoint(Vector3 fallback)
+    {
+        // Grid of candidate XZ positions spread across the arena streets
+        Vector3[] candidates =
+        {
+            new Vector3(  0f, 0f,   0f),
+            new Vector3(  0f, 0f,  -8f),
+            new Vector3(  0f, 0f,   8f),
+            new Vector3( -8f, 0f,   0f),
+            new Vector3(  8f, 0f,   0f),
+            new Vector3( -5f, 0f,  -5f),
+            new Vector3(  5f, 0f,  -5f),
+            new Vector3( -5f, 0f,   5f),
+            new Vector3(  5f, 0f,   5f),
+            new Vector3(  0f, 0f, -14f),
+            new Vector3(  0f, 0f,  14f),
+            new Vector3(-12f, 0f,   0f),
+            new Vector3( 12f, 0f,   0f),
+            new Vector3(-10f, 0f, -10f),
+            new Vector3( 10f, 0f, -10f),
+            new Vector3(-10f, 0f,  10f),
+            new Vector3( 10f, 0f,  10f),
+            new Vector3(-16f, 0f,   0f),
+            new Vector3( 16f, 0f,   0f),
+            new Vector3(  0f, 0f, -18f),
+            new Vector3(  0f, 0f,  18f),
+        };
+
+        foreach (Vector3 candidate in candidates)
+        {
+            if (IsOpenSpawnPoint(candidate, out Vector3 groundPos))
+            {
+                Debug.Log($"[LevelBuilder] Found open spawn at {groundPos} (candidate {candidate})");
+                return groundPos;
+            }
+        }
+
+        // Last resort — try the physics floor at origin
+        NavMeshHit lastHit;
+        if (NavMesh.SamplePosition(Vector3.zero, out lastHit, 5f, NavMesh.AllAreas))
+            return lastHit.position + Vector3.up * 0.1f;
+
+        return fallback;
+    }
+
+    /// <summary>
+    /// Tests if a candidate XZ position is valid: on NavMesh, outdoors, and clear.
+    /// </summary>
+    private static bool IsOpenSpawnPoint(Vector3 xzCandidate, out Vector3 groundPos)
+    {
+        groundPos = Vector3.zero;
+
+        // 1) Find NavMesh surface near this XZ position
+        Vector3 samplePoint = new Vector3(xzCandidate.x, 0.5f, xzCandidate.z);
+        NavMeshHit hit;
+        if (!NavMesh.SamplePosition(samplePoint, out hit, 3f, NavMesh.AllAreas))
+            return false;
+
+        // Reject points that are clearly on rooftops (too high above the arena floor)
+        if (hit.position.y > 2.5f)
+            return false;
+
+        Vector3 feetPos = hit.position + Vector3.up * 0.1f;
+
+        // 2) Check open sky — raycast upward from the spawn point. If it hits
+        //    something within 4m, we're inside a building.
+        if (Physics.Raycast(feetPos + Vector3.up * 0.5f, Vector3.up, 4f))
+            return false;
+
+        // 3) Check horizontal clearance — no walls within 1m in cardinal directions
+        Vector3 chestHeight = feetPos + Vector3.up * 1f;
+        Vector3[] dirs = { Vector3.forward, Vector3.back, Vector3.left, Vector3.right };
+        foreach (Vector3 dir in dirs)
+        {
+            if (Physics.Raycast(chestHeight, dir, 1f))
+                return false; // too close to a wall
+        }
+
+        groundPos = feetPos;
+        return true;
+    }
+
+    /// <summary>
+    /// Finds an open spawn point for enemies. Same logic but with a wider set
+    /// of candidates around the given position.
+    /// </summary>
+    private static Vector3 FindOpenEnemySpawn(Vector3 preferred, int index)
+    {
+        // Try the preferred position first
+        if (IsOpenSpawnPoint(preferred, out Vector3 pos))
+            return pos;
+
+        // Try offsets from the preferred position
+        Vector3[] offsets =
+        {
+            new Vector3( 2f, 0f,  0f), new Vector3(-2f, 0f,  0f),
+            new Vector3( 0f, 0f,  2f), new Vector3( 0f, 0f, -2f),
+            new Vector3( 4f, 0f,  0f), new Vector3(-4f, 0f,  0f),
+            new Vector3( 0f, 0f,  4f), new Vector3( 0f, 0f, -4f),
+            new Vector3( 3f, 0f,  3f), new Vector3(-3f, 0f, -3f),
+        };
+
+        foreach (Vector3 offset in offsets)
+        {
+            if (IsOpenSpawnPoint(preferred + offset, out Vector3 offsetPos))
+                return offsetPos;
+        }
+
+        // Fallback — just NavMesh snap without clearance check
+        NavMeshHit fallbackHit;
+        if (NavMesh.SamplePosition(preferred + Vector3.up * 0.5f, out fallbackHit, 5f, NavMesh.AllAreas))
+            return fallbackHit.position + Vector3.up * 0.1f;
+
+        return new Vector3(preferred.x, 0.1f, preferred.z);
     }
 
     private static T EnsureComponent<T>(GameObject target) where T : Component

@@ -26,7 +26,7 @@ public class PlayerController : MonoBehaviour
     public float gravity = -25f;
 
     [Tooltip("Maximum jump height in units.")]
-    public float jumpHeight = 0.6f;
+    public float jumpHeight = 1.8f;
 
     [Header("Movement Tuning")]
     [Tooltip("How fast the character reaches full speed (units/s²).")]
@@ -426,6 +426,14 @@ public class PlayerController : MonoBehaviour
             verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
     }
 
+    public void TeleportTo(Vector3 position)
+    {
+        // Safe teleport logic requested
+        if (controller != null) controller.enabled = false;
+        transform.position = position;
+        if (controller != null) controller.enabled = true;
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     //  CAMERA / LOOK
     // ════════════════════════════════════════════════════════════════════════
@@ -596,39 +604,42 @@ public class PlayerController : MonoBehaviour
         cameraKickTarget = -1.2f;
     }
 
+    /// <summary>Maximum angle (degrees) from player forward that counts as "in front".</summary>
+    private const float MeleeHitAngle = 60f; // 60° each side = 120° total cone
+
     private void AttackMelee(Camera cam)
     {
-        Vector3 centerA = cam.transform.position + cam.transform.forward * attackDistance;
-        Vector3 centerB = transform.position + Vector3.up * 1.0f + transform.forward * (attackDistance * 0.5f);
-        Collider[] hitsA = Physics.OverlapSphere(centerA, attackRadius, resolvedAttackMask, QueryTriggerInteraction.Ignore);
-        Collider[] hitsB = Physics.OverlapSphere(centerB, attackRadius * 1.1f, resolvedAttackMask, QueryTriggerInteraction.Ignore);
+        // Detection sphere centred slightly in front of the player
+        Vector3 meleeOrigin = transform.position + Vector3.up * 1.0f + transform.forward * (attackDistance * 0.5f);
+        Collider[] hits = Physics.OverlapSphere(meleeOrigin, attackRadius * 1.2f, resolvedAttackMask, QueryTriggerInteraction.Ignore);
         bool landed = false;
 
-        for (int i = 0; i < hitsA.Length; i++)
+        // Sort by distance so closest enemy gets hit first
+        System.Array.Sort(hits, (a, b) =>
         {
-            if (TryDamageTarget(hitsA[i].transform, attackDamage))
+            float dA = (a.transform.position - meleeOrigin).sqrMagnitude;
+            float dB = (b.transform.position - meleeOrigin).sqrMagnitude;
+            return dA.CompareTo(dB);
+        });
+
+        for (int i = 0; i < hits.Length; i++)
+        {
+            // ── DIRECTIONAL CHECK: ignore targets behind the player ──
+            Vector3 dirToTarget = (hits[i].transform.position - transform.position);
+            dirToTarget.y = 0f; // horizontal plane only
+            float angle = Vector3.Angle(transform.forward, dirToTarget);
+            if (angle > MeleeHitAngle) continue; // target is behind us — skip
+
+            if (TryDamageTarget(hits[i].transform, attackDamage))
             {
-                ApplyHitReaction(hitsA[i].transform, cam.transform.forward);
-                HitTarget(hitsA[i].ClosestPoint(centerA));
+                ApplyHitReaction(hits[i].transform, transform.forward);
+                HitTarget(hits[i].ClosestPoint(meleeOrigin));
                 landed = true;
-                break;
+                break; // only hit one enemy per swing
             }
         }
 
-        if (!landed)
-        {
-            for (int i = 0; i < hitsB.Length; i++)
-            {
-                if (TryDamageTarget(hitsB[i].transform, attackDamage))
-                {
-                    ApplyHitReaction(hitsB[i].transform, transform.forward);
-                    HitTarget(hitsB[i].ClosestPoint(centerB));
-                    landed = true;
-                    break;
-                }
-            }
-        }
-
+        // Visual miss feedback — spark on walls etc.
         if (!landed && Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, attackDistance, resolvedAttackMask, QueryTriggerInteraction.Ignore))
             HitTarget(hit.point);
     }
@@ -746,7 +757,9 @@ public class PlayerController : MonoBehaviour
         if (planar.sqrMagnitude <= maxR * maxR) return;
 
         Vector3 clamped = planar.normalized * maxR;
+        if (controller != null) controller.enabled = false;
         transform.position = new Vector3(clamped.x, transform.position.y, clamped.z);
+        if (controller != null) controller.enabled = true;
 
         // Kill outward horizontal velocity so the character doesn't push into the wall
         if (Vector3.Dot(horizontalVelocity, planar.normalized) > 0f)
@@ -754,7 +767,9 @@ public class PlayerController : MonoBehaviour
 
         if (transform.position.y > arenaFloorHeight + 0.6f)
         {
+            if (controller != null) controller.enabled = false;
             transform.position = new Vector3(transform.position.x, arenaFloorHeight, transform.position.z);
+            if (controller != null) controller.enabled = true;
             verticalVelocity.y = Mathf.Min(verticalVelocity.y, 0f);
         }
     }
@@ -784,7 +799,10 @@ public class PlayerController : MonoBehaviour
         float dist      = currentY - targetY;
         float snapSpeed = Mathf.Lerp(floorSnapSpeed, floorSnapSpeed * 8f, Mathf.Clamp01(dist / 3f));
         float snappedY  = Mathf.MoveTowards(currentY, targetY, snapSpeed * Time.deltaTime);
+        
+        if (controller != null) controller.enabled = false;
         transform.position = new Vector3(transform.position.x, snappedY, transform.position.z);
+        if (controller != null) controller.enabled = true;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -803,6 +821,12 @@ public class PlayerController : MonoBehaviour
     public void RefreshGameplayPreferences()
     {
         ApplyPerspectivePreference();
+        
+        // Ensure third person is always fully initialized when rendering
+        if (thirdPersonBody != null && isThirdPersonActive)
+        {
+            thirdPersonBody.SetActive(true);
+        }
     }
 
     private void ApplyPerspectivePreference()
@@ -863,7 +887,7 @@ public class PlayerController : MonoBehaviour
 
         GameObject camObj = new GameObject("RuntimeThirdPersonCamera");
         runtimeThirdPersonCamera = camObj.AddComponent<Camera>();
-        runtimeThirdPersonCamera.fieldOfView   = firstPersonCam.fieldOfView;
+        runtimeThirdPersonCamera.fieldOfView   = Mathf.Max(firstPersonCam.fieldOfView, 70f);
         runtimeThirdPersonCamera.nearClipPlane  = firstPersonCam.nearClipPlane;
         runtimeThirdPersonCamera.farClipPlane   = firstPersonCam.farClipPlane;
         runtimeThirdPersonCamera.clearFlags     = firstPersonCam.clearFlags;
@@ -873,8 +897,10 @@ public class PlayerController : MonoBehaviour
 
         CameraController follow = camObj.AddComponent<CameraController>();
         follow.target      = transform;
-        follow.offset      = new Vector3(0f, 3.2f, -5.8f);
+        follow.offset      = new Vector3(0f, 3.4f, -7.2f);
         follow.smoothSpeed = 10f;
+        follow.lookAheadDistance = 4.5f;
+        follow.lookHeight = 1.6f;
 
         thirdPersonCam = runtimeThirdPersonCamera;
     }
@@ -1289,6 +1315,11 @@ public class PlayerController : MonoBehaviour
 
     private void NormalizeWeaponScale(GameObject weapon, float targetMaxDimension)
     {
+        // ── Step 0: Strip arm rigs / armatures from weapon FBX ──────────────
+        // Weapon FBX files often include a full character arm (SkinnedMeshRenderer)
+        // that causes scale explosions when parented to a different skeleton.
+        StripWeaponArmature(weapon);
+
         // Temporarily unparent so we measure the model at identity transform
         // without any parent bone scale distortion.
         Transform savedParent = weapon.transform.parent;
@@ -1297,7 +1328,8 @@ public class PlayerController : MonoBehaviour
         weapon.transform.rotation = Quaternion.identity;
         weapon.transform.localScale = Vector3.one;
 
-        // Measure bounds from mesh data (reliable even before first render)
+        // Measure bounds from MeshFilter ONLY (not SkinnedMeshRenderer —
+        // those are always arm skins, not weapon blades)
         Bounds combinedBounds = new Bounds(Vector3.zero, Vector3.zero);
         bool hasAny = false;
 
@@ -1305,20 +1337,8 @@ public class PlayerController : MonoBehaviour
         {
             if (mf.sharedMesh == null) continue;
             Bounds mb = mf.sharedMesh.bounds;
-            // Transform mesh-local bounds center to weapon-local space
             Vector3 worldCenter = mf.transform.TransformPoint(mb.center);
             Vector3 worldExtents = Vector3.Scale(mb.extents, mf.transform.lossyScale);
-            Bounds wb = new Bounds(worldCenter, worldExtents * 2f);
-            if (!hasAny) { combinedBounds = wb; hasAny = true; }
-            else combinedBounds.Encapsulate(wb);
-        }
-
-        foreach (SkinnedMeshRenderer smr in weapon.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-        {
-            if (smr.sharedMesh == null) continue;
-            Bounds mb = smr.sharedMesh.bounds;
-            Vector3 worldCenter = smr.transform.TransformPoint(mb.center);
-            Vector3 worldExtents = Vector3.Scale(mb.extents, smr.transform.lossyScale);
             Bounds wb = new Bounds(worldCenter, worldExtents * 2f);
             if (!hasAny) { combinedBounds = wb; hasAny = true; }
             else combinedBounds.Encapsulate(wb);
@@ -1335,7 +1355,59 @@ public class PlayerController : MonoBehaviour
         float scale = targetMaxDimension / maxDim;
         weapon.transform.localScale = Vector3.one * scale;
 
+        // Safety clamp — prevent any axis of lossy scale from exceeding 2x target
+        Vector3 lossy = weapon.transform.lossyScale;
+        float maxLossy = Mathf.Max(Mathf.Abs(lossy.x), Mathf.Max(Mathf.Abs(lossy.y), Mathf.Abs(lossy.z)));
+        float maxAllowed = targetMaxDimension * 2f;
+        if (maxLossy > maxAllowed && maxLossy > 0.001f)
+        {
+            weapon.transform.localScale *= (maxAllowed / maxLossy);
+            Debug.LogWarning($"[NormalizeWeaponScale] Clamped lossy scale from {maxLossy:F1} to {maxAllowed:F1}");
+        }
+
         Debug.Log($"[NormalizeWeaponScale] Native size={maxDim:F2}m, target={targetMaxDimension:F2}m, applied scale={scale:F4}");
+    }
+
+    /// <summary>
+    /// Destroys arm rigs, armatures, and SkinnedMeshRenderers from weapon FBX.
+    /// These are character arm meshes for first-person view — they explode in
+    /// scale when parented to a different character's hand bone.
+    /// </summary>
+    private static void StripWeaponArmature(GameObject weapon)
+    {
+        string[] poisonKeywords = { "_ARM", "_Arm", "_arm", "Armature", "armature", "_Rig", "_rig" };
+        var toDestroy = new System.Collections.Generic.List<GameObject>();
+
+        foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
+        {
+            if (child == weapon.transform) continue;
+            foreach (string keyword in poisonKeywords)
+            {
+                if (child.name.Contains(keyword))
+                {
+                    toDestroy.Add(child.gameObject);
+                    Debug.Log($"[StripWeaponArmature] Removing '{child.name}' from '{weapon.name}'");
+                    break;
+                }
+            }
+        }
+
+        // Also destroy ALL SkinnedMeshRenderers — weapon blades use MeshRenderer,
+        // SkinnedMeshRenderers are always character arm skins
+        foreach (SkinnedMeshRenderer smr in weapon.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            if (!toDestroy.Contains(smr.gameObject))
+            {
+                toDestroy.Add(smr.gameObject);
+                Debug.Log($"[StripWeaponArmature] Removing SkinnedMesh '{smr.gameObject.name}'");
+            }
+        }
+
+        foreach (GameObject obj in toDestroy)
+        {
+            if (obj != null && obj != weapon)
+                Object.DestroyImmediate(obj);
+        }
     }
 
     private GameObject BuildWeaponModel(int level, Transform attachPoint)
