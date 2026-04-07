@@ -49,6 +49,7 @@
     <Analyzer Include="/Applications/Unity/Hub/Editor/6000.3.9f1/Unity.app/Contents/Resources/BuildPipeline/Unity.SourceGenerators/Unity.UIToolkit.SourceGenerator.dll" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Assets/Scripts/PauseMenuController.cs" />
     <Compile Include="Assets/Scripts/MeleeAnimationEventSink.cs" />
     <Compile Include="Assets/Scripts/OptionsBuilder.cs" />
     <Compile Include="Assets/Scripts/MinimapCameraFollow.cs" />
@@ -74,6 +75,7 @@
     <Compile Include="Assets/TutorialInfo/Scripts/Readme.cs" />
     <Compile Include="Assets/Scripts/CreditsBuilder.cs" />
     <Compile Include="Assets/Scripts/GunController.cs" />
+    <Compile Include="Assets/Scripts/AnimationEventSink.cs" />
     <Compile Include="Assets/Scripts/GameManager.cs" />
     <Compile Include="Assets/Scripts/CameraController.cs" />
     <Compile Include="Assets/FirstPersonMelee/Scripts/Actor.cs" />

@@ -1,13 +1,18 @@
 using UnityEngine;
 using UnityEngine.AI;
+using System.Collections.Generic;
 
 /// <summary>
-/// Overhauled enemy AI with proper separation, hit reactions, and death ragdoll.
+/// Enemy AI with NavMeshAgent pathfinding, jump-over-obstacles, natural animations,
+/// death animation before ragdoll, and proper weapon support.
 ///
-/// Improvements over original:
-///   - NavMeshAgent avoidance priority + obstacle avoidance prevents stacking
-///   - TakeDamage triggers flinch (brief pause + visual flash + audio)
-///   - Death triggers ragdoll (replace NavMeshAgent with Rigidbodies) and corpse stays
+/// Fix list (2026):
+///   1. Jump — uses Mathf.Sqrt(jumpHeight * -2f * gravity) matching the Player formula.
+///              Triggers when agent gets stuck with an obstacle in front.
+///   2. Weapon attachment handled by LevelBuilder; EnemyController exposes weaponAttachPoint.
+///   3. Animations — Speed parameter is normalised (0-1) and VelocityX/Z are set for blendtrees.
+///   4. Death — plays "Dead" animation for deathAnimDuration seconds BEFORE ragdoll activates.
+///   5. Victory — notifies GameManager via EnemyKilled() which now tracks totals correctly.
 /// </summary>
 [RequireComponent(typeof(NavMeshAgent))]
 public class EnemyController : MonoBehaviour
@@ -25,35 +30,44 @@ public class EnemyController : MonoBehaviour
     public float chaseSpeed       = 4.8f;
     public float rotationSpeed    = 8f;
 
+    [Header("Jump (Obstacle Avoidance)")]
+    [Tooltip("Height the enemy jumps when blocked (matches Player formula).")]
+    public float jumpHeight       = 1.8f;
+    [Tooltip("Gravity value (negative). Must match Player gravity for same arc.")]
+    public float gravity          = -25f;
+    [Tooltip("Horizontal distance ahead to check for obstacles.")]
+    public float obstacleCheckDist = 1.6f;
+    [Tooltip("How long the enemy must be stuck before attempting a jump.")]
+    public float stuckTime        = 1.2f;
+    [Tooltip("Velocity below this is considered 'stuck' even when path exists.")]
+    public float stuckVelocityThreshold = 0.25f;
+
     [Header("Separation (Anti-Stacking)")]
-    [Tooltip("Minimum distance between enemies before push kicks in.")]
     public float separationRadius   = 2.0f;
-    [Tooltip("Force of the separation push.")]
     public float separationStrength = 5.0f;
 
     [Header("Hit Reaction")]
-    [Tooltip("Duration of the hit-stun pause (seconds).")]
     public float flinchDuration = 0.25f;
-    [Tooltip("Color flash on hit.")]
     public Color hitFlashColor = new Color(1f, 0.3f, 0.3f, 1f);
-    [Tooltip("Hit sound effect (auto-generated if null).")]
     public AudioClip hitSound;
-    [Tooltip("Death sound effect (auto-generated if null).")]
     public AudioClip deathSound;
 
     [Header("Death")]
+    [Tooltip("Seconds the death animation plays before ragdoll activates.")]
+    public float deathAnimDuration = 1.5f;
     [Tooltip("Seconds before corpse is cleaned up (0 = never).")]
-    public float corpseLifetime = 15f;
-    [Tooltip("Upward force when ragdolling on death.")]
-    public float deathPopForce = 2f;
+    public float corpseLifetime    = 15f;
+    [Tooltip("Upward force added when ragdolling.")]
+    public float deathPopForce     = 2f;
 
     // ── State ────────────────────────────────────────────────────────────────
-    private enum State { Idle, Chase, Attack, Flinch, Dead }
+    private enum State { Idle, Chase, Attack, Flinch, Jumping, Dead }
     private State _state = State.Idle;
 
     private NavMeshAgent _agent;
     private Animator     _anim;
     private AudioSource  _audio;
+    private Rigidbody    _rb;
     private int          _currentHealth;
     private float        _attackTimer;
     private Transform    _target;
@@ -62,21 +76,30 @@ public class EnemyController : MonoBehaviour
     // Flinch
     private float _flinchTimer;
 
-    // Re-targeting timer
+    // Re-targeting
     private float _retargetTimer;
     private const float RetargetInterval = 0.3f;
 
     // Visual feedback
     private Renderer[] _renderers;
-    private Color[] _originalColors;
-    private float _flashTimer;
+    private Color[]    _originalColors;
+    private float      _flashTimer;
     private const float FlashDuration = 0.15f;
 
+    // Jump state
+    private float _stuckTimer;
+    private bool  _isGrounded = true;
+    private State _preJumpState;
+    private HashSet<int> _animParameterHashes;
+
     // Animator hashes
-    private static readonly int HashSpeed    = Animator.StringToHash("Speed");
-    private static readonly int HashAttack   = Animator.StringToHash("Attack");
-    private static readonly int HashDead     = Animator.StringToHash("Dead");
-    private static readonly int HashHit      = Animator.StringToHash("Hit");
+    private static readonly int HashSpeed     = Animator.StringToHash("Speed");
+    private static readonly int HashVelX      = Animator.StringToHash("VelocityX");
+    private static readonly int HashVelZ      = Animator.StringToHash("VelocityZ");
+    private static readonly int HashAttack    = Animator.StringToHash("Attack");
+    private static readonly int HashDead      = Animator.StringToHash("Dead");
+    private static readonly int HashHit       = Animator.StringToHash("Hit");
+    private static readonly int HashGrounded  = Animator.StringToHash("IsGrounded");
 
     // ── Unity lifecycle ──────────────────────────────────────────────────────
     private void Awake()
@@ -84,29 +107,41 @@ public class EnemyController : MonoBehaviour
         _agent         = GetComponent<NavMeshAgent>();
         _anim          = GetComponentInChildren<Animator>();
         _currentHealth = maxHealth;
+        EnsureAnimationEventSink();
+        CacheAnimatorParameters();
 
-        // Audio source for hit/death sounds
+        // Audio
         _audio = GetComponent<AudioSource>();
-        if (_audio == null)
-            _audio = gameObject.AddComponent<AudioSource>();
-        _audio.spatialBlend = 1f; // 3D sound
-        _audio.playOnAwake = false;
+        if (_audio == null) _audio = gameObject.AddComponent<AudioSource>();
+        _audio.spatialBlend = 1f;
+        _audio.playOnAwake  = false;
 
+        // ── NavMeshAgent ──────────────────────────────────────────────────────
         if (_agent != null)
         {
-            _agent.speed = moveSpeed;
-            _agent.stoppingDistance = attackRadius * 0.85f;
-            _agent.angularSpeed = 360f;
-            _agent.acceleration = 12f;
-
-            // Avoidance: assign random priority so enemies don't all yield to each other
-            _agent.avoidancePriority = Random.Range(30, 70);
-            _agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
-            _agent.radius = 0.5f;
+            _agent.speed                  = moveSpeed;
+            _agent.stoppingDistance       = attackRadius * 0.85f;
+            _agent.angularSpeed           = 360f;
+            _agent.acceleration           = 12f;
+            _agent.avoidancePriority      = Random.Range(30, 70);
+            _agent.obstacleAvoidanceType  = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+            _agent.radius                 = 0.5f;
         }
 
+        // ── Rigidbody for jump physics ────────────────────────────────────────
+        // Kinematic by default so NavMeshAgent controls movement.
+        // Becomes non-kinematic only during the jump arc.
+        _rb = GetComponent<Rigidbody>();
+        if (_rb == null) _rb = gameObject.AddComponent<Rigidbody>();
+        _rb.mass              = 70f;
+        _rb.linearDamping     = 0.5f;
+        _rb.angularDamping    = 4f;
+        _rb.interpolation     = RigidbodyInterpolation.Interpolate;
+        _rb.constraints       = RigidbodyConstraints.FreezeRotation;
+        _rb.isKinematic       = true;  // NavMeshAgent owns movement normally
+
         // Cache renderers for hit flash
-        _renderers = GetComponentsInChildren<Renderer>(true);
+        _renderers      = GetComponentsInChildren<Renderer>(true);
         _originalColors = new Color[_renderers.Length];
         for (int i = 0; i < _renderers.Length; i++)
         {
@@ -125,24 +160,19 @@ public class EnemyController : MonoBehaviour
         if (_flashTimer > 0f)
         {
             _flashTimer -= Time.deltaTime;
-            if (_flashTimer <= 0f)
-                RestoreOriginalColors();
+            if (_flashTimer <= 0f) RestoreOriginalColors();
         }
 
         switch (_state)
         {
-            case State.Idle:   UpdateIdle();   break;
-            case State.Chase:  UpdateChase();  break;
-            case State.Attack: UpdateAttack(); break;
-            case State.Flinch: UpdateFlinch(); break;
+            case State.Idle:    UpdateIdle();    break;
+            case State.Chase:   UpdateChase();   break;
+            case State.Attack:  UpdateAttack();  break;
+            case State.Flinch:  UpdateFlinch();  break;
+            case State.Jumping: UpdateJumping(); break;
         }
 
-        // Animator sync
-        if (_anim != null)
-        {
-            float speed = _agent != null && _agent.enabled ? _agent.velocity.magnitude : 0f;
-            _anim.SetFloat(HashSpeed, speed);
-        }
+        SyncAnimator();
     }
 
     // ── State handlers ────────────────────────────────────────────────────────
@@ -153,8 +183,7 @@ public class EnemyController : MonoBehaviour
         _retargetTimer = RetargetInterval;
 
         _target = FindNearestTarget(detectionRadius);
-        if (_target != null)
-            TransitionTo(State.Chase);
+        if (_target != null) TransitionTo(State.Chase);
     }
 
     private void UpdateChase()
@@ -183,9 +212,10 @@ public class EnemyController : MonoBehaviour
             _agent.SetDestination(_target.position);
         }
         FaceTarget();
-
-        // Separation: prevent stacking with other enemies
         ApplySeparation();
+
+        // ── Stuck / Jump detection ──
+        CheckAndJumpIfStuck();
     }
 
     private void UpdateAttack()
@@ -193,11 +223,7 @@ public class EnemyController : MonoBehaviour
         if (_target == null) { TransitionTo(State.Idle); return; }
 
         float dist = Vector3.Distance(transform.position, _target.position);
-        if (dist > attackRadius * 1.4f)
-        {
-            TransitionTo(State.Chase);
-            return;
-        }
+        if (dist > attackRadius * 1.4f) { TransitionTo(State.Chase); return; }
 
         FaceTarget();
 
@@ -212,40 +238,126 @@ public class EnemyController : MonoBehaviour
     {
         _flinchTimer -= Time.deltaTime;
         if (_flinchTimer <= 0f)
+            TransitionTo(_target != null ? State.Chase : State.Idle);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  JUMP — Issue #1
+    //  Detects when the enemy is stuck against an obstacle and launches it
+    //  upward using the same physics formula as the Player:
+    //      verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity)
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void CheckAndJumpIfStuck()
+    {
+        if (_agent == null || !_agent.enabled || !_agent.hasPath) return;
+
+        float speed = _agent.velocity.magnitude;
+        if (speed > stuckVelocityThreshold)
         {
-            // Resume previous behavior
-            if (_target != null)
-                TransitionTo(State.Chase);
-            else
-                TransitionTo(State.Idle);
+            _stuckTimer = 0f; // moving fine — reset timer
+            return;
+        }
+
+        _stuckTimer += Time.deltaTime;
+        if (_stuckTimer < stuckTime) return;
+        _stuckTimer = 0f;
+
+        // Is there actually an obstacle in front?
+        Vector3 origin = transform.position + Vector3.up * 0.6f;
+        if (!Physics.Raycast(origin, transform.forward, obstacleCheckDist)) return;
+
+        TryJump();
+    }
+
+    private void TryJump()
+    {
+        if (!_isGrounded) return;
+
+        _preJumpState = _state;
+        TransitionTo(State.Jumping);
+
+        // Hand movement over to physics
+        if (_agent != null) _agent.enabled = false;
+        _rb.isKinematic = false;
+
+        // Same formula the Player uses in Jump():
+        //   verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity)
+        float jumpVel = Mathf.Sqrt(jumpHeight * -2f * gravity); // gravity is negative
+
+        // Carry current horizontal momentum forward so the enemy clears the obstacle
+        Vector3 horizDir = _target != null
+            ? ((_target.position - transform.position).normalized)
+            : transform.forward;
+        horizDir.y = 0f;
+        horizDir.Normalize();
+
+        _rb.linearVelocity = new Vector3(
+            horizDir.x * chaseSpeed * 0.6f,
+            jumpVel,
+            horizDir.z * chaseSpeed * 0.6f);
+
+        _isGrounded = false;
+
+        SetAnimatorBool(HashGrounded, false);
+    }
+
+    private void UpdateJumping()
+    {
+        // Apply manual gravity to the Rigidbody while airborne so the arc
+        // matches the Player's CharacterController behaviour.
+        if (_rb != null && !_rb.isKinematic)
+            _rb.linearVelocity += Vector3.up * gravity * Time.deltaTime;
+
+        // Landing check: raycast downward from the character's feet
+        bool hitGround = Physics.Raycast(
+            transform.position + Vector3.up * 0.2f,
+            Vector3.down,
+            0.35f,
+            ~0,
+            QueryTriggerInteraction.Ignore);
+
+        if (hitGround && _rb != null && _rb.linearVelocity.y <= 0.1f)
+        {
+            _isGrounded = true;
+            _rb.linearVelocity = Vector3.zero;
+            _rb.isKinematic    = true;
+
+            // Re-hand control back to NavMeshAgent
+            if (_agent != null)
+            {
+                _agent.enabled = true;
+                _agent.Warp(transform.position);
+            }
+
+            SetAnimatorBool(HashGrounded, true);
+
+            // Resume what we were doing before the jump
+            TransitionTo(_target != null ? _preJumpState : State.Idle);
         }
     }
 
     // ── Combat ────────────────────────────────────────────────────────────────
     private void ExecuteAttack()
     {
-        if (_anim != null) _anim.SetTrigger(HashAttack);
+        SetAnimatorTrigger(HashAttack);
 
-        if (_target != null)
+        if (_target == null) return;
+
+        PlayerHealth ph = _target.GetComponentInParent<PlayerHealth>();
+        if (ph != null) { ph.TakeDamage((int)attackDamage); return; }
+
+        EnemyController otherEnemy = _target.GetComponentInParent<EnemyController>();
+        if (otherEnemy != null && otherEnemy != this)
         {
-            PlayerHealth ph = _target.GetComponentInParent<PlayerHealth>();
-            if (ph != null) { ph.TakeDamage((int)attackDamage); return; }
-
-            EnemyController otherEnemy = _target.GetComponentInParent<EnemyController>();
-            if (otherEnemy != null && otherEnemy != this)
-            {
-                otherEnemy.TakeDamage((int)attackDamage);
-                return;
-            }
-
-            Actor actor = _target.GetComponentInParent<Actor>();
-            if (actor != null) actor.TakeDamage((int)attackDamage);
+            otherEnemy.TakeDamage((int)attackDamage);
+            return;
         }
+
+        Actor actor = _target.GetComponentInParent<Actor>();
+        if (actor != null) actor.TakeDamage((int)attackDamage);
     }
 
-    /// <summary>
-    /// Applies damage with hit reaction (flinch + flash + sound).
-    /// </summary>
     public void TakeDamage(int amount, bool byPlayer = false)
     {
         if (_state == State.Dead) return;
@@ -253,120 +365,187 @@ public class EnemyController : MonoBehaviour
 
         _currentHealth -= amount;
 
-        // ── Hit Reaction ──
-        // 1. Flinch: brief stun pause
+        // Flinch
         if (_state != State.Flinch)
         {
             _flinchTimer = flinchDuration;
             TransitionTo(State.Flinch);
-
-            // Pause NavMeshAgent during flinch
-            if (_agent != null && _agent.enabled)
-                _agent.ResetPath();
+            if (_agent != null && _agent.enabled) _agent.ResetPath();
         }
 
-        // 2. Visual flash: tint renderers red briefly
         ApplyHitFlash();
-
-        // 3. Hit animation trigger
-        if (_anim != null) _anim.SetTrigger(HashHit);
-
-        // 4. Hit sound
+        SetAnimatorTrigger(HashHit);
         PlayHitSound();
 
-        // Check death
-        if (_currentHealth <= 0)
-            Die();
+        if (_currentHealth <= 0) Die();
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    //  DEATH — Ragdoll + Corpse
+    //  DEATH — Issue #4
+    //  Plays the "Dead" animation for deathAnimDuration seconds, THEN
+    //  switches to ragdoll physics so the body falls naturally.
+    //  The corpse persists for corpseLifetime seconds before Destroy().
     // ════════════════════════════════════════════════════════════════════════
 
     private void Die()
     {
         _state = State.Dead;
 
-        // Notify GameManager
+        // Notify GameManager FIRST so enemy count updates correctly (Issue #5)
         if (GameManager.Instance != null)
             GameManager.Instance.EnemyKilled(_lastHitByPlayer);
+
+        // Stop all navigation immediately
+        if (_agent != null) _agent.enabled = false;
+        if (_rb != null)    _rb.isKinematic = true;
+
+        // Disable main collider so living enemies don't trip over the corpse
+        Collider mainCol = GetComponent<Collider>();
+        if (mainCol != null) mainCol.enabled = false;
 
         // Play death sound
         if (_audio != null)
         {
-            if (deathSound != null)
-                _audio.PlayOneShot(deathSound);
-            else
-                PlayProceduralSound(200f, 0.4f); // low thud
+            if (deathSound != null) _audio.PlayOneShot(deathSound);
+            else PlayProceduralSound(200f, 0.4f);
         }
 
-        // Death animation (if Animator exists and has Dead trigger)
+        // ── Phase 1: Death animation (animator stays ON) ──────────────────────
         if (_anim != null)
         {
-            _anim.SetTrigger(HashDead);
+            _anim.applyRootMotion = false; // prevent the anim sliding the corpse
+            SetAnimatorTrigger(HashDead);
         }
 
-        // Disable NavMeshAgent
-        if (_agent != null) _agent.enabled = false;
+        // ── Phase 2: Ragdoll fires after the animation plays (Issue #4 fix) ──
+        Invoke(nameof(ActivateRagdoll), deathAnimDuration);
 
-        // Activate ragdoll: replace animated skeleton with physics
-        ActivateRagdoll();
-
-        // Disable main collider so living enemies don't bump into corpse
-        Collider mainCol = GetComponent<Collider>();
-        if (mainCol != null) mainCol.enabled = false;
-
-        // Clean up corpse after lifetime (0 = stays forever)
+        // ── Corpse cleanup ────────────────────────────────────────────────────
         if (corpseLifetime > 0f)
-            Destroy(gameObject, corpseLifetime);
+            Destroy(gameObject, deathAnimDuration + corpseLifetime);
     }
 
     /// <summary>
-    /// Converts the enemy into a ragdoll by adding Rigidbodies to bones
-    /// and disabling the Animator. Creates a believable death fall.
+    /// Converts the enemy to a full ragdoll: disables the Animator and lets
+    /// Rigidbody physics take over every bone.
     /// </summary>
     private void ActivateRagdoll()
     {
-        // Disable Animator so physics takes over
-        if (_anim != null)
-            _anim.enabled = false;
+        // Disable Animator now that the death clip has played
+        if (_anim != null) _anim.enabled = false;
 
-        // Add Rigidbody to root if not present (for capsule enemies)
-        Rigidbody rootRb = GetComponent<Rigidbody>();
-        if (rootRb == null)
-        {
-            rootRb = gameObject.AddComponent<Rigidbody>();
-            rootRb.mass = 40f;
-            rootRb.linearDamping = 0.5f;
-            rootRb.angularDamping = 2f;
-        }
-        rootRb.isKinematic = false;
-        rootRb.useGravity = true;
+        // Activate root rigidbody
+        if (_rb == null) _rb = gameObject.AddComponent<Rigidbody>();
+        _rb.mass           = 50f;
+        _rb.linearDamping  = 0.5f;
+        _rb.angularDamping = 2f;
+        _rb.isKinematic    = false;
+        _rb.useGravity     = true;
 
-        // Apply a slight pop-up force + random sideways tumble
-        Vector3 deathForce = Vector3.up * deathPopForce + Random.insideUnitSphere * 1.5f;
-        rootRb.AddForce(deathForce, ForceMode.VelocityChange);
-        rootRb.AddTorque(Random.insideUnitSphere * 3f, ForceMode.VelocityChange);
+        // Small random pop + tumble for visual variety
+        Vector3 popForce = Vector3.up * deathPopForce + Random.insideUnitSphere * 1.5f;
+        _rb.AddForce(popForce, ForceMode.VelocityChange);
+        _rb.AddTorque(Random.insideUnitSphere * 3f, ForceMode.VelocityChange);
 
-        // If the model has child bones with colliders, enable their Rigidbodies too
-        Rigidbody[] childBodies = GetComponentsInChildren<Rigidbody>(true);
-        foreach (Rigidbody rb in childBodies)
+        // If model has pre-configured bone Rigidbodies, wake them all up
+        foreach (Rigidbody rb in GetComponentsInChildren<Rigidbody>(true))
         {
             rb.isKinematic = false;
-            rb.useGravity = true;
+            rb.useGravity  = true;
         }
 
-        // Freeze after a few seconds so corpse doesn't keep sliding
+        // Freeze the ragdoll after a few seconds so it stops sliding
         Invoke(nameof(FreezeRagdoll), 3f);
     }
 
     private void FreezeRagdoll()
     {
-        Rigidbody[] bodies = GetComponentsInChildren<Rigidbody>(true);
-        foreach (Rigidbody rb in bodies)
-        {
+        foreach (Rigidbody rb in GetComponentsInChildren<Rigidbody>(true))
             rb.isKinematic = true;
-        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  ANIMATIONS — Issue #3
+    //  Speed is normalised to 0–1 so it maps cleanly onto animator blend
+    //  trees without depending on raw world-speed units.
+    //  VelocityX and VelocityZ drive left/right and forward/back separately
+    //  so strafe animations play correctly on both legs.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private void SyncAnimator()
+    {
+        if (_anim == null) return;
+
+        // Determine actual velocity source
+        Vector3 worldVelocity = Vector3.zero;
+        if (_state == State.Jumping && _rb != null && !_rb.isKinematic)
+            worldVelocity = _rb.linearVelocity;
+        else if (_agent != null && _agent.enabled)
+            worldVelocity = _agent.velocity;
+
+        // Normalise speed to [0,1] using chaseSpeed as the reference maximum
+        float normSpeed = Mathf.Clamp01(worldVelocity.magnitude / Mathf.Max(0.01f, chaseSpeed));
+
+        // Local-space velocity for directional blend trees (left/right legs)
+        Vector3 localVel = transform.InverseTransformDirection(worldVelocity);
+        float normX = Mathf.Clamp(localVel.x / Mathf.Max(0.01f, chaseSpeed), -1f, 1f);
+        float normZ = Mathf.Clamp(localVel.z / Mathf.Max(0.01f, chaseSpeed), -1f, 1f);
+
+        SetAnimatorFloat(HashSpeed, normSpeed, 0.1f);
+        SetAnimatorFloat(HashVelX, normX, 0.1f);
+        SetAnimatorFloat(HashVelZ, normZ, 0.1f);
+        SetAnimatorBool(HashGrounded, _isGrounded);
+    }
+
+    private void CacheAnimatorParameters()
+    {
+        _animParameterHashes = new HashSet<int>();
+
+        if (_anim == null)
+            return;
+
+        foreach (AnimatorControllerParameter parameter in _anim.parameters)
+            _animParameterHashes.Add(parameter.nameHash);
+    }
+
+    private void EnsureAnimationEventSink()
+    {
+        if (_anim == null)
+            return;
+
+        GameObject animatorHost = _anim.gameObject;
+        if (animatorHost.GetComponent<AnimationEventSink>() == null)
+            animatorHost.AddComponent<AnimationEventSink>();
+    }
+
+    private bool HasAnimatorParameter(int hash)
+    {
+        return _anim != null
+            && _animParameterHashes != null
+            && _animParameterHashes.Contains(hash);
+    }
+
+    private void SetAnimatorFloat(int hash, float value, float dampTime = 0f)
+    {
+        if (!HasAnimatorParameter(hash))
+            return;
+
+        if (dampTime > 0f)
+            _anim.SetFloat(hash, value, dampTime, Time.deltaTime);
+        else
+            _anim.SetFloat(hash, value);
+    }
+
+    private void SetAnimatorBool(int hash, bool value)
+    {
+        if (HasAnimatorParameter(hash))
+            _anim.SetBool(hash, value);
+    }
+
+    private void SetAnimatorTrigger(int hash)
+    {
+        if (HasAnimatorParameter(hash))
+            _anim.SetTrigger(hash);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -395,36 +574,24 @@ public class EnemyController : MonoBehaviour
     private void PlayHitSound()
     {
         if (_audio == null) return;
-
-        if (hitSound != null)
-        {
-            _audio.PlayOneShot(hitSound, 0.7f);
-        }
-        else
-        {
-            // Procedural hit sound: short high-pitched blip
-            PlayProceduralSound(800f, 0.08f);
-        }
+        if (hitSound != null) _audio.PlayOneShot(hitSound, 0.7f);
+        else PlayProceduralSound(800f, 0.08f);
     }
 
-    /// <summary>
-    /// Creates a simple procedural beep/thud sound when no AudioClip is assigned.
-    /// </summary>
     private void PlayProceduralSound(float frequency, float duration)
     {
-        int sampleRate = 44100;
+        int sampleRate  = 44100;
         int sampleCount = Mathf.CeilToInt(sampleRate * duration);
-        AudioClip clip = AudioClip.Create("ProceduralHit", sampleCount, 1, sampleRate, false);
+        AudioClip clip  = AudioClip.Create("ProceduralHit", sampleCount, 1, sampleRate, false);
 
         float[] samples = new float[sampleCount];
         for (int i = 0; i < sampleCount; i++)
         {
-            float t = (float)i / sampleRate;
-            float envelope = 1f - (t / duration); // Linear decay
-            samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.3f;
+            float t        = (float)i / sampleRate;
+            float envelope = 1f - (t / duration);
+            samples[i]     = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.3f;
         }
         clip.SetData(samples, 0);
-
         _audio.PlayOneShot(clip, 0.5f);
     }
 
@@ -450,7 +617,6 @@ public class EnemyController : MonoBehaviour
             float dist = away.magnitude;
             if (dist < 0.01f)
             {
-                // Overlapping: push in random direction
                 away = new Vector3(Random.Range(-1f, 1f), 0f, Random.Range(-1f, 1f)).normalized;
                 dist = 0.01f;
             }
@@ -462,12 +628,9 @@ public class EnemyController : MonoBehaviour
 
         if (pushCount > 0 && push.sqrMagnitude > 0.001f)
         {
-            Vector3 offset = push.normalized * separationStrength * Time.deltaTime;
+            Vector3 offset  = push.normalized * separationStrength * Time.deltaTime;
             Vector3 newDest = _agent.destination + offset;
-
-            // Only adjust if agent has a valid path
-            if (_agent.hasPath)
-                _agent.SetDestination(newDest);
+            if (_agent.hasPath) _agent.SetDestination(newDest);
         }
     }
 
@@ -494,21 +657,20 @@ public class EnemyController : MonoBehaviour
 
     private Transform FindNearestTarget(float radius)
     {
-        Collider[] hits = Physics.OverlapSphere(transform.position, radius);
-        Transform best = null;
-        float bestDist = float.MaxValue;
+        Collider[] hits    = Physics.OverlapSphere(transform.position, radius);
+        Transform  best    = null;
+        float      bestDist = float.MaxValue;
 
         foreach (Collider hit in hits)
         {
             if (hit.transform == transform) continue;
 
-            // Prioritize the player
+            // Prioritise the player (treat distance as half so player is always preferred)
             PlayerHealth ph = hit.GetComponentInParent<PlayerHealth>();
             if (ph != null)
             {
-                float d = Vector3.Distance(transform.position, ph.transform.position);
-                // Heavy bias toward player: treat player distance as half actual
-                if (d * 0.5f < bestDist) { bestDist = d * 0.5f; best = ph.transform; }
+                float d = Vector3.Distance(transform.position, ph.transform.position) * 0.5f;
+                if (d < bestDist) { bestDist = d; best = ph.transform; }
                 continue;
             }
 
@@ -531,5 +693,10 @@ public class EnemyController : MonoBehaviour
         Gizmos.DrawWireSphere(transform.position, attackRadius);
         Gizmos.color = Color.cyan;
         Gizmos.DrawWireSphere(transform.position, separationRadius);
+
+        // Show obstacle-check ray
+        Gizmos.color = Color.magenta;
+        Vector3 origin = transform.position + Vector3.up * 0.6f;
+        Gizmos.DrawRay(origin, transform.forward * obstacleCheckDist);
     }
 }

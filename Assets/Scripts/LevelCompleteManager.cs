@@ -24,7 +24,12 @@ public class LevelCompleteManager : MonoBehaviour
         Stretch(bg.GetComponent<RectTransform>());
 
         MakeText(canvasObj.transform, "LEVEL COMPLETE!", 80, Color.white,
-            new Vector2(0f, 0.75f), new Vector2(1f, 1f));
+            new Vector2(0f, 0.78f), new Vector2(1f, 1f));
+
+        // Issue #5 — First Place banner: only shown when the player survived
+        // and eliminated all enemies (this screen only appears on victory).
+        MakeText(canvasObj.transform, "#1  FIRST PLACE", 56, new Color(1f, 0.85f, 0.15f),
+            new Vector2(0.1f, 0.66f), new Vector2(0.9f, 0.79f));
 
         int stars = GameManager.Instance != null
             ? GameManager.Instance.CalculateStars(120f)

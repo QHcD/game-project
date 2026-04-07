@@ -132,6 +132,7 @@ public class PlayerController : MonoBehaviour
     private bool isGrounded;
     private bool isSprinting;
     private bool wasMoving;
+    private bool jumpRequested;
     private const float InputSmoothing = 10f;
 
     // Camera
@@ -172,6 +173,9 @@ public class PlayerController : MonoBehaviour
     private static readonly int AnimGrounded   = Animator.StringToHash("IsGrounded");
     private static readonly int AnimAttacking  = Animator.StringToHash("IsAttacking");
     private static readonly int AnimSprinting  = Animator.StringToHash("IsSprinting");
+    // Issue #3 — directional velocity for natural left/right leg movement
+    private static readonly int AnimVelocityX  = Animator.StringToHash("VelocityX");
+    private static readonly int AnimVelocityZ  = Animator.StringToHash("VelocityZ");
 
     // Legacy animation state names (first-person)
     public const string IDLE    = "Idle";
@@ -329,11 +333,14 @@ public class PlayerController : MonoBehaviour
         if (Keyboard.current != null)
         {
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
-                Jump();
+                jumpRequested = true;
 
             if (Keyboard.current.vKey.wasPressedThisFrame)
                 TogglePerspective();
         }
+
+        if (Gamepad.current != null && Gamepad.current.buttonSouth.wasPressedThisFrame)
+            jumpRequested = true;
 
         if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
             Attack();
@@ -385,20 +392,30 @@ public class PlayerController : MonoBehaviour
         if (isGrounded)
         {
             verticalVelocity.y = -2f; // small constant keeps CC touching floor every frame
+
+            if (jumpRequested)
+            {
+                verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+                isGrounded = false;
+            }
         }
         else
         {
             verticalVelocity.y += gravity * Time.deltaTime; // gravity is negative → accelerates down
             verticalVelocity.y = Mathf.Max(verticalVelocity.y, -40f); // terminal velocity cap
         }
+
+        jumpRequested = false;
         controller.Move(verticalVelocity * Time.deltaTime);
+
+        Vector3 actualHorizontalVelocity = GetActualHorizontalVelocity();
 
         // Arena constraints
         ClampInsideArena();
         SnapToArenaFloor();
 
         // Animation state driven by actual velocity, not input
-        wasMoving = horizontalVelocity.sqrMagnitude > 0.1f;
+        wasMoving = actualHorizontalVelocity.sqrMagnitude > 0.1f;
 
         // ── BODY ROTATION (TPS, runs in Update before any LateUpdate) ──
         // Rotating in Update guarantees this happens BEFORE CharacterVisualAnimationPlayer
@@ -406,7 +423,7 @@ public class PlayerController : MonoBehaviour
         // distortion that causes the "merged/melted bones" look.
         if (isThirdPersonActive && thirdPersonBody != null)
         {
-            Vector3 moveFlat = new Vector3(horizontalVelocity.x, 0f, horizontalVelocity.z);
+            Vector3 moveFlat = actualHorizontalVelocity;
 
             if (moveFlat.sqrMagnitude > 0.01f)
             {
@@ -420,10 +437,14 @@ public class PlayerController : MonoBehaviour
         }
     }
 
-    private void Jump()
+    private Vector3 GetActualHorizontalVelocity()
     {
-        if (isGrounded)
-            verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+        if (controller == null)
+            return Vector3.zero;
+
+        Vector3 velocity = controller.velocity;
+        velocity.y = 0f;
+        return velocity;
     }
 
     public void TeleportTo(Vector3 position)
@@ -712,16 +733,40 @@ public class PlayerController : MonoBehaviour
 
     /// <summary>
     /// Sets Animator parameters so an Animator Controller can drive blended animations.
-    /// Parameters: Speed (float), IsGrounded (bool), IsAttacking (bool), IsSprinting (bool).
+    ///
+    /// Issue #3 fix — natural movement:
+    ///   • Speed     is NORMALISED to [0,1] (dividing by max possible speed).
+    ///               This maps cleanly onto blend trees without depending on raw
+    ///               world-speed units (which caused the "puppet/clown walk").
+    ///   • VelocityX / VelocityZ are LOCAL-SPACE directional values [-1,1].
+    ///               These allow the Animator blend tree to drive left/right and
+    ///               forward/back leg animations independently so both legs move
+    ///               naturally during strafing and diagonal movement.
+    ///
+    /// Parameters exposed: Speed, VelocityX, VelocityZ, IsGrounded, IsAttacking, IsSprinting.
     /// </summary>
     private void UpdateAnimatorParameters()
     {
         if (animator == null) return;
 
-        animator.SetFloat(AnimSpeed, horizontalVelocity.magnitude);
-        animator.SetBool(AnimGrounded, isGrounded);
-        animator.SetBool(AnimAttacking, isAttacking);
-        animator.SetBool(AnimSprinting, isSprinting);
+        float maxSpeed = moveSpeed * sprintMultiplier;
+        Vector3 actualHorizontalVelocity = GetActualHorizontalVelocity();
+
+        // Normalised overall speed [0,1]
+        float normSpeed = Mathf.Clamp01(actualHorizontalVelocity.magnitude / Mathf.Max(0.01f, maxSpeed));
+
+        // Local-space velocity — X = strafe, Z = forward/back, both [-1,1]
+        Vector3 localVel = transform.InverseTransformDirection(actualHorizontalVelocity);
+        float normX = Mathf.Clamp(localVel.x / Mathf.Max(0.01f, maxSpeed), -1f, 1f);
+        float normZ = Mathf.Clamp(localVel.z / Mathf.Max(0.01f, maxSpeed), -1f, 1f);
+
+        // Damp with deltaTime so the blend tree interpolates smoothly
+        animator.SetFloat(AnimSpeed,     normSpeed, 0.1f, Time.deltaTime);
+        animator.SetFloat(AnimVelocityX, normX,     0.1f, Time.deltaTime);
+        animator.SetFloat(AnimVelocityZ, normZ,     0.1f, Time.deltaTime);
+        animator.SetBool(AnimGrounded,   isGrounded);
+        animator.SetBool(AnimAttacking,  isAttacking);
+        animator.SetBool(AnimSprinting,  isSprinting);
     }
 
     private void UpdateAnimations()

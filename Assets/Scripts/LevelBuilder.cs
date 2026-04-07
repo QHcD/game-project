@@ -141,6 +141,7 @@ public class LevelBuilder : MonoBehaviour
                 (GameManager.Instance != null ? GameManager.Instance.enemiesRemaining.ToString() : "?"));
 
             EnsureHud();
+            EnsurePauseMenu();
             Debug.Log("[LevelBuilder] ===== BUILD COMPLETE =====");
         }
         catch (System.Exception e)
@@ -473,8 +474,11 @@ public class LevelBuilder : MonoBehaviour
             AttachWeaponToEnemy(enemyObject, currentLvl);
         }
 
+        // ── Issue #5: register the authoritative count with GameManager ──────
+        // InitializeEnemyCount() sets BOTH enemiesRemaining AND totalEnemiesSpawned
+        // so EnemyKilled() can compare against the real number of spawned enemies.
         if (GameManager.Instance != null)
-            GameManager.Instance.enemiesRemaining = enemyCount;
+            GameManager.Instance.InitializeEnemyCount(enemyCount);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -523,6 +527,22 @@ public class LevelBuilder : MonoBehaviour
 
         // Safety clamp — if lossy scale is still insane, force it small
         ClampWeaponWorldScale(weapon, targetSize * 2f);
+
+        // ── Issue #2: Last-resort visible scale guarantee ──────────────────────
+        // If, after all normalisation steps, the weapon has ended up effectively
+        // invisible (any world-space axis < 0.005 m), force a safe local scale
+        // of Vector3.one * 0.1f so the weapon is always seen in the hand.
+        Vector3 lossyFinal = weapon.transform.lossyScale;
+        float minAxis = Mathf.Min(Mathf.Abs(lossyFinal.x), Mathf.Min(Mathf.Abs(lossyFinal.y), Mathf.Abs(lossyFinal.z)));
+        if (minAxis < 0.005f)
+        {
+            weapon.transform.localScale = Vector3.one * 0.1f;
+            Debug.LogWarning($"[LevelBuilder] Weapon '{weapon.name}' was near-zero scale — forced to (0.1, 0.1, 0.1).");
+        }
+
+        // Add WeaponVisibilityFix so renderers are guaranteed enabled
+        if (weapon.GetComponent<WeaponVisibilityFix>() == null)
+            weapon.AddComponent<WeaponVisibilityFix>();
 
         // Remove any colliders from the weapon so it doesn't interfere with NavMesh
         foreach (Collider col in weapon.GetComponentsInChildren<Collider>(true))
@@ -595,10 +615,14 @@ public class LevelBuilder : MonoBehaviour
     /// <summary>Searches the transform hierarchy for a right-hand bone.</summary>
     private Transform FindRightHandBone(Transform root)
     {
+        // Issue #2 — "bip_hand_R" is the primary bone name used by the
+        // Crosby enemy model. It must be checked before generic fallbacks.
         string[] exactNames = {
-            "Bip01 R Hand", "Bip001 R Hand",
-            "mixamorig:RightHand", "RightHand", "Hand_R",
-            "right_hand", "R_Hand", "HandRight", "Wrist_R",
+            "bip_hand_R",                          // Crosby / BIP rig (primary)
+            "Bip01 R Hand", "Bip001 R Hand",       // 3ds Max Biped
+            "mixamorig:RightHand", "RightHand",    // Mixamo
+            "Hand_R", "right_hand", "R_Hand",
+            "HandRight", "Wrist_R",
             "jointItemR", "RIGHT_HAND_COMBAT", "RIGHT_HAND_REST"
         };
 
@@ -834,6 +858,12 @@ public class LevelBuilder : MonoBehaviour
         }
         hud.UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
         hud.UpdateScore(GameManager.Instance.score);
+    }
+
+    private void EnsurePauseMenu()
+    {
+        if (GetComponent<PauseMenuController>() == null)
+            gameObject.AddComponent<PauseMenuController>();
     }
 
     private void EnsureMinimapCamera()
