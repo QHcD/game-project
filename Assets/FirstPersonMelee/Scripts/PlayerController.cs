@@ -199,7 +199,8 @@ public class PlayerController : MonoBehaviour
     //  PUBLIC API
     // ════════════════════════════════════════════════════════════════════════
 
-    public Camera ActiveCamera => isThirdPersonActive ? runtimeThirdPersonCamera : firstPersonCam;
+    // Third-person ONLY — the first-person camera is permanently disabled.
+    public Camera ActiveCamera => runtimeThirdPersonCamera;
     public GameObject GetThirdPersonBody() => thirdPersonBody;
     public bool IsMeleeWeapon => true;
 
@@ -222,12 +223,16 @@ public class PlayerController : MonoBehaviour
             controller.minMoveDistance  = 0f;
         }
 
+        // ── Third-person ONLY: locate the first-person camera so we can DISABLE it.
+        //    We keep the reference so EnsureThirdPersonCamera can borrow FOV/clip
+        //    settings, but the GameObject is immediately turned off and never shown.
         if (firstPersonCam == null)
             firstPersonCam = GetComponentInChildren<Camera>();
         if (firstPersonCam != null)
         {
             firstPersonLocalPos = firstPersonCam.transform.localPosition;
             firstPersonLocalRot = firstPersonCam.transform.localRotation;
+            firstPersonCam.gameObject.SetActive(false);   // ← permanently off
         }
 
         CacheFirstPersonWeaponSlot();
@@ -327,8 +332,7 @@ public class PlayerController : MonoBehaviour
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
                 jumpRequested = true;
 
-            if (Keyboard.current.vKey.wasPressedThisFrame)
-                TogglePerspective();
+            // V-key perspective toggle removed — game is third-person only.
         }
 
         if (Gamepad.current != null && Gamepad.current.buttonSouth.wasPressedThisFrame)
@@ -463,8 +467,7 @@ public class PlayerController : MonoBehaviour
         cameraPitch -= mouseY;
         cameraPitch  = Mathf.Clamp(cameraPitch, -80f, 80f);
 
-        if (firstPersonCam != null)
-            firstPersonCam.transform.localRotation = Quaternion.Euler(cameraPitch, 0f, 0f);
+        // First-person camera is permanently disabled — no pitch update needed.
 
         transform.Rotate(Vector3.up * mouseX);
 
@@ -478,23 +481,7 @@ public class PlayerController : MonoBehaviour
 
     private void UpdateHeadBob()
     {
-        if (firstPersonCam == null) return;
-
-        float targetVel = wasMoving && isGrounded ? 1f : 0f;
-        headBobVelocity = Mathf.Lerp(headBobVelocity, targetVel, 8f * Time.deltaTime);
-
-        if (headBobVelocity > 0.01f)
-        {
-            float freq = isSprinting ? HeadBobFrequency * 1.35f : HeadBobFrequency;
-            headBobTimer += Time.deltaTime * freq;
-        }
-        else
-        {
-            headBobTimer = Mathf.MoveTowards(headBobTimer, 0f, Time.deltaTime * HeadBobFrequency);
-        }
-
-        float bob = Mathf.Sin(headBobTimer) * HeadBobAmplitude * headBobVelocity;
-        firstPersonCam.transform.localPosition = firstPersonLocalPos + new Vector3(0f, bob, 0f);
+        // Head-bob was a first-person effect. Third-person only — nothing to do.
     }
 
     private void UpdateCameraKick()
@@ -694,10 +681,8 @@ public class PlayerController : MonoBehaviour
                 float   dist    = toEnemy.magnitude;
                 if (dist > attackDistance + 1f) continue;            // range check
 
-                Vector3 flat  = toEnemy; flat.y = 0f;
-                float   angle = Vector3.Angle(transform.forward, flat);
-                if (angle > MeleeHitAngle) continue;                  // arc check
-
+                // No angle restriction in Fallback B — if the player swings and
+                // the enemy is within range, it always counts as a hit.
                 Debug.Log($"[PlayerController]   Fallback B hit enemy '{ec.name}' dist={dist:F2}");
                 ec.TakeDamage(attackDamage, byPlayer: true);
                 ApplyHitReaction(ec.transform, transform.forward);
@@ -990,10 +975,8 @@ public class PlayerController : MonoBehaviour
 
     private void TogglePerspective()
     {
-        if (isThirdPersonActive)
-            EnableFirstPersonView();
-        else
-            EnableThirdPersonView();
+        // Perspective toggle disabled — game is third-person only.
+        // Kept so that any external callers don't cause a compile error.
     }
 
     public void RefreshGameplayPreferences()
@@ -1005,44 +988,26 @@ public class PlayerController : MonoBehaviour
 
     private void ApplyPerspectivePreference()
     {
-        GameManager.PerspectiveMode mode = GameManager.Instance != null
-            ? GameManager.Instance.GetPerspectiveMode()
-            : GameManager.PerspectiveMode.ThirdPerson;
-
-        if (mode == GameManager.PerspectiveMode.ThirdPerson)
-            EnableThirdPersonView();
-        else
-            EnableFirstPersonView();
+        // Game is third-person only — always enable the third-person view.
+        EnableThirdPersonView();
     }
 
     private void EnableFirstPersonView()
     {
-        if (firstPersonCam == null) return;
-
-        isThirdPersonActive = false;
-        firstPersonCam.gameObject.SetActive(true);
-        firstPersonCam.transform.SetParent(transform, false);
-        firstPersonCam.transform.localPosition = firstPersonLocalPos;
-        firstPersonCam.transform.localRotation = firstPersonLocalRot;
-
-        if (runtimeThirdPersonCamera != null)
-            runtimeThirdPersonCamera.gameObject.SetActive(false);
-
-        SetFirstPersonRenderersVisible(true);
-        EnsureThirdPersonBody();
-        if (thirdPersonBody != null)
-            thirdPersonBody.SetActive(false);
+        // First-person view permanently removed — redirect to third-person.
+        EnableThirdPersonView();
     }
 
     private void EnableThirdPersonView()
     {
-        if (firstPersonCam == null) return;
-
         isThirdPersonActive = true;
         EnsureThirdPersonCamera();
         EnsureThirdPersonBody();
 
-        firstPersonCam.gameObject.SetActive(false);
+        // Keep first-person camera off (was disabled in Awake).
+        if (firstPersonCam != null)
+            firstPersonCam.gameObject.SetActive(false);
+
         if (runtimeThirdPersonCamera != null)
             runtimeThirdPersonCamera.gameObject.SetActive(true);
 
@@ -1060,12 +1025,25 @@ public class PlayerController : MonoBehaviour
         }
 
         GameObject camObj = new GameObject("RuntimeThirdPersonCamera");
-        runtimeThirdPersonCamera                  = camObj.AddComponent<Camera>();
-        runtimeThirdPersonCamera.fieldOfView      = Mathf.Max(firstPersonCam.fieldOfView, 70f);
-        runtimeThirdPersonCamera.nearClipPlane    = firstPersonCam.nearClipPlane;
-        runtimeThirdPersonCamera.farClipPlane     = firstPersonCam.farClipPlane;
-        runtimeThirdPersonCamera.clearFlags       = firstPersonCam.clearFlags;
-        runtimeThirdPersonCamera.backgroundColor  = firstPersonCam.backgroundColor;
+        runtimeThirdPersonCamera = camObj.AddComponent<Camera>();
+
+        // Borrow settings from the first-person camera if it still exists,
+        // otherwise use sensible defaults (first-person cam may be disabled).
+        if (firstPersonCam != null)
+        {
+            runtimeThirdPersonCamera.fieldOfView     = Mathf.Max(firstPersonCam.fieldOfView, 70f);
+            runtimeThirdPersonCamera.nearClipPlane   = firstPersonCam.nearClipPlane;
+            runtimeThirdPersonCamera.farClipPlane    = firstPersonCam.farClipPlane;
+            runtimeThirdPersonCamera.clearFlags      = firstPersonCam.clearFlags;
+            runtimeThirdPersonCamera.backgroundColor = firstPersonCam.backgroundColor;
+        }
+        else
+        {
+            runtimeThirdPersonCamera.fieldOfView     = 70f;
+            runtimeThirdPersonCamera.nearClipPlane   = 0.1f;
+            runtimeThirdPersonCamera.farClipPlane    = 1000f;
+            runtimeThirdPersonCamera.clearFlags      = CameraClearFlags.Skybox;
+        }
         runtimeThirdPersonCamera.tag = "MainCamera";
         camObj.AddComponent<AudioListener>();
 
@@ -1265,7 +1243,7 @@ public class PlayerController : MonoBehaviour
             SetupWeaponIK();
         }
 
-        RefreshFirstPersonWeaponModel(level);
+        // RefreshFirstPersonWeaponModel removed — third-person only.
     }
 
     private void SetupWeaponIK()
@@ -1293,27 +1271,9 @@ public class PlayerController : MonoBehaviour
             ? weaponLevel
             : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
 
-        Transform handBone =
-               FindBone(body.transform, "bip_hand_R")
-            ?? FindBone(body.transform, "bip_hand_r")
-            ?? FindBone(body.transform, "mixamorig:RightHand")
-            ?? FindBone(body.transform, "RightHand")
-            ?? FindBone(body.transform, "Hand_R")
-            ?? FindBone(body.transform, "hand_r")
-            ?? FindBone(body.transform, "jointItemR")
-            ?? FindBone(body.transform, "RIGHT_HAND_COMBAT")
-            ?? FindBone(body.transform, "Wrist_R")
-            ?? FindBone(body.transform, "RIGHT_HAND_REST");
-
-        Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
-        if (handBone == null && bodyAnimator != null && bodyAnimator.isHuman)
-            handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
-
-        if (handBone == null)
-            handBone = FindBoneContaining(body.transform, "right_hand")
-                    ?? FindBoneContaining(body.transform, "righthand")
-                    ?? FindBoneContaining(body.transform, "hand_r");
-
+        // Delegate bone-finding to EquipmentManager (handles Ronin j_wrist_ri,
+        // Crosby bip_hand_R/weapon_bone_R, Mixamo, and any humanoid avatar).
+        Transform handBone  = EquipmentManager.FindRightHand(body);
         Transform attachPoint = handBone != null ? handBone : body.transform;
 
         equippedWeaponObject = BuildWeaponModel(level, attachPoint);
@@ -1494,19 +1454,7 @@ public class PlayerController : MonoBehaviour
 
     private void RefreshFirstPersonWeaponModel(int level)
     {
-        ClearFirstPersonKnifeVisual();
-        if (firstPersonWeaponSlot == null) return;
-
-        GameObject weaponPrefab = ResolveWeaponPrefabForLevel(level);
-        if (weaponPrefab == null) return;
-
-        if (firstPersonWeaponMeshRenderer != null)
-            firstPersonWeaponMeshRenderer.enabled = false;
-
-        firstPersonKnifeInstance = Instantiate(weaponPrefab, firstPersonWeaponSlot);
-        firstPersonKnifeInstance.name = "FirstPersonWeaponMesh";
-        firstPersonKnifeInstance.transform.localPosition = new Vector3(0.02f, -0.05f, 0.15f);
-        firstPersonKnifeInstance.transform.localScale    = new Vector3(0.1f, 0.1f, 0.1f);
+        // First-person weapon display removed — weapon is on the 3rd-person body only.
     }
 
     private GameObject BuildPrimitiveWeapon(int level, Transform attachPoint)

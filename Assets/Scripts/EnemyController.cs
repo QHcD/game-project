@@ -695,12 +695,7 @@ public class EnemyController : MonoBehaviour
                 continue;
             }
 
-            EnemyController enemy = hit.GetComponentInParent<EnemyController>();
-            if (enemy != null && enemy != this && enemy._state != State.Dead)
-            {
-                float d = Vector3.Distance(transform.position, enemy.transform.position);
-                if (d < bestDist) { bestDist = d; best = enemy.transform; }
-            }
+            // Enemies do NOT target other enemies — only the player is a valid target.
         }
 
         return best;
