@@ -1,5 +1,6 @@
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 public class HUDManager : MonoBehaviour
@@ -574,6 +575,10 @@ public class HUDManager : MonoBehaviour
             Destroy(matchFinishedOverlay);
         }
 
+        // Guarantee the canvas can receive pointer events
+        if (canvasObject.GetComponent<GraphicRaycaster>() == null)
+            canvasObject.AddComponent<GraphicRaycaster>();
+
         matchFinishedOverlay = new GameObject("MatchFinishedOverlay");
         matchFinishedOverlay.transform.SetParent(canvasObject.transform, false);
 
@@ -598,7 +603,7 @@ public class HUDManager : MonoBehaviour
         subtitle.color = new Color(0.78f, 0.88f, 1f, 0.92f);
         subtitle.textWrappingMode = TextWrappingModes.Normal;
 
-        CreateActionButton(panel.transform, "RESTART", new Vector2(-116f, -66f), () =>
+        GameObject restartBtnObj = CreateActionButton(panel.transform, "RESTART", new Vector2(-116f, -66f), () =>
         {
             Time.timeScale = 1f;
             GameManager.Instance?.ReplayCurrentLevel();
@@ -609,9 +614,34 @@ public class HUDManager : MonoBehaviour
             Time.timeScale = 1f;
             GameManager.Instance?.GoToMainMenu();
         });
+
+        // ── Ensure an EventSystem exists — without it buttons are unclickable ──
+        EventSystem eventSystem = FindFirstObjectByType<EventSystem>();
+        if (eventSystem == null)
+        {
+            GameObject esObj = new GameObject("EventSystem");
+            eventSystem = esObj.AddComponent<EventSystem>();
+            esObj.AddComponent<StandaloneInputModule>();
+        }
+        eventSystem.gameObject.SetActive(true);
+
+        // Focus the Restart button so keyboard/gamepad navigation works immediately
+        if (restartBtnObj != null)
+        {
+            Button firstBtn = restartBtnObj.GetComponent<Button>();
+            if (firstBtn != null)
+                eventSystem.SetSelectedGameObject(firstBtn.gameObject);
+        }
     }
 
-    private void CreateActionButton(Transform parent, string label, Vector2 position, UnityEngine.Events.UnityAction action)
+    /// <summary>
+    /// Public alias for ShowMatchFinishedOverlay so external callers (and the
+    /// user's UIManager references) can trigger the end-game screen directly.
+    /// Guarantees: timeScale=0, cursor unlocked, EventSystem active.
+    /// </summary>
+    public void ShowGameFinishedMenu() => ShowMatchFinishedOverlay();
+
+    private GameObject CreateActionButton(Transform parent, string label, Vector2 position, UnityEngine.Events.UnityAction action)
     {
         GameObject buttonObject = CreateImage(parent, "Btn_" + label,
             Color.white,
@@ -619,8 +649,14 @@ public class HUDManager : MonoBehaviour
 
         Button button = buttonObject.GetComponent<Button>();
         if (button == null)
-        {
             button = buttonObject.AddComponent<Button>();
+
+        // Ensure the Image is set as the button's targetGraphic so it's clickable
+        Image btnImage = buttonObject.GetComponent<Image>();
+        if (btnImage != null)
+        {
+            btnImage.raycastTarget = true;
+            button.targetGraphic   = btnImage;
         }
 
         button.onClick.RemoveAllListeners();
@@ -629,8 +665,11 @@ public class HUDManager : MonoBehaviour
         TextMeshProUGUI labelText = CreateText(buttonObject.transform, "Txt_" + label,
             Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
             24f, FontStyles.Bold, TextAlignmentOptions.Center);
-        labelText.text = label;
+        labelText.text  = label;
         labelText.color = new Color(0.10f, 0.10f, 0.14f, 1f);
+        labelText.raycastTarget = false;   // let the Image underneath catch the click
+
+        return buttonObject;
     }
 
     private Sprite GetOrCreateCircleSprite()
@@ -716,21 +755,35 @@ public class HUDManager : MonoBehaviour
 
     private TMP_FontAsset ResolvePrismFont()
     {
-        TMP_FontAsset lib = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
-        if (lib != null)
-            return lib;
-
-        TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
-        for (int i = 0; i < fonts.Length; i++)
+        // ── Priority 1: "aizona fx" font (drag it into a Resources/Fonts folder) ──
+        // Try common Resource paths for the custom font asset.
+        string[] aizonaPaths = {
+            "Fonts/aizona fx SDF",
+            "Fonts/aizona fx",
+            "Fonts & Materials/aizona fx SDF",
+            "Fonts & Materials/aizona fx",
+        };
+        foreach (string path in aizonaPaths)
         {
-            TMP_FontAsset font = fonts[i];
-            if (font != null && (font.name.Contains("Arizona") || font.name.Contains("Azonix")))
+            TMP_FontAsset aizona = Resources.Load<TMP_FontAsset>(path);
+            if (aizona != null) return aizona;
+        }
+
+        // ── Priority 2: any loaded font whose name contains "aizona" ──────────
+        TMP_FontAsset[] allFonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+        foreach (TMP_FontAsset font in allFonts)
+        {
+            if (font == null) continue;
+            string lower = font.name.ToLowerInvariant();
+            if (lower.Contains("aizona") || lower.Contains("arizona") || lower.Contains("azonix"))
                 return font;
         }
 
+        // ── Priority 3: TMP default ──────────────────────────────────────────
         if (TMP_Settings.defaultFontAsset != null)
             return TMP_Settings.defaultFontAsset;
 
-        return lib;
+        // ── Priority 4: LiberationSans bundled with TMP ──────────────────────
+        return Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
     }
 }

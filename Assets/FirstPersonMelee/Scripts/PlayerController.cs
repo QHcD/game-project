@@ -289,6 +289,10 @@ public class PlayerController : MonoBehaviour
         // The Entry → default-state transition fires automatically on the first Update.
         CacheAnimatorParameters();
 
+        // ── 4. Patch any missing/blank materials so the body isn't a white statue ──
+        if (thirdPersonBody != null)
+            EnsureProperMaterial(thirdPersonBody);
+
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
     }
@@ -1031,12 +1035,11 @@ public class PlayerController : MonoBehaviour
         runtimeThirdPersonCamera.tag = "MainCamera";
         camObj.AddComponent<AudioListener>();
 
-        CameraController follow   = camObj.AddComponent<CameraController>();
-        follow.target             = transform;
-        follow.offset             = new Vector3(0f, 3.4f, -7.2f);
-        follow.smoothSpeed        = 10f;
-        follow.lookAheadDistance  = 4.5f;
-        follow.lookHeight         = 1.6f;
+        CameraController follow = camObj.AddComponent<CameraController>();
+        follow.target           = transform;
+        follow.offset           = new Vector3(1.2f, 2.2f, -5.5f);  // OTS right-shoulder
+        follow.smoothSpeed      = 12f;
+        follow.lookHeight       = 1.4f;
 
         thirdPersonCam = runtimeThirdPersonCamera;
     }
@@ -1169,6 +1172,80 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Loads "RoninTexture" from Resources/Textures and applies it to any blank/
+    /// missing material slot on the character body so the player is never a
+    /// "white statue".  Slots that already have a real texture are left alone.
+    /// Place your texture at:  Assets/Resources/Textures/RoninTexture.png
+    /// </summary>
+    private static void EnsureProperMaterial(GameObject body)
+    {
+        if (body == null) return;
+
+        Texture2D bodyTex = LoadFirstAvailableTexture(
+            "Textures/RoninTexture",
+            "Player/Ronin/textures/mp_ronin_torso_c.tga",
+            "Player/Ronin/textures/body_mp_western_ronin_4_1_lod1_c.tga",
+            "Player/Ronin/textures/mp_western_ronin_arm_r_c.tga",
+            "Player/Ronin/textures/mp_western_ronin_arm_l_edit_c.tga");
+
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit")
+                     ?? Shader.Find("Standard")
+                     ?? Shader.Find("Diffuse");
+        if (shader == null) return;
+
+        Material mat = new Material(shader) { name = "PlayerMat_Runtime" };
+
+        if (bodyTex != null)
+        {
+            // Assign texture to URP _BaseMap and legacy _MainTex
+            if (mat.HasProperty("_BaseMap")) mat.SetTexture("_BaseMap", bodyTex);
+            if (mat.HasProperty("_MainTex")) mat.SetTexture("_MainTex", bodyTex);
+        }
+        else
+        {
+            // Texture file missing — use warm skin tone so at least it's not white
+            Color tan = new Color(0.72f, 0.58f, 0.44f);
+            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", tan);
+            if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     tan);
+        }
+
+        // Replace only blank/null/default-white slots — leave good materials alone
+        foreach (Renderer r in body.GetComponentsInChildren<Renderer>(true))
+        {
+            Material[] slots = r.sharedMaterials;
+            bool changed = false;
+            for (int i = 0; i < slots.Length; i++)
+            {
+                if (IsBlankMaterial(slots[i])) { slots[i] = mat; changed = true; }
+            }
+            if (changed) r.sharedMaterials = slots;
+        }
+    }
+
+    private static bool IsBlankMaterial(Material m)
+    {
+        if (m == null) return true;
+        if (m.name.StartsWith("Default-")) return true;
+        bool hasTexture = (m.HasProperty("_BaseMap") && m.GetTexture("_BaseMap") != null)
+                       || (m.HasProperty("_MainTex") && m.GetTexture("_MainTex") != null);
+        if (hasTexture) return false;
+        Color c = Color.white;
+        if (m.HasProperty("_BaseColor")) c = m.GetColor("_BaseColor");
+        else if (m.HasProperty("_Color")) c = m.GetColor("_Color");
+        return c.r > 0.95f && c.g > 0.95f && c.b > 0.95f;
+    }
+
+    private static Texture2D LoadFirstAvailableTexture(params string[] resourcePaths)
+    {
+        for (int i = 0; i < resourcePaths.Length; i++)
+        {
+            Texture2D tex = Resources.Load<Texture2D>(resourcePaths[i]);
+            if (tex != null) return tex;
+        }
+        return null;
+    }
+
     private static void NormalizeBodyScale(GameObject body, float targetHeight)
     {
         Bounds b = new Bounds(Vector3.zero, Vector3.zero);
@@ -1241,6 +1318,46 @@ public class PlayerController : MonoBehaviour
         ikHandler.DisableIK();
     }
 
+    // ── Hand bone priority list — "bip_hand_R" is searched first ────────────
+    private static readonly string[] PlayerHandBoneNames =
+    {
+        "bip_hand_R",           // Crosby rig (enemies use same bones as player on some levels)
+        "weapon_bone_R",        // Crosby weapon socket
+        "j_wrist_ri",           // Ronin (default player)
+        "mixamorig:RightHand",  // Mixamo
+        "RightHand",
+        "Hand_R", "hand_R", "hand_r",
+        "Wrist_R", "wrist_R",
+    };
+
+    private static Transform FindPlayerHandBone(GameObject body)
+    {
+        foreach (string boneName in PlayerHandBoneNames)
+        {
+            Transform found = FindBoneExact(body.transform, boneName);
+            if (found != null) return found;
+        }
+        // Humanoid avatar fallback
+        Animator anim = body.GetComponentInChildren<Animator>(true);
+        if (anim != null && anim.isHuman)
+        {
+            Transform bone = anim.GetBoneTransform(HumanBodyBones.RightHand);
+            if (bone != null) return bone;
+        }
+        return null;
+    }
+
+    private static Transform FindBoneExact(Transform root, string boneName)
+    {
+        if (root.name == boneName) return root;
+        foreach (Transform child in root)
+        {
+            Transform found = FindBoneExact(child, boneName);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     private void AttachWeaponToHand(GameObject body, int weaponLevel = -1)
     {
         if (body == null) return;
@@ -1255,10 +1372,13 @@ public class PlayerController : MonoBehaviour
             ? weaponLevel
             : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
 
-        // Delegate bone-finding to EquipmentManager (handles Ronin j_wrist_ri,
-        // Crosby bip_hand_R/weapon_bone_R, Mixamo, and any humanoid avatar).
-        Transform handBone  = EquipmentManager.FindRightHand(body);
+        // Search for "bip_hand_R" by name first, then fallback list
+        Transform handBone    = FindPlayerHandBone(body);
         Transform attachPoint = handBone != null ? handBone : body.transform;
+
+        if (handBone == null)
+            Debug.LogWarning("[PlayerController] bip_hand_R not found on player body. " +
+                             "Weapon attached to body root.");
 
         equippedWeaponObject = BuildWeaponModel(level, attachPoint);
     }
@@ -1340,25 +1460,14 @@ public class PlayerController : MonoBehaviour
 
             StripWeaponArmature(weapon);
 
-            // ── Auto-scale BEFORE parenting (uses per-level target size) ──
-            float targetSize = GetPlayerWeaponTargetSize(level);
-            EquipmentManager.ApplyAutoScale(weapon, targetSize);
-
-            // NOW parent to hand — worldPositionStays=true preserves scale
-            weapon.transform.SetParent(attachPoint, true);
+            // ── Parent to hand bone with worldPositionStays=false ────────────
+            // Then FORCE localScale = 0.1f unconditionally.
+            // This is the most reliable approach: it doesn't depend on the
+            // bone chain's lossy scale and guarantees the weapon is visible.
+            weapon.transform.SetParent(attachPoint, worldPositionStays: false);
             weapon.transform.localPosition = Vector3.zero;
             weapon.transform.localRotation = Quaternion.identity;
-
-            // Safety clamp: if lossy scale is still wildly off, force a sane value
-            Vector3 lossy = weapon.transform.lossyScale;
-            float minAxis = Mathf.Min(Mathf.Abs(lossy.x),
-                                      Mathf.Min(Mathf.Abs(lossy.y), Mathf.Abs(lossy.z)));
-            if (minAxis < 0.005f)
-            {
-                weapon.transform.localScale = Vector3.one * 0.1f;
-                Debug.LogWarning($"[PlayerController] Weapon '{weapon.name}' was near-zero scale " +
-                                 "— forced to (0.1, 0.1, 0.1).");
-            }
+            weapon.transform.localScale    = Vector3.one * 0.1f;  // ALWAYS forced
 
             WeaponBase weaponBase = weapon.GetComponent<WeaponBase>();
             if (weaponBase == null)

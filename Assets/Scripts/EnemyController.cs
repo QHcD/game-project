@@ -43,6 +43,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Velocity below this is considered 'stuck' even when path exists.")]
     public float stuckVelocityThreshold = 0.25f;
 
+    [Header("Weapon")]
+    [Tooltip("Drag the enemy's right-hand bone here in the Inspector (optional). " +
+             "If null, EquipmentManager auto-detects bip_hand_R / weapon_bone_R.")]
+    public Transform weaponAttachPoint;
+
+    [HideInInspector] public GameObject equippedWeaponObject;
+
     [Header("FFA Target Detection")]
     [Tooltip("Layer mask for valid targets (set to 'Character' layer).")]
     public LayerMask detectionMask = ~0;
@@ -83,6 +90,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     // Flinch
     private float _flinchTimer;
+
+    // FFA: track whoever last damaged this enemy so we can retaliate
+    private Transform _lastAttacker;
 
     // Coroutine-based target scanning
     private Coroutine _scanCoroutine;
@@ -164,6 +174,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        EnsureProperMaterial(gameObject);
         // Start the coroutine-based target scanner (runs every detectionInterval)
         _scanCoroutine = StartCoroutine(TargetScanLoop());
     }
@@ -405,7 +416,10 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
-        // Determine if the attacker is the player (for kill-credit tracking)
+        // Record attacker so the FFA scan can retaliate on the next tick
+        if (attackerRoot != null)
+            _lastAttacker = attackerRoot.transform;
+
         bool fromPlayer = attackerRoot != null
                        && attackerRoot.GetComponentInParent<PlayerHealth>() != null;
         TakeDamage(amount, byPlayer: fromPlayer);
@@ -714,15 +728,21 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    //  FFA TARGET SCANNING — Coroutine (runs every detectionInterval seconds)
-    //  Uses Physics.OverlapSphere filtered to the "Character" layer so only
-    //  player + enemy colliders are tested.  Pure Free-for-All: the closest
-    //  alive IDamageable becomes the target regardless of faction.
+    //  FFA TARGET SCANNING — "All-Out War" logic
+    //
+    //  Priority system (evaluated each scan tick):
+    //    1. ENEMY AGGRESSOR — any other enemy currently targeting this enemy.
+    //    2. RETALIATE      — last enemy that damaged us, if still valid.
+    //    3. RANDOM CHOICE  — randomly choose between the nearest enemy and the
+    //                        player. The player is NOT prioritised.
+    //
+    //  This stops all enemies from hard-locking onto the player and creates a
+    //  proper arena-wide free-for-all.
     // ════════════════════════════════════════════════════════════════════════
 
     private IEnumerator TargetScanLoop()
     {
-        // Stagger start so all enemies don't scan on the same frame
+        // Stagger start so all 11 enemies don't scan on the same frame
         yield return new WaitForSeconds(Random.Range(0f, detectionInterval));
 
         while (true)
@@ -730,10 +750,10 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (_state != State.Dead)
             {
                 float radius = (_state == State.Chase)
-                    ? detectionRadius * 1.5f   // wider search while chasing
+                    ? detectionRadius * 1.5f
                     : detectionRadius;
 
-                _target = FindNearestTarget(radius);
+                _target = FindFfaTarget(radius);
             }
 
             yield return new WaitForSeconds(detectionInterval);
@@ -741,51 +761,277 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     /// <summary>
-    /// Free-for-All targeting: finds the nearest alive IDamageable within radius.
-    /// Only scans the "Character" layer — skips walls, floors, environment.
-    /// True FFA: no faction bias. The closest valid target wins.
+    /// Free-for-All targeting with attacker retaliation.
     /// </summary>
-    private Transform FindNearestTarget(float radius)
+    private Transform FindFfaTarget(float radius)
     {
-        // Layer-filtered sphere — only colliders on "Character" layer are returned
         Collider[] hits = Physics.OverlapSphere(
             transform.position, radius, detectionMask, QueryTriggerInteraction.Ignore);
 
-        Transform best     = null;
-        float     bestDist = float.MaxValue;
+        Transform nearestAggressorEnemy = null;
+        float nearestAggressorDistance = float.MaxValue;
 
-        // Track root GameObjects already evaluated to avoid scoring the same
-        // character multiple times (they can have many child colliders).
+        Transform nearestEnemy = null;
+        float nearestEnemyDistance = float.MaxValue;
+
+        Transform playerTarget = null;
+        float playerDistance = float.MaxValue;
+
         var evaluated = new HashSet<int>();
 
         foreach (Collider hit in hits)
         {
-            // ── Self-exclusion ──────────────────────────────────────────────
+            if (hit == null) continue;
             if (hit.transform == transform) continue;
             if (hit.transform.root == transform.root) continue;
 
-            // ── IDamageable check ───────────────────────────────────────────
-            IDamageable target = hit.GetComponentInParent<IDamageable>();
-            if (target == null || !target.IsAlive) continue;
+            IDamageable dmg = hit.GetComponentInParent<IDamageable>();
+            if (dmg == null || !dmg.IsAlive) continue;
 
-            int rootId = target.gameObject.GetInstanceID();
-            if (evaluated.Contains(rootId)) continue;
-            evaluated.Add(rootId);
+            int id = dmg.gameObject.GetInstanceID();
+            if (evaluated.Contains(id)) continue;
+            evaluated.Add(id);
 
-            // Skip self (this EnemyController IS an IDamageable)
-            if (target.gameObject == gameObject) continue;
+            float dist = Vector3.Distance(transform.position, dmg.transform.position);
 
-            // ── Pure distance — no faction bias ─────────────────────────────
-            float d = Vector3.Distance(transform.position, target.transform.position);
-
-            if (d < bestDist)
+            EnemyController otherEnemy = dmg.gameObject.GetComponentInParent<EnemyController>();
+            if (otherEnemy != null && otherEnemy != this)
             {
-                bestDist = d;
-                best     = target.transform;
+                if (dist < nearestEnemyDistance)
+                {
+                    nearestEnemyDistance = dist;
+                    nearestEnemy = otherEnemy.transform;
+                }
+
+                bool isAggressingThisEnemy =
+                    otherEnemy._target != null &&
+                    otherEnemy._target.root == transform.root &&
+                    otherEnemy._state != State.Dead;
+
+                if (isAggressingThisEnemy && dist < nearestAggressorDistance)
+                {
+                    nearestAggressorDistance = dist;
+                    nearestAggressorEnemy = otherEnemy.transform;
+                }
+
+                continue;
+            }
+
+            PlayerHealth player = dmg.gameObject.GetComponentInParent<PlayerHealth>();
+            if (player != null && dist < playerDistance)
+            {
+                playerDistance = dist;
+                playerTarget = player.transform;
             }
         }
 
-        return best;
+        // ── Priority 1: enemy currently attacking this enemy ─────────────────
+        if (nearestAggressorEnemy != null)
+            return nearestAggressorEnemy;
+
+        // ── Priority 2: last enemy attacker still in range ───────────────────
+        if (_lastAttacker != null)
+        {
+            EnemyController lastEnemyAttacker = _lastAttacker.GetComponentInParent<EnemyController>();
+            if (lastEnemyAttacker != null && lastEnemyAttacker != this)
+            {
+                IDamageable attackerDmg = lastEnemyAttacker.GetComponentInParent<IDamageable>();
+                bool attackerAlive = attackerDmg != null && attackerDmg.IsAlive;
+                float attackerDist = Vector3.Distance(transform.position, lastEnemyAttacker.transform.position);
+
+                if (attackerAlive && attackerDist <= radius)
+                    return lastEnemyAttacker.transform;
+            }
+
+            _lastAttacker = null;
+        }
+
+        // ── Priority 3: random choice between nearest enemy and player ───────
+        if (nearestEnemy != null && playerTarget != null)
+            return Random.value < 0.5f ? nearestEnemy : playerTarget;
+
+        if (nearestEnemy != null)
+            return nearestEnemy;
+
+        return playerTarget;
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  WEAPON ATTACHMENT — Ghost Melee Fix
+    //  Searches for "bip_hand_R" by name first (Crosby rig), then falls back
+    //  to other common bone names.  After parenting, localScale is ALWAYS
+    //  forced to (0.1, 0.1, 0.1) so the weapon is visible regardless of
+    //  the skeleton's import scale.
+    // ════════════════════════════════════════════════════════════════════════
+
+    public void AttachWeaponToHand(GameObject weaponPrefab, float targetSize = 0.5f)
+    {
+        if (equippedWeaponObject != null)
+        {
+            Destroy(equippedWeaponObject);
+            equippedWeaponObject = null;
+        }
+
+        if (weaponPrefab == null) return;
+
+        // ── 1. Find the hand bone — "bip_hand_R" has first priority ──────────
+        Transform handBone = weaponAttachPoint;   // Inspector override wins
+
+        if (handBone == null)
+            handBone = FindHandBone(gameObject);
+
+        if (handBone == null)
+        {
+            handBone = transform;
+            Debug.LogWarning($"[EnemyController] '{name}': bip_hand_R not found. " +
+                             "Weapon attached to root. Drag the hand bone into 'Weapon Attach Point'.");
+        }
+
+        // ── 2. Instantiate WITHOUT parenting first (avoids inherited scale) ──
+        equippedWeaponObject = Instantiate(weaponPrefab);
+        equippedWeaponObject.name = "WeaponModel";
+
+        // ── 3. Parent to hand bone with worldPositionStays=false ─────────────
+        equippedWeaponObject.transform.SetParent(handBone, worldPositionStays: false);
+
+        // ── 4. Zero the local transform ──────────────────────────────────────
+        equippedWeaponObject.transform.localPosition = Vector3.zero;
+        equippedWeaponObject.transform.localRotation = Quaternion.identity;
+
+        // ── 5. FORCE localScale = 0.1  (guaranteed visibility in hand) ───────
+        equippedWeaponObject.transform.localScale = Vector3.one * 0.1f;
+
+        // ── 6. Activate every child renderer ─────────────────────────────────
+        foreach (Transform t in equippedWeaponObject.GetComponentsInChildren<Transform>(true))
+            t.gameObject.SetActive(true);
+
+        // ── 7. Wire WeaponBase ────────────────────────────────────────────────
+        WeaponBase wb = equippedWeaponObject.GetComponent<WeaponBase>();
+        if (wb == null) wb = equippedWeaponObject.AddComponent<WeaponBase>();
+        wb.damage      = (int)attackDamage;
+        wb.attackRange = attackRadius;
+        wb.isRanged    = false;
+
+        // ── 8. Ensure renderers are visible (URP shadow-caster fix) ──────────
+        if (equippedWeaponObject.GetComponent<WeaponVisibilityFix>() == null)
+            equippedWeaponObject.AddComponent<WeaponVisibilityFix>();
+    }
+
+    // ── Bone search: "bip_hand_R" first, then common fallback names ──────────
+    private static readonly string[] HandBoneNames =
+    {
+        "bip_hand_R",           // Crosby (enemy) — must be first
+        "weapon_bone_R",        // Crosby weapon socket
+        "j_wrist_ri",           // Ronin (player)
+        "mixamorig:RightHand",  // Mixamo
+        "RightHand",
+        "Hand_R", "hand_R", "hand_r",
+        "Wrist_R", "wrist_R",
+    };
+
+    private static Transform FindHandBone(GameObject body)
+    {
+        // Name-based search (exact match, case-sensitive per list above)
+        foreach (string boneName in HandBoneNames)
+        {
+            Transform found = FindBoneByName(body.transform, boneName);
+            if (found != null) return found;
+        }
+        // Humanoid avatar fallback (works if the rig has a proper Avatar assigned)
+        Animator anim = body.GetComponentInChildren<Animator>(true);
+        if (anim != null && anim.isHuman)
+        {
+            Transform bone = anim.GetBoneTransform(HumanBodyBones.RightHand);
+            if (bone != null) return bone;
+        }
+        return null;
+    }
+
+    private static Transform FindBoneByName(Transform root, string boneName)
+    {
+        if (root.name == boneName) return root;
+        foreach (Transform child in root)
+        {
+            Transform found = FindBoneByName(child, boneName);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  MATERIAL FIX — "White Statue" prevention
+    //  Loads RoninTexture from Resources/Textures.  If the texture is found it
+    //  is applied to every blank/missing material slot on the character mesh.
+    //  Falls back to a warm skin-tone colour when the file is absent.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private static void EnsureProperMaterial(GameObject body)
+    {
+        if (body == null) return;
+
+        Texture2D bodyTex = LoadFirstAvailableTexture(
+            "Textures/RoninTexture",
+            "Enemy/textures/mtl_c_usa_mp_seal6_gear_wt",
+            "Enemy/textures/mtl_c_usa_mp_seal6_ass_vest_green_wt",
+            "Enemy/textures/mtl_c_usa_mp_seal6_pants_1_green_wt",
+            "Enemy/textures/mtl_c_usa_mp_seal6_helmet_wt",
+            "Enemy/textures/mtl_c_usa_mp_seal6_bala_wt");
+
+        // Build a runtime material using the best available shader
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit")
+                     ?? Shader.Find("Standard")
+                     ?? Shader.Find("Diffuse");
+        if (shader == null) return;
+
+        Material mat = new Material(shader) { name = "EnemyMat_Runtime" };
+
+        if (bodyTex != null)
+        {
+            if (mat.HasProperty("_BaseMap")) mat.SetTexture("_BaseMap", bodyTex);
+            if (mat.HasProperty("_MainTex")) mat.SetTexture("_MainTex", bodyTex);
+        }
+        else
+        {
+            // Warm tan fallback so they don't look white
+            Color tan = new Color(0.68f, 0.52f, 0.38f);
+            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", tan);
+            if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     tan);
+        }
+
+        // Replace only null / blank white material slots — leave good ones alone
+        foreach (Renderer r in body.GetComponentsInChildren<Renderer>(true))
+        {
+            Material[] slots = r.sharedMaterials;
+            bool changed = false;
+            for (int i = 0; i < slots.Length; i++)
+            {
+                if (IsBlankMaterial(slots[i])) { slots[i] = mat; changed = true; }
+            }
+            if (changed) r.sharedMaterials = slots;
+        }
+    }
+
+    private static bool IsBlankMaterial(Material m)
+    {
+        if (m == null) return true;
+        if (m.name.StartsWith("Default-")) return true;
+        bool hasTexture = (m.HasProperty("_BaseMap") && m.GetTexture("_BaseMap") != null)
+                       || (m.HasProperty("_MainTex") && m.GetTexture("_MainTex") != null);
+        if (hasTexture) return false;
+        Color c = Color.white;
+        if (m.HasProperty("_BaseColor")) c = m.GetColor("_BaseColor");
+        else if (m.HasProperty("_Color")) c = m.GetColor("_Color");
+        return c.r > 0.95f && c.g > 0.95f && c.b > 0.95f;
+    }
+
+    private static Texture2D LoadFirstAvailableTexture(params string[] resourcePaths)
+    {
+        for (int i = 0; i < resourcePaths.Length; i++)
+        {
+            Texture2D tex = Resources.Load<Texture2D>(resourcePaths[i]);
+            if (tex != null) return tex;
+        }
+        return null;
     }
 
     private void OnDrawGizmosSelected()

@@ -58,6 +58,7 @@
     <Compile Include="Assets/Scripts/WeaponSystemTester.cs" />
     <Compile Include="Assets/Scripts/MenuButtonHoverEffect.cs" />
     <Compile Include="Assets/Scripts/GameSceneTrigger.cs" />
+    <Compile Include="Assets/Scripts/UIManager.cs" />
     <Compile Include="Assets/FirstPersonMelee/Scripts/PlayerController.cs" />
     <Compile Include="Assets/Scripts/LevelSelectBuilder.cs" />
     <Compile Include="Assets/Scripts/LevelCompleteManager.cs" />
