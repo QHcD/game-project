@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -49,11 +50,7 @@ public class GameManager : MonoBehaviour
     public enum WeaponType
     {
         Melee,
-        Flamethrower,
-        Sniper,
-        Explosive,
-        UltimateMelee,
-        Rifle
+        UltimateMelee
     }
 
     // Levels 1-16: all melee progression.
@@ -115,6 +112,16 @@ public class GameManager : MonoBehaviour
     public int totalEnemiesSpawned   = 0;
     /// <summary>How many enemies have been killed this level (all sources).</summary>
     public int enemiesKilledThisLevel = 0;
+
+    // ── Victory delay ────────────────────────────────────────────────────────
+    /// <summary>
+    /// Seconds to wait after the last enemy dies before loading the next scene.
+    /// Gives the player time to watch the final enemy fall. Tweak in Inspector.
+    /// </summary>
+    [SerializeField] private float victoryDelaySeconds = 2.5f;
+
+    /// <summary>Guards against LevelComplete being triggered more than once per level.</summary>
+    private bool _levelCompleteTriggered = false;
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
     void Awake()
@@ -289,17 +296,33 @@ public class GameManager : MonoBehaviour
         Debug.Log($"[GameManager] EnemyKilled: {enemiesKilledThisLevel}/{totalEnemiesSpawned} killed, {enemiesRemaining} remaining.");
 
         // ── Victory condition: LAST enemy eliminated (Issue #5) ──
-        // Guard: totalEnemiesSpawned > 0 prevents firing on level start.
-        // Guard: enemiesKilledThisLevel >= totalEnemiesSpawned ensures ALL
-        //        spawned enemies must be dead (not just the counter reaching 0).
-        if (totalEnemiesSpawned > 0 && enemiesKilledThisLevel >= totalEnemiesSpawned)
+        // Guard: totalEnemiesSpawned > 0  — prevents firing before level loads.
+        // Guard: enemiesKilledThisLevel >= totalEnemiesSpawned — ALL must die.
+        // Guard: _levelCompleteTriggered  — prevents double-fire if called twice.
+        if (totalEnemiesSpawned > 0
+            && enemiesKilledThisLevel >= totalEnemiesSpawned
+            && !_levelCompleteTriggered)
         {
-            Debug.Log("[GameManager] All enemies eliminated — triggering LevelComplete.");
-            LevelComplete();
+            _levelCompleteTriggered = true;
+            Debug.Log($"[GameManager] All enemies eliminated — waiting {victoryDelaySeconds}s before level complete.");
+            StartCoroutine(LevelCompleteDelayed());
         }
     }
 
     // ── Level transitions ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Waits <see cref="victoryDelaySeconds"/> so the player can watch the last
+    /// enemy fall, then saves progress and loads the main-menu scene.
+    /// </summary>
+    private IEnumerator LevelCompleteDelayed()
+    {
+        // Let the enemy death animation play out — cursor stays locked while we wait.
+        yield return new WaitForSeconds(victoryDelaySeconds);
+
+        LevelComplete();
+    }
+
     private void LevelComplete()
     {
         Time.timeScale = 1f;
@@ -366,10 +389,11 @@ public class GameManager : MonoBehaviour
 
     private void ResetLevelState()
     {
-        levelTime              = 0f;
-        playerTookDamage       = false;
-        totalEnemiesSpawned    = 0;
-        enemiesKilledThisLevel = 0;
-        enemiesRemaining       = 0;
+        levelTime                = 0f;
+        playerTookDamage         = false;
+        totalEnemiesSpawned      = 0;
+        enemiesKilledThisLevel   = 0;
+        enemiesRemaining         = 0;
+        _levelCompleteTriggered  = false;   // ← allow the next level to trigger
     }
 }

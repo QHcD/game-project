@@ -22,7 +22,8 @@
       "Bash(dir \"C:\\\\Users\\\\97338\\\\PRISM-7\\\\Assets\\\\Scripts\"\")",
       "mcp__unity__Unity_RunCommand",
       "Bash(del \"C:\\\\Users\\\\97338\\\\Documents\\\\GitHub\\\\PRISM-7\\\\Assets\\\\Scripts\\\\PlayerController.cs\")",
-      "Bash(del \"C:\\\\Users\\\\97338\\\\Documents\\\\GitHub\\\\PRISM-7\\\\Assets\\\\Scripts\\\\PlayerController.cs.meta\")"
+      "Bash(del \"C:\\\\Users\\\\97338\\\\Documents\\\\GitHub\\\\PRISM-7\\\\Assets\\\\Scripts\\\\PlayerController.cs.meta\")",
+      "Bash(find /Users/mohamed/Desktop/PRISM-7/Library/metadata -name ef6403663453e6a4cb106814a81e72b4*)"
     ]
   }
 }

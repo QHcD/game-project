@@ -138,18 +138,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 526ed24552cf0d04684295be1f2c8308, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  firstPersonCam: {fileID: 0}
-  thirdPersonCam: {fileID: 0}
-  equippedWeaponName: Combat Knife
   moveSpeed: 5
+  sprintMultiplier: 1.37
   gravity: -9.8
   jumpHeight: 1.2
-  arenaBoundaryRadius: 22.8
-  arenaBoundaryPadding: 0.35
-  arenaFloorHeight: 0.1
-  floorSnapSpeed: 14
-  maxFloorSnapDistance: 0.45
-  cam: {fileID: 1788623315372294392}
+  playerAnimatorController: {fileID: 9100000, guid: e271718b7cc6d4af7a7cb713e7076aeb, type: 2}
+  playerAvatar: {fileID: 9000000, guid: 88dc56ed1335a40a28cdeaa63978e7bf, type: 3}
+  acceleration: 12
+  deceleration: 12
+  firstPersonCam: {fileID: 0}
+  thirdPersonCam: {fileID: 0}
   sensitivity: 100
   attackDistance: 3
   attackDelay: 0.4
@@ -161,9 +159,24 @@ MonoBehaviour:
   attackRadius: 1.25
   attackLungeDistance: 0.45
   hitKnockbackForce: 4.5
+  equippedWeaponName: Combat Knife
   hitEffect: {fileID: 0}
   swordSwing: {fileID: 8300000, guid: 7923190c5e80b4d4d9396acc5d0b48cf, type: 3}
   hitSound: {fileID: 8300000, guid: 11245d3945c564b45a1bafad5ecb70e5, type: 3}
+  combatKnifePrefabOverride: {fileID: 0}
+  combatKnifeResourcePath: Weapons/TacticalKnife/TacticalKnife
+  combatKnifeThirdPersonLocalPos: {x: 0, y: 0, z: 0}
+  combatKnifeThirdPersonLocalEuler: {x: 0, y: 0, z: 0}
+  combatKnifeThirdPersonLocalScale: {x: 0.02, y: 0.02, z: 0.02}
+  combatKnifeFirstPersonLocalPos: {x: 0, y: 0, z: 0}
+  combatKnifeFirstPersonLocalEuler: {x: 0, y: 0, z: 0}
+  combatKnifeFirstPersonLocalScale: {x: 1, y: 1, z: 1}
+  arenaBoundaryRadius: 22.8
+  arenaBoundaryPadding: 0.35
+  arenaFloorHeight: 0.1
+  floorSnapSpeed: 14
+  maxFloorSnapDistance: 0.45
+  equippedWeaponObject: {fileID: 0}
 --- !u!143 &1788623314744564118
 CharacterController:
   m_ObjectHideFlags: 0
@@ -441,7 +454,7 @@ MonoBehaviour:
   priority: 0
   blendDistance: 0
   weight: 1
-  sharedProfile: {fileID: 11400000, guid: a6560a915ef98420e9faacc1c7438823, type: 2}
+  sharedProfile: {fileID: 0}
 --- !u!1001 &1152233477339119441
 PrefabInstance:
   m_ObjectHideFlags: 0

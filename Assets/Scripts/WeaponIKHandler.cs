@@ -1,14 +1,8 @@
 using UnityEngine;
 
 /// <summary>
-/// Two-handed weapon IK handler. In LateUpdate (after animations),
-/// positions the left hand onto the gun's foregrip/barrel so the player
-/// holds heavy weapons realistically with both hands.
-///
-/// For melee weapons: IK is disabled (one-handed grip).
-/// For guns (M16, RPG, Minigun, Sniper, Flamethrower): left hand snaps to foregrip.
-///
-/// Works with PlayableGraph animation (no Animator Controller IK Pass needed).
+/// Two-handed weapon IK handler. IK is disabled for all melee weapons
+/// (one-handed grip). Kept for future expansion.
 /// Attach to the ThirdPersonBody GameObject.
 /// </summary>
 public class WeaponIKHandler : MonoBehaviour
@@ -115,41 +109,12 @@ public class WeaponIKHandler : MonoBehaviour
 
     private void ConfigureGripForWeaponType(Transform grip, GameObject weapon, GameManager.WeaponType wType)
     {
-        // Measure weapon bounds to place grip appropriately
+        // Melee-only project — IK is disabled for all weapon types.
+        // This method is kept as a no-op for compatibility.
         Bounds weaponBounds = CalculateWeaponBounds(weapon);
         float weaponLength = Mathf.Max(weaponBounds.size.x, Mathf.Max(weaponBounds.size.y, weaponBounds.size.z));
-
-        switch (wType)
-        {
-            case GameManager.WeaponType.Rifle:
-                // M16/TYR: Left hand on foregrip, ~40% from front
-                grip.localPosition = new Vector3(0f, 0f, weaponLength * 0.3f);
-                grip.localRotation = Quaternion.Euler(0f, 0f, 0f);
-                break;
-
-            case GameManager.WeaponType.Sniper:
-                // Sniper M82: Left hand further forward on barrel
-                grip.localPosition = new Vector3(0f, -0.02f, weaponLength * 0.35f);
-                grip.localRotation = Quaternion.Euler(0f, 0f, 0f);
-                break;
-
-            case GameManager.WeaponType.Explosive:
-                // RPG/Bazooka: Left hand supports the tube from below, near front
-                grip.localPosition = new Vector3(0f, -0.05f, weaponLength * 0.25f);
-                grip.localRotation = Quaternion.Euler(0f, 0f, 90f);
-                break;
-
-            case GameManager.WeaponType.Flamethrower:
-                // Flamethrower/Minigun: Left hand on front grip
-                grip.localPosition = new Vector3(0f, -0.02f, weaponLength * 0.3f);
-                grip.localRotation = Quaternion.Euler(0f, 0f, 0f);
-                break;
-
-            default:
-                grip.localPosition = new Vector3(0f, 0f, weaponLength * 0.3f);
-                grip.localRotation = Quaternion.identity;
-                break;
-        }
+        grip.localPosition = new Vector3(0f, 0f, weaponLength * 0.3f);
+        grip.localRotation = Quaternion.identity;
     }
 
     // ════════════════════════════════════════════════════════════════════════

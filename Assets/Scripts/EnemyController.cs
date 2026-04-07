@@ -140,13 +140,13 @@ public class EnemyController : MonoBehaviour
         _rb.constraints       = RigidbodyConstraints.FreezeRotation;
         _rb.isKinematic       = true;  // NavMeshAgent owns movement normally
 
-        // Cache renderers for hit flash
+        // Cache renderers for hit flash (URP-compatible: prefer _BaseColor over _Color)
         _renderers      = GetComponentsInChildren<Renderer>(true);
         _originalColors = new Color[_renderers.Length];
         for (int i = 0; i < _renderers.Length; i++)
         {
-            if (_renderers[i].material != null)
-                _originalColors[i] = _renderers[i].material.color;
+            if (_renderers[i] == null || _renderers[i].material == null) continue;
+            _originalColors[i] = GetMaterialBaseColor(_renderers[i].material);
         }
     }
 
@@ -364,6 +364,7 @@ public class EnemyController : MonoBehaviour
         if (byPlayer) _lastHitByPlayer = true;
 
         _currentHealth -= amount;
+        Debug.Log($"[EnemyController] {name} hit for {amount} dmg — HP now {_currentHealth}/{maxHealth} (byPlayer={byPlayer})");
 
         // Flinch
         if (_state != State.Flinch)
@@ -552,13 +553,32 @@ public class EnemyController : MonoBehaviour
     //  HIT REACTION EFFECTS
     // ════════════════════════════════════════════════════════════════════════
 
+    // ── URP-safe color helpers ────────────────────────────────────────────────
+    /// <summary>
+    /// Returns the "main" colour of a material, checking URP's _BaseColor
+    /// first and falling back to Standard's _Color.
+    /// </summary>
+    private static Color GetMaterialBaseColor(Material mat)
+    {
+        if (mat.HasProperty("_BaseColor")) return mat.GetColor("_BaseColor");
+        if (mat.HasProperty("_Color"))     return mat.GetColor("_Color");
+        return Color.white;
+    }
+
+    /// <summary>Sets the main colour on a material (URP + Standard safe).</summary>
+    private static void SetMaterialBaseColor(Material mat, Color c)
+    {
+        if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", c);
+        if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     c);
+    }
+
     private void ApplyHitFlash()
     {
         _flashTimer = FlashDuration;
         for (int i = 0; i < _renderers.Length; i++)
         {
-            if (_renderers[i] != null && _renderers[i].material != null)
-                _renderers[i].material.color = hitFlashColor;
+            if (_renderers[i] == null || _renderers[i].material == null) continue;
+            SetMaterialBaseColor(_renderers[i].material, hitFlashColor);
         }
     }
 
@@ -566,8 +586,9 @@ public class EnemyController : MonoBehaviour
     {
         for (int i = 0; i < _renderers.Length; i++)
         {
-            if (_renderers[i] != null && _renderers[i].material != null && i < _originalColors.Length)
-                _renderers[i].material.color = _originalColors[i];
+            if (_renderers[i] == null || _renderers[i].material == null) continue;
+            if (i < _originalColors.Length)
+                SetMaterialBaseColor(_renderers[i].material, _originalColors[i]);
         }
     }
 

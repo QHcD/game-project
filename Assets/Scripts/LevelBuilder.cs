@@ -449,13 +449,29 @@ public class LevelBuilder : MonoBehaviour
             agent.avoidancePriority      = 30 + (i * 3) % 40;
             agent.obstacleAvoidanceType  = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
 
-            // Main collider — ensure a CapsuleCollider is present for hit detection
+            // Main collider — ensure a CapsuleCollider is present for hit detection.
+            // Use WORLD-SPACE target dimensions and convert to local space so the
+            // collider is always the correct size regardless of the model's scale.
             if (enemyObject.GetComponent<Collider>() == null)
             {
                 CapsuleCollider cap = enemyObject.AddComponent<CapsuleCollider>();
-                cap.height = 2f;
-                cap.radius = 0.45f;
-                cap.center = new Vector3(0f, 1f, 0f);
+
+                // Convert desired world dimensions into local space of this transform.
+                float worldHeight   = 1.8f;
+                float worldRadius   = 0.45f;
+                float worldCenterY  = worldHeight * 0.5f;   // 0.9 m — mid-body
+
+                Vector3 ls = enemyObject.transform.lossyScale;
+                float scaleY = Mathf.Abs(ls.y) > 0.0001f ? ls.y : 1f;
+                float scaleXZ = Mathf.Max(Mathf.Abs(ls.x), Mathf.Abs(ls.z));
+                if (scaleXZ < 0.0001f) scaleXZ = 1f;
+
+                cap.height = worldHeight  / scaleY;
+                cap.radius = worldRadius  / scaleXZ;
+                cap.center = new Vector3(0f, worldCenterY / scaleY, 0f);
+
+                Debug.Log($"[LevelBuilder] CapsuleCollider: local h={cap.height:F3} r={cap.radius:F3} " +
+                          $"(worldH={worldHeight} worldR={worldRadius} lossyScale={ls})");
             }
 
             EnemyController controller = EnsureComponent<EnemyController>(enemyObject);
