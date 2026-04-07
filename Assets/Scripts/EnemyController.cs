@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.AI;
+using System.Collections;
 using System.Collections.Generic;
 
 /// <summary>
@@ -42,6 +43,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Velocity below this is considered 'stuck' even when path exists.")]
     public float stuckVelocityThreshold = 0.25f;
 
+    [Header("FFA Target Detection")]
+    [Tooltip("Layer mask for valid targets (set to 'Character' layer).")]
+    public LayerMask detectionMask = ~0;
+
+    [Tooltip("Seconds between target scans (coroutine-based for performance).")]
+    public float detectionInterval = 0.5f;
+
     [Header("Separation (Anti-Stacking)")]
     public float separationRadius   = 2.0f;
     public float separationStrength = 5.0f;
@@ -76,9 +84,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     // Flinch
     private float _flinchTimer;
 
-    // Re-targeting
-    private float _retargetTimer;
-    private const float RetargetInterval = 0.3f;
+    // Coroutine-based target scanning
+    private Coroutine _scanCoroutine;
 
     // Visual feedback
     private Renderer[] _renderers;
@@ -148,6 +155,17 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (_renderers[i] == null || _renderers[i].material == null) continue;
             _originalColors[i] = GetMaterialBaseColor(_renderers[i].material);
         }
+
+        // ── Auto-resolve Character layer mask ────────────────────────────────
+        int charLayer = LayerMask.NameToLayer("Character");
+        if (charLayer >= 0)
+            detectionMask = 1 << charLayer;
+    }
+
+    private void Start()
+    {
+        // Start the coroutine-based target scanner (runs every detectionInterval)
+        _scanCoroutine = StartCoroutine(TargetScanLoop());
     }
 
     private void Update()
@@ -178,24 +196,27 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ── State handlers ────────────────────────────────────────────────────────
     private void UpdateIdle()
     {
-        _retargetTimer -= Time.deltaTime;
-        if (_retargetTimer > 0f) return;
-        _retargetTimer = RetargetInterval;
-
-        _target = FindNearestTarget(detectionRadius);
+        // Target is assigned by the TargetScanLoop coroutine every 0.5s
         if (_target != null) TransitionTo(State.Chase);
     }
 
     private void UpdateChase()
     {
-        _retargetTimer -= Time.deltaTime;
-        if (_retargetTimer <= 0f)
+        // If the target died or was destroyed, go idle and wait for next scan
+        if (_target == null)
         {
-            _retargetTimer = RetargetInterval;
-            _target = FindNearestTarget(detectionRadius * 1.5f);
+            TransitionTo(State.Idle);
+            return;
         }
 
-        if (_target == null) { TransitionTo(State.Idle); return; }
+        // Check if target is still alive via IDamageable
+        IDamageable targetDmg = _target.GetComponentInParent<IDamageable>();
+        if (targetDmg != null && !targetDmg.IsAlive)
+        {
+            _target = null;
+            TransitionTo(State.Idle);
+            return;
+        }
 
         float dist = Vector3.Distance(transform.position, _target.position);
 
@@ -400,6 +421,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void Die()
     {
         _state = State.Dead;
+
+        // Stop target scan coroutine — no point scanning when dead
+        if (_scanCoroutine != null)
+        {
+            StopCoroutine(_scanCoroutine);
+            _scanCoroutine = null;
+        }
 
         // Notify GameManager FIRST so enemy count updates correctly (Issue #5)
         if (GameManager.Instance != null)
@@ -685,17 +713,46 @@ public class EnemyController : MonoBehaviour, IDamageable
         transform.rotation = Quaternion.Slerp(transform.rotation, look, rotationSpeed * Time.deltaTime);
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    //  FFA TARGET SCANNING — Coroutine (runs every detectionInterval seconds)
+    //  Uses Physics.OverlapSphere filtered to the "Character" layer so only
+    //  player + enemy colliders are tested.  Pure Free-for-All: the closest
+    //  alive IDamageable becomes the target regardless of faction.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private IEnumerator TargetScanLoop()
+    {
+        // Stagger start so all enemies don't scan on the same frame
+        yield return new WaitForSeconds(Random.Range(0f, detectionInterval));
+
+        while (true)
+        {
+            if (_state != State.Dead)
+            {
+                float radius = (_state == State.Chase)
+                    ? detectionRadius * 1.5f   // wider search while chasing
+                    : detectionRadius;
+
+                _target = FindNearestTarget(radius);
+            }
+
+            yield return new WaitForSeconds(detectionInterval);
+        }
+    }
+
     /// <summary>
-    /// Free-for-All targeting: finds the nearest alive IDamageable (player OR enemy).
-    /// The player's effective distance is halved so the AI still prefers the player
-    /// when distances are roughly equal, but enemies WILL fight each other when the
-    /// player is far away.
+    /// Free-for-All targeting: finds the nearest alive IDamageable within radius.
+    /// Only scans the "Character" layer — skips walls, floors, environment.
+    /// True FFA: no faction bias. The closest valid target wins.
     /// </summary>
     private Transform FindNearestTarget(float radius)
     {
-        Collider[] hits    = Physics.OverlapSphere(transform.position, radius);
-        Transform  best    = null;
-        float      bestDist = float.MaxValue;
+        // Layer-filtered sphere — only colliders on "Character" layer are returned
+        Collider[] hits = Physics.OverlapSphere(
+            transform.position, radius, detectionMask, QueryTriggerInteraction.Ignore);
+
+        Transform best     = null;
+        float     bestDist = float.MaxValue;
 
         // Track root GameObjects already evaluated to avoid scoring the same
         // character multiple times (they can have many child colliders).
@@ -703,10 +760,11 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         foreach (Collider hit in hits)
         {
+            // ── Self-exclusion ──────────────────────────────────────────────
             if (hit.transform == transform) continue;
-            if (hit.transform.root == transform.root) continue; // skip self sub-colliders
+            if (hit.transform.root == transform.root) continue;
 
-            // Look for any IDamageable on this hierarchy
+            // ── IDamageable check ───────────────────────────────────────────
             IDamageable target = hit.GetComponentInParent<IDamageable>();
             if (target == null || !target.IsAlive) continue;
 
@@ -717,11 +775,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             // Skip self (this EnemyController IS an IDamageable)
             if (target.gameObject == gameObject) continue;
 
+            // ── Pure distance — no faction bias ─────────────────────────────
             float d = Vector3.Distance(transform.position, target.transform.position);
-
-            // Halve effective distance for the player so AI prefers the player
-            // when both player and another enemy are at similar range
-            if (target is PlayerHealth) d *= 0.5f;
 
             if (d < bestDist)
             {

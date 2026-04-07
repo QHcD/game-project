@@ -437,6 +437,7 @@ public class LevelBuilder : MonoBehaviour
             }
 
             enemyObject.tag = "Enemy";
+            SetLayerRecursive(enemyObject, LayerMask.NameToLayer("Character"));
 
             // NavMeshAgent
             NavMeshAgent agent = EnsureComponent<NavMeshAgent>(enemyObject);
@@ -760,6 +761,15 @@ public class LevelBuilder : MonoBehaviour
         return null;
     }
 
+    /// <summary>Sets the layer on a GameObject and all of its children recursively.</summary>
+    private static void SetLayerRecursive(GameObject obj, int layer)
+    {
+        if (obj == null || layer < 0) return;
+        obj.layer = layer;
+        foreach (Transform child in obj.GetComponentsInChildren<Transform>(true))
+            child.gameObject.layer = layer;
+    }
+
     private static void EnsureGameManager()
     {
         if (GameManager.Instance != null) return;
@@ -805,6 +815,9 @@ public class LevelBuilder : MonoBehaviour
 
         if (!playerController.gameObject.CompareTag("Player"))
             playerController.gameObject.tag = "Player";
+
+        // Assign the "Character" layer so OverlapSphere-based FFA detection works
+        SetLayerRecursive(playerController.gameObject, LayerMask.NameToLayer("Character"));
 
         // ── CharacterController must be DISABLED to set transform.position ──
         // Handled cleanly by PlayerController.TeleportTo
