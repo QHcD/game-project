@@ -73,17 +73,19 @@ public class WeaponHitbox : MonoBehaviour
         int id = other.gameObject.GetInstanceID();
         if (hitThisSwing.Contains(id)) return;
 
-        // Try EnemyController first
-        EnemyController enemy = other.GetComponentInParent<EnemyController>();
-        if (enemy != null)
+        // ── IDamageable path (player, enemy, or any future damageable) ──────
+        IDamageable target = other.GetComponentInParent<IDamageable>();
+        if (target != null && target.gameObject != transform.root.gameObject)
         {
+            if (!target.IsAlive) return;
+
             int dmg = damage > 0 ? damage : 25;
-            enemy.TakeDamage(dmg, byPlayer: true);
+            target.ReceiveDamage(dmg, transform.root.gameObject);
             hitThisSwing.Add(id);
             return;
         }
 
-        // Fallback: Actor base class
+        // ── Legacy fallback: Actor base class ───────────────────────────────
         Actor actor = other.GetComponentInParent<Actor>();
         if (actor != null && actor.gameObject != transform.root.gameObject)
         {

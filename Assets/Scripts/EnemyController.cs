@@ -15,7 +15,7 @@ using System.Collections.Generic;
 ///   5. Victory — notifies GameManager via EnemyKilled() which now tracks totals correctly.
 /// </summary>
 [RequireComponent(typeof(NavMeshAgent))]
-public class EnemyController : MonoBehaviour
+public class EnemyController : MonoBehaviour, IDamageable
 {
     // ── Tuning ──────────────────────────────────────────────────────────────
     [Header("Combat")]
@@ -344,16 +344,15 @@ public class EnemyController : MonoBehaviour
 
         if (_target == null) return;
 
-        PlayerHealth ph = _target.GetComponentInParent<PlayerHealth>();
-        if (ph != null) { ph.TakeDamage((int)attackDamage); return; }
-
-        EnemyController otherEnemy = _target.GetComponentInParent<EnemyController>();
-        if (otherEnemy != null && otherEnemy != this)
+        // Use IDamageable so we can hit player OR enemy without type-checking
+        IDamageable target = _target.GetComponentInParent<IDamageable>();
+        if (target != null && target.IsAlive)
         {
-            otherEnemy.TakeDamage((int)attackDamage);
+            target.ReceiveDamage((int)attackDamage, gameObject);
             return;
         }
 
+        // Legacy fallback for Actor-based entities not yet using IDamageable
         Actor actor = _target.GetComponentInParent<Actor>();
         if (actor != null) actor.TakeDamage((int)attackDamage);
     }
@@ -364,7 +363,6 @@ public class EnemyController : MonoBehaviour
         if (byPlayer) _lastHitByPlayer = true;
 
         _currentHealth -= amount;
-        Debug.Log($"[EnemyController] {name} hit for {amount} dmg — HP now {_currentHealth}/{maxHealth} (byPlayer={byPlayer})");
 
         // Flinch
         if (_state != State.Flinch)
@@ -379,6 +377,17 @@ public class EnemyController : MonoBehaviour
         PlayHitSound();
 
         if (_currentHealth <= 0) Die();
+    }
+
+    // ── IDamageable ─────────────────────────────────────────────────────────
+    public bool IsAlive => _state != State.Dead;
+
+    public void ReceiveDamage(int amount, GameObject attackerRoot)
+    {
+        // Determine if the attacker is the player (for kill-credit tracking)
+        bool fromPlayer = attackerRoot != null
+                       && attackerRoot.GetComponentInParent<PlayerHealth>() != null;
+        TakeDamage(amount, byPlayer: fromPlayer);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -676,26 +685,49 @@ public class EnemyController : MonoBehaviour
         transform.rotation = Quaternion.Slerp(transform.rotation, look, rotationSpeed * Time.deltaTime);
     }
 
+    /// <summary>
+    /// Free-for-All targeting: finds the nearest alive IDamageable (player OR enemy).
+    /// The player's effective distance is halved so the AI still prefers the player
+    /// when distances are roughly equal, but enemies WILL fight each other when the
+    /// player is far away.
+    /// </summary>
     private Transform FindNearestTarget(float radius)
     {
         Collider[] hits    = Physics.OverlapSphere(transform.position, radius);
         Transform  best    = null;
         float      bestDist = float.MaxValue;
 
+        // Track root GameObjects already evaluated to avoid scoring the same
+        // character multiple times (they can have many child colliders).
+        var evaluated = new HashSet<int>();
+
         foreach (Collider hit in hits)
         {
             if (hit.transform == transform) continue;
+            if (hit.transform.root == transform.root) continue; // skip self sub-colliders
 
-            // Prioritise the player (treat distance as half so player is always preferred)
-            PlayerHealth ph = hit.GetComponentInParent<PlayerHealth>();
-            if (ph != null)
+            // Look for any IDamageable on this hierarchy
+            IDamageable target = hit.GetComponentInParent<IDamageable>();
+            if (target == null || !target.IsAlive) continue;
+
+            int rootId = target.gameObject.GetInstanceID();
+            if (evaluated.Contains(rootId)) continue;
+            evaluated.Add(rootId);
+
+            // Skip self (this EnemyController IS an IDamageable)
+            if (target.gameObject == gameObject) continue;
+
+            float d = Vector3.Distance(transform.position, target.transform.position);
+
+            // Halve effective distance for the player so AI prefers the player
+            // when both player and another enemy are at similar range
+            if (target is PlayerHealth) d *= 0.5f;
+
+            if (d < bestDist)
             {
-                float d = Vector3.Distance(transform.position, ph.transform.position) * 0.5f;
-                if (d < bestDist) { bestDist = d; best = ph.transform; }
-                continue;
+                bestDist = d;
+                best     = target.transform;
             }
-
-            // Enemies do NOT target other enemies — only the player is a valid target.
         }
 
         return best;

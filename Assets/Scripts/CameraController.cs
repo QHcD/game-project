@@ -1,5 +1,11 @@
 using UnityEngine;
 
+/// <summary>
+/// Third-person orbit camera with wall-collision avoidance.
+/// The camera casts a thick sphere (SphereCast) from the player towards its desired
+/// position. If geometry is in the way, the camera pulls forward so it never clips
+/// through walls, buildings, or terrain.
+/// </summary>
 public class CameraController : MonoBehaviour
 {
     // Target to follow (the player root transform)
@@ -18,6 +24,35 @@ public class CameraController : MonoBehaviour
 
     // Vertical pitch in degrees — set externally by PlayerController for mouse look in TP mode
     [HideInInspector] public float pitch = 0f;
+
+    // ── Camera Collision ────────────────────────────────────────────────────
+    [Header("Wall Collision")]
+    [Tooltip("Enable camera collision avoidance with walls/buildings.")]
+    public bool enableCollision = true;
+
+    [Tooltip("SphereCast radius — thicker = more conservative (less clipping).")]
+    [Range(0.1f, 0.5f)]
+    public float collisionRadius = 0.25f;
+
+    [Tooltip("Extra padding from the wall surface (prevents near-plane clipping).")]
+    [Range(0.05f, 0.5f)]
+    public float wallPadding = 0.15f;
+
+    [Tooltip("Layers the camera treats as solid obstacles.")]
+    public LayerMask collisionMask = ~0; // Everything by default
+
+    [Tooltip("How quickly the camera recovers to full distance after leaving a wall.")]
+    public float recoverySpeed = 8f;
+
+    // Smooth recovery (avoids pop when leaving a wall)
+    private float _currentDistance;
+    private float _maxDistance;
+
+    private void Start()
+    {
+        _maxDistance     = offset.magnitude;
+        _currentDistance = _maxDistance;
+    }
 
     void LateUpdate()
     {
@@ -40,10 +75,49 @@ public class CameraController : MonoBehaviour
         Quaternion orbitRotation = Quaternion.Euler(pitch, target.eulerAngles.y, 0f);
         Vector3 desiredPosition = target.position + orbitRotation * offset;
 
+        // ── Wall Collision ──────────────────────────────────────────────────
+        if (enableCollision)
+            desiredPosition = ResolveCollision(desiredPosition, orbitRotation);
+
         // Smoothly interpolate camera position to avoid jitter on fast turns.
         transform.position = Vector3.Lerp(transform.position, desiredPosition, smoothSpeed * Time.deltaTime);
 
         transform.LookAt(GetLookTarget());
+    }
+
+    /// <summary>
+    /// SphereCasts from the player towards the desired camera position.
+    /// If the cast hits a wall, pulls the camera forward to the hit point
+    /// plus a small padding offset to avoid near-plane clipping.
+    /// Smoothly recovers to full distance when the wall is cleared.
+    /// </summary>
+    private Vector3 ResolveCollision(Vector3 desiredPosition, Quaternion orbitRotation)
+    {
+        // Cast origin: slightly above the player's pivot (roughly chest height)
+        Vector3 castOrigin = target.position + Vector3.up * 1.2f;
+        Vector3 castDir    = (desiredPosition - castOrigin);
+        float   castDist   = castDir.magnitude;
+        castDir.Normalize();
+
+        float targetDistance = _maxDistance;
+
+        if (Physics.SphereCast(castOrigin, collisionRadius, castDir, out RaycastHit hit,
+                               castDist, collisionMask, QueryTriggerInteraction.Ignore))
+        {
+            // Pull the camera to the hit point, minus padding so the near plane stays clear
+            targetDistance = Mathf.Max(hit.distance - wallPadding, 0.3f);
+        }
+
+        // Smooth recovery: snap inward instantly, ease outward slowly
+        if (targetDistance < _currentDistance)
+            _currentDistance = targetDistance;                                  // snap in
+        else
+            _currentDistance = Mathf.Lerp(_currentDistance, targetDistance,
+                                          recoverySpeed * Time.deltaTime);     // ease out
+
+        // Rebuild position along the same orbit direction but at the clamped distance
+        Vector3 offsetDir = (orbitRotation * offset).normalized;
+        return castOrigin + offsetDir * _currentDistance;
     }
 
     public void SnapToTarget()
@@ -51,7 +125,13 @@ public class CameraController : MonoBehaviour
         if (target == null) return;
 
         Quaternion orbitRotation = Quaternion.Euler(pitch, target.eulerAngles.y, 0f);
-        transform.position = target.position + orbitRotation * offset;
+        Vector3 desiredPosition = target.position + orbitRotation * offset;
+
+        if (enableCollision)
+            desiredPosition = ResolveCollision(desiredPosition, orbitRotation);
+
+        _currentDistance = Vector3.Distance(target.position + Vector3.up * 1.2f, desiredPosition);
+        transform.position = desiredPosition;
         transform.LookAt(GetLookTarget());
     }
 

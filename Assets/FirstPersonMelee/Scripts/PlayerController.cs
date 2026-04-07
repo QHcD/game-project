@@ -613,9 +613,6 @@ public class PlayerController : MonoBehaviour
             resolvedAttackMask,
             QueryTriggerInteraction.UseGlobal);  // was Ignore — triggers count now
 
-        Debug.Log($"[PlayerController] AttackMelee — origin={meleeOrigin:F2}  " +
-                  $"radius={attackRadius * 1.5f:F2}  colliders found={hits.Length}  dmg={attackDamage}");
-
         bool landed = false;
 
         // Sort by distance so the closest enemy is tried first
@@ -632,11 +629,7 @@ public class PlayerController : MonoBehaviour
             dirToTarget.y = 0f;
             float angle = Vector3.Angle(transform.forward, dirToTarget);
 
-            if (angle > MeleeHitAngle)
-            {
-                Debug.Log($"[PlayerController]   skip '{hits[i].name}' angle={angle:F1}° > {MeleeHitAngle}°");
-                continue;
-            }
+            if (angle > MeleeHitAngle) continue;
 
             if (TryDamageTarget(hits[i].transform, attackDamage))
             {
@@ -654,7 +647,6 @@ public class PlayerController : MonoBehaviour
                 out RaycastHit rayHit, attackDistance, resolvedAttackMask,
                 QueryTriggerInteraction.UseGlobal))
             {
-                Debug.Log($"[PlayerController]   Raycast hit: {rayHit.collider.name}");
                 if (TryDamageTarget(rayHit.transform, attackDamage))
                 {
                     ApplyHitReaction(rayHit.transform, transform.forward);
@@ -669,7 +661,7 @@ public class PlayerController : MonoBehaviour
         }
 
         // ── Fallback B: direct component scan (bypasses colliders entirely) ──
-        // Searches all EnemyController objects within range and in front of player.
+        // Searches all EnemyController objects within range.
         // This catches enemies whose colliders may be mis-configured.
         if (!landed)
         {
@@ -677,13 +669,9 @@ public class PlayerController : MonoBehaviour
             foreach (EnemyController ec in allEnemies)
             {
                 if (ec == null) continue;
-                Vector3 toEnemy = ec.transform.position - transform.position;
-                float   dist    = toEnemy.magnitude;
-                if (dist > attackDistance + 1f) continue;            // range check
+                float dist = Vector3.Distance(transform.position, ec.transform.position);
+                if (dist > attackDistance + 1f) continue;
 
-                // No angle restriction in Fallback B — if the player swings and
-                // the enemy is within range, it always counts as a hit.
-                Debug.Log($"[PlayerController]   Fallback B hit enemy '{ec.name}' dist={dist:F2}");
                 ec.TakeDamage(attackDamage, byPlayer: true);
                 ApplyHitReaction(ec.transform, transform.forward);
                 HitTarget(ec.transform.position + Vector3.up * 0.9f);
@@ -691,9 +679,6 @@ public class PlayerController : MonoBehaviour
                 break;
             }
         }
-
-        if (!landed)
-            Debug.Log("[PlayerController]   AttackMelee — no target found (miss).");
     }
 
     private bool TryDamageTarget(Transform target, int damage)
@@ -703,7 +688,6 @@ public class PlayerController : MonoBehaviour
         EnemyController enemy = target.GetComponentInParent<EnemyController>();
         if (enemy != null && enemy.gameObject != gameObject)
         {
-            Debug.Log($"[PlayerController]   TryDamage → EnemyController '{enemy.name}' for {damage}");
             enemy.TakeDamage(damage, byPlayer: true);
             return true;
         }
@@ -1326,24 +1310,55 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Per-level weapon target sizes (metres, longest axis).
+    /// Matches LevelBuilder.GetWeaponTargetSize so player and enemy weapons are identical.
+    /// </summary>
+    private static float GetPlayerWeaponTargetSize(int level)
+    {
+        float[] sizes = {
+            0.30f, 0.95f, 1.00f, 0.85f, 0.30f,   // Levels 1-5
+            0.40f, 0.55f, 0.85f, 0.70f, 1.40f,   // Levels 6-10
+            1.00f, 0.40f, 0.35f, 0.50f, 0.60f,   // Levels 11-15
+            0.90f                                    // Level 16
+        };
+        return sizes[Mathf.Clamp(level - 1, 0, sizes.Length - 1)];
+    }
+
     private GameObject BuildWeaponModel(int level, Transform attachPoint)
     {
         GameObject levelPrefab = ResolveWeaponPrefabForLevel(level);
         if (levelPrefab != null)
         {
+            // Instantiate at world root first to avoid parent scale contamination
             GameObject weapon = Instantiate(levelPrefab);
             weapon.name = "WeaponModel";
-
-            weapon.transform.SetParent(attachPoint, false);
-            weapon.transform.localPosition = Vector3.zero;
-            weapon.transform.localRotation = Quaternion.identity;
-            weapon.transform.localScale    = new Vector3(0.1f, 0.1f, 0.1f);
 
             weapon.SetActive(true);
             foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
                 child.gameObject.SetActive(true);
 
             StripWeaponArmature(weapon);
+
+            // ── Auto-scale BEFORE parenting (uses per-level target size) ──
+            float targetSize = GetPlayerWeaponTargetSize(level);
+            EquipmentManager.ApplyAutoScale(weapon, targetSize);
+
+            // NOW parent to hand — worldPositionStays=true preserves scale
+            weapon.transform.SetParent(attachPoint, true);
+            weapon.transform.localPosition = Vector3.zero;
+            weapon.transform.localRotation = Quaternion.identity;
+
+            // Safety clamp: if lossy scale is still wildly off, force a sane value
+            Vector3 lossy = weapon.transform.lossyScale;
+            float minAxis = Mathf.Min(Mathf.Abs(lossy.x),
+                                      Mathf.Min(Mathf.Abs(lossy.y), Mathf.Abs(lossy.z)));
+            if (minAxis < 0.005f)
+            {
+                weapon.transform.localScale = Vector3.one * 0.1f;
+                Debug.LogWarning($"[PlayerController] Weapon '{weapon.name}' was near-zero scale " +
+                                 "— forced to (0.1, 0.1, 0.1).");
+            }
 
             WeaponBase weaponBase = weapon.GetComponent<WeaponBase>();
             if (weaponBase == null)

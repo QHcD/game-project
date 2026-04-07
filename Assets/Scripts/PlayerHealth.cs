@@ -5,7 +5,7 @@ using UnityEngine;
 /// After taking damage, if the player avoids further damage for 5 seconds,
 /// health smoothly regenerates back to 100.
 /// </summary>
-public class PlayerHealth : MonoBehaviour
+public class PlayerHealth : MonoBehaviour, IDamageable
 {
     [Header("Health")]
     public float maxHealth = 100f;
@@ -94,6 +94,15 @@ public class PlayerHealth : MonoBehaviour
         {
             GameManager.Instance.playerTookDamage = true;
         }
+    }
+
+    // ── IDamageable ─────────────────────────────────────────────────────────
+    public bool IsAlive => currentHealth > 0f;
+
+    public void ReceiveDamage(int amount, GameObject attackerRoot)
+    {
+        // Delegate to the existing float-based TakeDamage
+        TakeDamage((float)amount);
     }
 
     public void Heal(float amount)
