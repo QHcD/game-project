@@ -113,8 +113,8 @@ public class CameraController : MonoBehaviour
             return;
         }
 
-        float step = zoomLerpSpeed * Time.deltaTime;
-        zoomBlend = Mathf.MoveTowards(zoomBlend, _zoomTarget, step);
+        // Zoom permanently disabled — always use the default offset.
+        zoomBlend = 0f;
 
         Vector3 lookTarget = GetLookTarget();
         Vector3 currentOffset = GetCurrentOffset();
@@ -290,7 +290,9 @@ public class CameraController : MonoBehaviour
 
     public void SetZoom(bool isZooming)
     {
-        _zoomTarget = isZooming ? 1f : 0f;
+        // Zoom permanently disabled — camera stays at fixed OTS position.
+        // Method kept for API compatibility.
+        _zoomTarget = 0f;
     }
 
     /// <summary>Instantly snaps the camera to its desired position (call on scene load).</summary>
@@ -316,7 +318,8 @@ public class CameraController : MonoBehaviour
 
     private Vector3 GetCurrentOffset()
     {
-        return Vector3.Lerp(offset, zoomOffset, zoomBlend);
+        // Zoom disabled — always use the default OTS offset.
+        return offset;
     }
 
     private void UpdateFieldOfView(bool immediate = false)
@@ -324,9 +327,9 @@ public class CameraController : MonoBehaviour
         Camera cam = GetComponent<Camera>();
         if (cam == null) return;
 
-        float targetFov = Mathf.Lerp(defaultFieldOfView, zoomFieldOfView, zoomBlend);
+        // Zoom disabled — always use the default field of view.
         cam.fieldOfView = immediate
-            ? targetFov
-            : Mathf.Lerp(cam.fieldOfView, targetFov, zoomLerpSpeed * Time.deltaTime);
+            ? defaultFieldOfView
+            : Mathf.Lerp(cam.fieldOfView, defaultFieldOfView, 10f * Time.deltaTime);
     }
 }

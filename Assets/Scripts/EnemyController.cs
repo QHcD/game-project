@@ -763,11 +763,19 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     /// <summary>
     /// Free-for-All targeting with attacker retaliation.
+    /// Enemies prioritise fighting OTHER ENEMIES over the player.
     /// </summary>
     private Transform FindFfaTarget(float radius)
     {
+        // ── Scan via OverlapSphere (layer-masked) ────────────────────────────
         Collider[] hits = Physics.OverlapSphere(
             transform.position, radius, detectionMask, QueryTriggerInteraction.Ignore);
+
+        // If layer mask found nothing, retry with ALL layers so enemies always
+        // detect each other even when layer setup is incomplete.
+        if (hits.Length == 0)
+            hits = Physics.OverlapSphere(
+                transform.position, radius, ~0, QueryTriggerInteraction.Ignore);
 
         Transform nearestAggressorEnemy = null;
         float nearestAggressorDistance = float.MaxValue;
@@ -784,10 +792,14 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             if (hit == null) continue;
             if (hit.transform == transform) continue;
-            if (hit.transform.root == transform.root) continue;
+            // Only skip same-root if it's literally this gameObject
+            if (hit.gameObject == gameObject) continue;
 
             IDamageable dmg = hit.GetComponentInParent<IDamageable>();
             if (dmg == null || !dmg.IsAlive) continue;
+
+            // Skip if dmg IS this enemy
+            if (dmg.gameObject == gameObject) continue;
 
             int id = dmg.gameObject.GetInstanceID();
             if (evaluated.Contains(id)) continue;
@@ -804,9 +816,11 @@ public class EnemyController : MonoBehaviour, IDamageable
                     nearestEnemy = otherEnemy.transform;
                 }
 
+                // Check if that enemy is actively coming after US
                 bool isAggressingThisEnemy =
                     otherEnemy._target != null &&
-                    otherEnemy._target.root == transform.root &&
+                    (otherEnemy._target == transform ||
+                     otherEnemy._target.root == transform.root) &&
                     otherEnemy._state != State.Dead;
 
                 if (isAggressingThisEnemy && dist < nearestAggressorDistance)
@@ -847,16 +861,17 @@ public class EnemyController : MonoBehaviour, IDamageable
             _lastAttacker = null;
         }
 
-        // ── Priority 3: nearest enemy in range ───────────────────────────────
+        // ── Priority 3: nearest enemy in detection range ─────────────────────
         if (nearestEnemy != null)
             return nearestEnemy;
 
-        // ── Priority 4: nearest living enemy anywhere in the arena ──────────
+        // ── Priority 4: nearest living enemy ANYWHERE in the arena ───────────
+        //    (FindObjectsByType doesn't depend on layer masks or colliders)
         Transform arenaEnemy = FindNearestLivingEnemy();
         if (arenaEnemy != null)
             return arenaEnemy;
 
-        // ── Priority 5: player only when no enemy target exists ─────────────
+        // ── Priority 5: player ONLY when no enemy target is available ────────
         return playerTarget;
     }
 
@@ -957,18 +972,27 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private static Transform FindHandBone(GameObject body)
     {
-        // Name-based search (exact match, case-sensitive per list above)
-        foreach (string boneName in HandBoneNames)
-        {
-            Transform found = FindBoneByName(body.transform, boneName);
-            if (found != null) return found;
-        }
-        // Humanoid avatar fallback (works if the rig has a proper Avatar assigned)
+        // ── Priority 1: Humanoid avatar API (most reliable for ANY humanoid rig) ──
         Animator anim = body.GetComponentInChildren<Animator>(true);
         if (anim != null && anim.isHuman)
         {
             Transform bone = anim.GetBoneTransform(HumanBodyBones.RightHand);
-            if (bone != null) return bone;
+            if (bone != null)
+            {
+                Debug.Log($"[EnemyController] Hand bone found via Animator API: '{bone.name}'");
+                return bone;
+            }
+        }
+
+        // ── Priority 2: Name-based search (fallback for non-humanoid rigs) ──
+        foreach (string boneName in HandBoneNames)
+        {
+            Transform found = FindBoneByName(body.transform, boneName);
+            if (found != null)
+            {
+                Debug.Log($"[EnemyController] Hand bone found via name search: '{found.name}'");
+                return found;
+            }
         }
         return null;
     }
@@ -995,52 +1019,82 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         if (body == null) return;
 
-        Texture2D bodyTex = LoadFirstAvailableTexture(
-            "Textures/RoninTexture",
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit")
+                     ?? Shader.Find("Standard")
+                     ?? Shader.Find("Diffuse");
+        if (shader == null) return;
+
+        // Folders where Crosby/enemy textures live
+        string[] enemyTextureFolders = { "Enemy/textures/" };
+
+        // Fallback: load the best generic enemy texture
+        Texture2D fallbackTex = LoadFirstAvailableTexture(
             "Enemy/textures/mtl_c_usa_mp_seal6_gear_wt",
             "Enemy/textures/mtl_c_usa_mp_seal6_ass_vest_green_wt",
             "Enemy/textures/mtl_c_usa_mp_seal6_pants_1_green_wt",
             "Enemy/textures/mtl_c_usa_mp_seal6_helmet_wt",
             "Enemy/textures/mtl_c_usa_mp_seal6_bala_wt");
 
-        // Build a runtime material using the best available shader
-        Shader shader = Shader.Find("Universal Render Pipeline/Lit")
-                     ?? Shader.Find("Standard")
-                     ?? Shader.Find("Diffuse");
-        if (shader == null) return;
-
-        Material mat = new Material(shader) { name = "EnemyMat_Runtime" };
-
-        if (bodyTex != null)
-        {
-            if (mat.HasProperty("_BaseMap")) mat.SetTexture("_BaseMap", bodyTex);
-            if (mat.HasProperty("_MainTex")) mat.SetTexture("_MainTex", bodyTex);
-        }
-        else
-        {
-            // Warm tan fallback so they don't look white
-            Color tan = new Color(0.68f, 0.52f, 0.38f);
-            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", tan);
-            if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     tan);
-        }
-
-        // Replace only null / blank white material slots — leave good ones alone
         foreach (Renderer r in body.GetComponentsInChildren<Renderer>(true))
         {
             Material[] slots = r.sharedMaterials;
             bool changed = false;
             for (int i = 0; i < slots.Length; i++)
             {
-                if (IsBlankMaterial(slots[i])) { slots[i] = mat; changed = true; }
+                if (!IsBlankMaterial(slots[i])) continue;
+
+                // Try to match a texture to this material's name
+                string slotName = (slots[i] != null) ? slots[i].name : "";
+                Texture2D slotTex = TryLoadTextureForMaterial(slotName, enemyTextureFolders);
+                if (slotTex == null) slotTex = fallbackTex;
+
+                Material newMat = new Material(shader)
+                {
+                    name = string.IsNullOrEmpty(slotName) ? "EnemyMat_Runtime" : slotName + "_Fix"
+                };
+                if (slotTex != null)
+                {
+                    if (newMat.HasProperty("_BaseMap")) newMat.SetTexture("_BaseMap", slotTex);
+                    if (newMat.HasProperty("_MainTex")) newMat.SetTexture("_MainTex", slotTex);
+                }
+                else
+                {
+                    // Warm tan fallback so they don't look white
+                    Color tan = new Color(0.68f, 0.52f, 0.38f);
+                    if (newMat.HasProperty("_BaseColor")) newMat.SetColor("_BaseColor", tan);
+                    if (newMat.HasProperty("_Color"))     newMat.SetColor("_Color",     tan);
+                }
+                slots[i] = newMat;
+                changed = true;
             }
             if (changed) r.sharedMaterials = slots;
         }
+    }
+
+    /// <summary>
+    /// Given a material name (e.g. "mtl_c_usa_mp_seal6_gear_wt"),
+    /// try to find a matching texture in the enemy textures folder.
+    /// </summary>
+    private static Texture2D TryLoadTextureForMaterial(string matName, string[] folders)
+    {
+        if (string.IsNullOrEmpty(matName)) return null;
+        string clean = matName.Replace(" (Instance)", "").Trim();
+        if (string.IsNullOrEmpty(clean)) return null;
+
+        foreach (string folder in folders)
+        {
+            Texture2D tex;
+            tex = Resources.Load<Texture2D>(folder + clean);       if (tex != null) return tex;
+            tex = Resources.Load<Texture2D>(folder + clean + "_c"); if (tex != null) return tex;
+        }
+        return null;
     }
 
     private static bool IsBlankMaterial(Material m)
     {
         if (m == null) return true;
         if (m.name.StartsWith("Default-")) return true;
+        if (m.shader != null && m.shader.name == "Hidden/InternalErrorShader") return true;
         bool hasTexture = (m.HasProperty("_BaseMap") && m.GetTexture("_BaseMap") != null)
                        || (m.HasProperty("_MainTex") && m.GetTexture("_MainTex") != null);
         if (hasTexture) return false;

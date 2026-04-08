@@ -306,7 +306,7 @@ public class PlayerController : MonoBehaviour
         HandleActionInput();
         ApplyMovement();
         ApplyLook();
-        UpdateCameraZoom();
+        // UpdateCameraZoom removed — zoom is permanently disabled.
         UpdateHeadBob();
         UpdateCameraKick();
         UpdateCombatState();
@@ -329,8 +329,8 @@ public class PlayerController : MonoBehaviour
         moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
         moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, InputSmoothing * Time.deltaTime);
         lookInput = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
-        zoomHeld = (Mouse.current != null && Mouse.current.rightButton.isPressed)
-                || (Gamepad.current != null && Gamepad.current.leftTrigger.ReadValue() > 0.35f);
+        // Zoom disabled — camera is permanently fixed over-the-shoulder.
+        zoomHeld = false;
     }
 
     private void HandleActionInput()
@@ -494,11 +494,7 @@ public class PlayerController : MonoBehaviour
 
     private void UpdateCameraZoom()
     {
-        if (!isThirdPersonActive || runtimeThirdPersonCamera == null) return;
-
-        CameraController orbitCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
-        if (orbitCtrl != null)
-            orbitCtrl.SetZoom(zoomHeld);
+        // Zoom permanently disabled — camera stays at its default OTS offset.
     }
 
     private void UpdateCameraKick()
@@ -1050,12 +1046,10 @@ public class PlayerController : MonoBehaviour
 
         CameraController follow = camObj.AddComponent<CameraController>();
         follow.target           = transform;
-        follow.offset           = new Vector3(1.2f, 2.2f, -5.5f);  // OTS right-shoulder
-        follow.zoomOffset       = new Vector3(0.55f, 0.45f, -2.35f);
+        follow.offset           = new Vector3(1.2f, 2.2f, -5.5f);  // Fixed OTS right-shoulder
         follow.smoothSpeed      = 12f;
         follow.lookHeight       = 1.4f;
         follow.defaultFieldOfView = runtimeThirdPersonCamera.fieldOfView;
-        follow.zoomFieldOfView    = 52f;
         follow.lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
 
         thirdPersonCam = runtimeThirdPersonCamera;
@@ -1199,51 +1193,120 @@ public class PlayerController : MonoBehaviour
     {
         if (body == null) return;
 
-        Texture2D bodyTex = LoadFirstAvailableTexture(
-            "Textures/RoninTexture",
-            "Player/Ronin/textures/mp_ronin_torso_c.tga",
-            "Player/Ronin/textures/body_mp_western_ronin_4_1_lod1_c.tga",
-            "Player/Ronin/textures/mp_western_ronin_arm_r_c.tga",
-            "Player/Ronin/textures/mp_western_ronin_arm_l_edit_c.tga");
-
         Shader shader = Shader.Find("Universal Render Pipeline/Lit")
                      ?? Shader.Find("Standard")
                      ?? Shader.Find("Diffuse");
         if (shader == null) return;
 
-        Material mat = new Material(shader) { name = "PlayerMat_Runtime" };
+        // ── Step 1: Try to load existing .mat files from Ronin source ────────
+        Material prebuiltMat = LoadFirstAvailableMaterial(
+            "Player/Ronin/source/mp_ronin_torso",
+            "Player/Ronin/source/body_mp_western_ronin_4_1_lod1",
+            "Player/Ronin/source/mp_western_ronin_arm_r");
 
-        if (bodyTex != null)
-        {
-            // Assign texture to URP _BaseMap and legacy _MainTex
-            if (mat.HasProperty("_BaseMap")) mat.SetTexture("_BaseMap", bodyTex);
-            if (mat.HasProperty("_MainTex")) mat.SetTexture("_MainTex", bodyTex);
-        }
-        else
-        {
-            // Texture file missing — use warm skin tone so at least it's not white
-            Color tan = new Color(0.72f, 0.58f, 0.44f);
-            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", tan);
-            if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     tan);
-        }
+        // ── Step 2: Build per-slot replacement ───────────────────────────────
+        // For each blank material slot, try to find a matching texture by
+        // the material's own name, then fall back to a generic body texture.
+        string[] roninTextureFolders = {
+            "Player/Ronin/textures/",
+            "Player/Ronin/source/"
+        };
 
-        // Replace only blank/null/default-white slots — leave good materials alone
+        // Generic fallback texture (torso — most representative body part)
+        Texture2D fallbackTex = LoadFirstAvailableTexture(
+            "Player/Ronin/textures/body_mp_western_ronin_4_1_lod1_c.tga",
+            "Player/Ronin/textures/body_mp_western_ronin_4_1_lod1_c",
+            "Player/Ronin/textures/mp_ronin_torso_c.tga",
+            "Player/Ronin/textures/mp_ronin_torso_c",
+            "Player/Ronin/textures/mp_western_ronin_arm_r_c.tga",
+            "Player/Ronin/textures/mp_western_ronin_arm_r_c",
+            "Textures/RoninTexture");
+
         foreach (Renderer r in body.GetComponentsInChildren<Renderer>(true))
         {
             Material[] slots = r.sharedMaterials;
             bool changed = false;
             for (int i = 0; i < slots.Length; i++)
             {
-                if (IsBlankMaterial(slots[i])) { slots[i] = mat; changed = true; }
+                if (!IsBlankMaterial(slots[i])) continue;
+
+                // Try to find a per-slot texture matching this material's name
+                string slotName = (slots[i] != null) ? slots[i].name : "";
+                Texture2D slotTex = TryLoadTextureForMaterial(slotName, roninTextureFolders);
+
+                if (slotTex == null) slotTex = fallbackTex;
+
+                // If we have a prebuilt .mat and no specific texture, use the prebuilt
+                if (slotTex == null && prebuiltMat != null)
+                {
+                    slots[i] = prebuiltMat;
+                    changed = true;
+                    continue;
+                }
+
+                // Create a new URP material with the texture
+                Material newMat = new Material(shader)
+                {
+                    name = string.IsNullOrEmpty(slotName) ? "PlayerMat_Runtime" : slotName + "_Fix"
+                };
+                if (slotTex != null)
+                {
+                    if (newMat.HasProperty("_BaseMap")) newMat.SetTexture("_BaseMap", slotTex);
+                    if (newMat.HasProperty("_MainTex")) newMat.SetTexture("_MainTex", slotTex);
+                }
+                else
+                {
+                    // No texture at all — warm skin tone so at least it's not white
+                    Color tan = new Color(0.72f, 0.58f, 0.44f);
+                    if (newMat.HasProperty("_BaseColor")) newMat.SetColor("_BaseColor", tan);
+                    if (newMat.HasProperty("_Color"))     newMat.SetColor("_Color",     tan);
+                }
+                slots[i] = newMat;
+                changed = true;
             }
             if (changed) r.sharedMaterials = slots;
         }
+    }
+
+    /// <summary>
+    /// Given a material's name (e.g. "mp_ronin_torso"), tries to find a
+    /// matching color texture in known folders (e.g. "mp_ronin_torso_c.tga").
+    /// </summary>
+    private static Texture2D TryLoadTextureForMaterial(string matName, string[] folders)
+    {
+        if (string.IsNullOrEmpty(matName)) return null;
+
+        // Strip common Unity suffixes
+        string clean = matName.Replace(" (Instance)", "").Replace("_Fix", "").Trim();
+        if (string.IsNullOrEmpty(clean)) return null;
+
+        // Try "{folder}{name}_c.tga", "{folder}{name}_c", "{folder}{name}"
+        foreach (string folder in folders)
+        {
+            Texture2D tex;
+            tex = Resources.Load<Texture2D>(folder + clean + "_c.tga");  if (tex != null) return tex;
+            tex = Resources.Load<Texture2D>(folder + clean + "_c");       if (tex != null) return tex;
+            tex = Resources.Load<Texture2D>(folder + clean);              if (tex != null) return tex;
+        }
+        return null;
+    }
+
+    private static Material LoadFirstAvailableMaterial(params string[] paths)
+    {
+        for (int i = 0; i < paths.Length; i++)
+        {
+            Material m = Resources.Load<Material>(paths[i]);
+            if (m != null) return m;
+        }
+        return null;
     }
 
     private static bool IsBlankMaterial(Material m)
     {
         if (m == null) return true;
         if (m.name.StartsWith("Default-")) return true;
+        // Check if shader is missing/pink (URP project with Standard-only mat)
+        if (m.shader != null && m.shader.name == "Hidden/InternalErrorShader") return true;
         bool hasTexture = (m.HasProperty("_BaseMap") && m.GetTexture("_BaseMap") != null)
                        || (m.HasProperty("_MainTex") && m.GetTexture("_MainTex") != null);
         if (hasTexture) return false;
@@ -1351,19 +1414,29 @@ public class PlayerController : MonoBehaviour
 
     private static Transform FindPlayerHandBone(GameObject body)
     {
-        foreach (string boneName in PlayerHandBoneNames)
-        {
-            Transform found = FindBoneExact(body.transform, boneName);
-            if (found != null) return found;
-        }
-
-        // Humanoid avatar fallback
+        // ── Priority 1: Humanoid avatar API (most reliable for ANY humanoid rig) ──
         Animator anim = body.GetComponentInChildren<Animator>(true);
         if (anim != null && anim.isHuman)
         {
             Transform bone = anim.GetBoneTransform(HumanBodyBones.RightHand);
-            if (bone != null) return bone;
+            if (bone != null)
+            {
+                Debug.Log($"[PlayerController] Hand bone found via Animator API: '{bone.name}'");
+                return bone;
+            }
         }
+
+        // ── Priority 2: Name-based search (fallback for non-humanoid rigs) ──
+        foreach (string boneName in PlayerHandBoneNames)
+        {
+            Transform found = FindBoneExact(body.transform, boneName);
+            if (found != null)
+            {
+                Debug.Log($"[PlayerController] Hand bone found via name search: '{found.name}'");
+                return found;
+            }
+        }
+
         return null;
     }
 
@@ -1472,6 +1545,20 @@ public class PlayerController : MonoBehaviour
             weapon.transform.localPosition = loadout.PlayerLocalPosition;
             weapon.transform.localRotation = Quaternion.Euler(loadout.PlayerLocalEuler);
             ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
+
+            // Safety: if scale ended up near-zero, force a visible fallback
+            Vector3 lossyFinal = weapon.transform.lossyScale;
+            float minAxis = Mathf.Min(Mathf.Abs(lossyFinal.x),
+                            Mathf.Min(Mathf.Abs(lossyFinal.y), Mathf.Abs(lossyFinal.z)));
+            if (minAxis < 0.005f)
+            {
+                weapon.transform.localScale = Vector3.one * 0.1f;
+                Debug.LogWarning($"[PlayerController] Weapon near-zero scale — forced to (0.1,0.1,0.1).");
+            }
+
+            Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{attachPoint.name}' " +
+                      $"targetSize={loadout.TargetSize} localScale={weapon.transform.localScale} " +
+                      $"lossyScale={weapon.transform.lossyScale}");
 
             WeaponBase weaponBase = weapon.GetComponent<WeaponBase>();
             if (weaponBase == null)
