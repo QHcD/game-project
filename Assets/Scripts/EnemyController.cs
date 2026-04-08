@@ -569,6 +569,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         GameObject animatorHost = _anim.gameObject;
         if (animatorHost.GetComponent<AnimationEventSink>() == null)
             animatorHost.AddComponent<AnimationEventSink>();
+
+        if (animatorHost.GetComponent<MeleeAnimationEventSink>() == null)
+            animatorHost.AddComponent<MeleeAnimationEventSink>();
     }
 
     private void AssignMaterial()
@@ -879,7 +882,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (weaponPrefab == null) return;
 
-        // Strict hand socketing: Humanoid RightHand first.
+        // ── 1. Find right-hand bone ─────────────────────────────────────────
         Transform handBone = weaponAttachPoint;
         if (handBone == null && _anim != null && _anim.isHuman)
             handBone = _anim.GetBoneTransform(HumanBodyBones.RightHand);
@@ -889,54 +892,87 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (handBone == null)
         {
             handBone = transform;
-            Debug.LogWarning($"[EnemyController] '{name}': bip_hand_R not found. " +
+            Debug.LogWarning($"[EnemyController] '{name}': Right hand bone not found. " +
                              "Weapon attached to root. Drag the hand bone into 'Weapon Attach Point'.");
         }
 
-        // ── 2. Instantiate WITHOUT parenting first (avoids inherited scale) ──
+        // ── 2. Instantiate unparented (clean world-space bounds) ────────────
         equippedWeaponObject = Instantiate(weaponPrefab);
         equippedWeaponObject.name = "WeaponModel";
-
-        // ── 3. Parent to hand bone with worldPositionStays=false ─────────────
-        equippedWeaponObject.transform.SetParent(handBone, worldPositionStays: false);
-
-        // STRICT: force weapon into the palm — overrides all rig/import scale inheritance.
-        equippedWeaponObject.transform.localPosition = Vector3.zero;
-        equippedWeaponObject.transform.localRotation = Quaternion.identity;
-        equippedWeaponObject.transform.localScale    = Vector3.one * 0.1f;
         equippedWeaponObject.SetActive(true);
 
-        // ── 6. Activate every child renderer ─────────────────────────────────
         foreach (Transform t in equippedWeaponObject.GetComponentsInChildren<Transform>(true))
             t.gameObject.SetActive(true);
 
-        // Disable physics so weapon never flies/drifts away.
+        // ── 3. Measure bounds at unit scale ─────────────────────────────────
+        equippedWeaponObject.transform.localScale = Vector3.one;
+        float weaponExtent = GetMaxRendererExtent(equippedWeaponObject);
+        if (weaponExtent < 0.001f) weaponExtent = 1f;
+
+        // ── 4. Parent to hand bone, reset local transform ───────────────────
+        equippedWeaponObject.transform.SetParent(handBone, worldPositionStays: false);
+        equippedWeaponObject.transform.localPosition = Vector3.zero;
+        equippedWeaponObject.transform.localRotation = Quaternion.identity;
+
+        // ── 5. Compute localScale so weapon reaches desired WORLD size ──────
+        float uniformScale = targetSize / weaponExtent;
+        Vector3 parentLossy = handBone.lossyScale;
+        equippedWeaponObject.transform.localScale = new Vector3(
+            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
+            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
+            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
+
+        Debug.Log($"[EnemyController] '{name}' weapon → hand '{handBone.name}' " +
+                  $"targetSize={targetSize} extent={weaponExtent} " +
+                  $"localScale={equippedWeaponObject.transform.localScale} " +
+                  $"lossyScale={equippedWeaponObject.transform.lossyScale}");
+
+        // ── 6. Disable physics, embedded animators, colliders ───────────────
         foreach (Rigidbody rb in equippedWeaponObject.GetComponentsInChildren<Rigidbody>(true))
         {
-            rb.isKinematic = true;
-            rb.useGravity = false;
-            rb.linearVelocity = Vector3.zero;
+            rb.isKinematic     = true;
+            rb.useGravity      = false;
+            rb.linearVelocity  = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
         }
 
-        // Disable weapon animators so they don't apply their own motion on top of hand socketing.
         foreach (Animator weaponAnimator in equippedWeaponObject.GetComponentsInChildren<Animator>(true))
             weaponAnimator.enabled = false;
 
-        // Disable colliders to prevent pushing/physics conflicts with enemy body.
         foreach (Collider col in equippedWeaponObject.GetComponentsInChildren<Collider>(true))
             col.enabled = false;
 
-        // ── 7. Wire WeaponBase ────────────────────────────────────────────────
+        // ── 7. Wire WeaponBase ──────────────────────────────────────────────
         WeaponBase wb = equippedWeaponObject.GetComponent<WeaponBase>();
         if (wb == null) wb = equippedWeaponObject.AddComponent<WeaponBase>();
         wb.damage      = (int)attackDamage;
         wb.attackRange = attackRadius;
         wb.isRanged    = false;
 
-        // ── 8. Ensure renderers are visible (URP shadow-caster fix) ──────────
+        // ── 8. Wire WeaponHitbox ────────────────────────────────────────────
+        WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
+        if (hitbox == null) hitbox = equippedWeaponObject.AddComponent<WeaponHitbox>();
+        hitbox.damage = (int)attackDamage;
+
+        // ── 9. Visibility fix (URP) ─────────────────────────────────────────
         if (equippedWeaponObject.GetComponent<WeaponVisibilityFix>() == null)
             equippedWeaponObject.AddComponent<WeaponVisibilityFix>();
+    }
+
+    /// <summary>
+    /// Returns the largest axis of the combined renderer bounds for a weapon GameObject.
+    /// Must be called BEFORE parenting (at world scale 1,1,1) for accurate results.
+    /// </summary>
+    private static float GetMaxRendererExtent(GameObject obj)
+    {
+        Renderer[] renderers = obj.GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0) return 0f;
+
+        Bounds combined = renderers[0].bounds;
+        for (int i = 1; i < renderers.Length; i++)
+            combined.Encapsulate(renderers[i].bounds);
+
+        return Mathf.Max(combined.size.x, combined.size.y, combined.size.z);
     }
 
     // ── Bone search: "bip_hand_R" first, then common fallback names ──────────

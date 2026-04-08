@@ -1508,42 +1508,117 @@ public class PlayerController : MonoBehaviour
             : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
         WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
 
-        Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
-        Transform handBone = null;
-        if (bodyAnimator != null && bodyAnimator.isHuman)
-            handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
-
-        Transform attachPoint = handBone != null ? handBone : body.transform;
-        equippedWeaponObject = BuildWeaponModel(level, attachPoint, loadout);
-
-        if (equippedWeaponObject != null)
+        // ── 1. Load prefab with guaranteed fallback chain ───────────────────
+        float finalTargetSize;
+        GameObject prefab = WeaponLoadoutCatalog.LoadPrefabWithFallback(level, out finalTargetSize);
+        if (prefab == null)
         {
-            // STRICT socket fix: override whatever scale/position BuildWeaponModel computed
-            // so the weapon always sits in the palm regardless of rig import scale.
-            equippedWeaponObject.transform.localPosition = Vector3.zero;
-            equippedWeaponObject.transform.localRotation = Quaternion.identity;
-            equippedWeaponObject.transform.localScale    = Vector3.one * 0.1f;
-
-            equippedWeaponObject.SetActive(true);
-
-            foreach (Transform t in equippedWeaponObject.GetComponentsInChildren<Transform>(true))
-                t.gameObject.SetActive(true);
-
-            // Disable embedded weapon animators to avoid drifting/flying meshes.
-            foreach (Animator weaponAnimator in equippedWeaponObject.GetComponentsInChildren<Animator>(true))
-                weaponAnimator.enabled = false;
-
-            foreach (Rigidbody rb in equippedWeaponObject.GetComponentsInChildren<Rigidbody>(true))
-            {
-                rb.isKinematic = true;
-                rb.useGravity = false;
-                rb.linearVelocity = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
-            }
-
-            foreach (Collider col in equippedWeaponObject.GetComponentsInChildren<Collider>(true))
-                col.enabled = false;
+            Debug.LogWarning($"[PlayerController] All weapon sources exhausted for level {level}, using primitive.");
+            Transform fallbackBone = FindPlayerHandBone(body) ?? body.transform;
+            equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackBone, loadout);
+            return;
         }
+
+        // ── 2. Find right-hand bone ─────────────────────────────────────────
+        Transform handBone = FindPlayerHandBone(body);
+        if (handBone == null)
+        {
+            Debug.LogWarning("[PlayerController] Right hand bone not found, attaching to body root.");
+            handBone = body.transform;
+        }
+
+        // ── 3. Instantiate (unparented to get clean world-space bounds) ─────
+        GameObject weapon = Instantiate(prefab);
+        weapon.name = "WeaponModel";
+        weapon.SetActive(true);
+        SetLayerRecursive(weapon, gameObject.layer);
+
+        foreach (Transform t in weapon.GetComponentsInChildren<Transform>(true))
+            t.gameObject.SetActive(true);
+
+        // NOTE: StripWeaponArmature removed — it was destroying mesh nodes
+        // inside weapons whose hierarchy uses "Armature" as the mesh parent.
+        // Embedded animators are disabled in step 7 instead, which is safe.
+
+        // ── 4. Measure bounds at unit scale ─────────────────────────────────
+        weapon.transform.localScale = Vector3.one;
+        float weaponExtent = GetMaxRendererExtent(weapon);
+        if (weaponExtent < 0.001f) weaponExtent = 1f;
+
+        // ── 5. Parent to hand, reset local transform ────────────────────────
+        weapon.transform.SetParent(handBone, worldPositionStays: false);
+        weapon.transform.localPosition = Vector3.zero;
+        weapon.transform.localRotation = Quaternion.identity;
+
+        // ── 6. Compute localScale so weapon reaches desired WORLD size ──────
+        float desiredWorldSize = finalTargetSize;
+        float uniformScale = desiredWorldSize / weaponExtent;
+        Vector3 parentLossy = handBone.lossyScale;
+        weapon.transform.localScale = new Vector3(
+            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
+            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
+            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
+
+        Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
+                  $"targetSize={desiredWorldSize} extent={weaponExtent} " +
+                  $"localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
+
+        // ── 7. Disable physics, embedded animators, colliders ───────────────
+        foreach (Animator weaponAnimator in weapon.GetComponentsInChildren<Animator>(true))
+            weaponAnimator.enabled = false;
+
+        foreach (Rigidbody rb in weapon.GetComponentsInChildren<Rigidbody>(true))
+        {
+            rb.isKinematic = true;
+            rb.useGravity  = false;
+            rb.linearVelocity  = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+
+        foreach (Collider col in weapon.GetComponentsInChildren<Collider>(true))
+            col.enabled = false;
+
+        // ── 8. Wire WeaponBase ──────────────────────────────────────────────
+        WeaponBase wb = weapon.GetComponent<WeaponBase>();
+        if (wb == null) wb = weapon.AddComponent<WeaponBase>();
+        wb.weaponName  = equippedWeaponName;
+        wb.damage      = attackDamage;
+        wb.attackRange = attackDistance;
+        wb.isRanged    = false;
+
+        // ── 9. Wire WeaponHitbox ────────────────────────────────────────────
+        WeaponHitbox hitbox = weapon.GetComponent<WeaponHitbox>();
+        if (hitbox == null) hitbox = weapon.AddComponent<WeaponHitbox>();
+        hitbox.damage = attackDamage;
+
+        // ── 10. Visibility fix (URP) ────────────────────────────────────────
+        if (weapon.GetComponent<WeaponVisibilityFix>() == null)
+            weapon.AddComponent<WeaponVisibilityFix>();
+
+        // ── 11. Refresh melee animation event sink cache ────────────────────
+        if (thirdPersonBody != null)
+        {
+            MeleeAnimationEventSink sink = thirdPersonBody.GetComponentInChildren<MeleeAnimationEventSink>(true);
+            if (sink != null) sink.ClearCache();
+        }
+
+        equippedWeaponObject = weapon;
+    }
+
+    /// <summary>
+    /// Returns the largest axis of the combined renderer bounds for a weapon GameObject.
+    /// Must be called BEFORE parenting (at world scale 1,1,1) for accurate results.
+    /// </summary>
+    private static float GetMaxRendererExtent(GameObject obj)
+    {
+        Renderer[] renderers = obj.GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0) return 0f;
+
+        Bounds combined = renderers[0].bounds;
+        for (int i = 1; i < renderers.Length; i++)
+            combined.Encapsulate(renderers[i].bounds);
+
+        return Mathf.Max(combined.size.x, combined.size.y, combined.size.z);
     }
 
     private Transform FindBone(Transform root, string boneName)

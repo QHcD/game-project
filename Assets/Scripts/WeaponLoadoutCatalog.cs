@@ -52,19 +52,55 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 DefaultEnemyLocalPosition = new Vector3(0f, 0.05f, 0f);
     private static readonly Vector3 DefaultEnemyLocalEuler = new Vector3(-90f, 0f, 0f);
 
+    // ── Guaranteed fallback paths (tried in order when the level weapon is missing) ──
+    private static readonly string[] FallbackPaths =
+    {
+        "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife",
+        "Weapons/KnuckleDuster",
+        "Weapons/BlinkDaggerPack/_PrefabsDaggers/Dagger1_3_5",
+        "Weapons/BlinkDaggerPack/Meshes_Dagger/Dagger1_3",
+    };
+
+    /// <summary>
+    /// Loads the weapon prefab for the given level with a guaranteed fallback chain.
+    /// If the level's weapon is missing, tries: Level 1 knife → KnuckleDuster → BlinkDagger.
+    /// <paramref name="targetSize"/> is set to the appropriate size for whichever weapon loaded.
+    /// </summary>
+    public static GameObject LoadPrefabWithFallback(int level, out float targetSize)
+    {
+        WeaponLoadout loadout = Get(level);
+        GameObject prefab = loadout.LoadPrefab();
+        if (prefab != null)
+        {
+            targetSize = loadout.TargetSize;
+            return prefab;
+        }
+
+        Debug.LogWarning($"[WeaponLoadoutCatalog] Level {level} weapon missing — trying fallbacks.");
+
+        for (int i = 0; i < FallbackPaths.Length; i++)
+        {
+            prefab = Resources.Load<GameObject>(FallbackPaths[i]);
+            if (prefab != null)
+            {
+                Debug.LogWarning($"[WeaponLoadoutCatalog] Fallback loaded: '{FallbackPaths[i]}'");
+                targetSize = 0.30f; // safe knife-sized default
+                return prefab;
+            }
+        }
+
+        Debug.LogError($"[WeaponLoadoutCatalog] ALL weapon fallbacks failed for level {level}!");
+        targetSize = 0.30f;
+        return null;
+    }
+
     public static WeaponLoadout Get(int level)
     {
         switch (Mathf.Clamp(level, 1, 16))
         {
             case 1:
-                // TacticalKnife FBX removed — LoadPrefab returns null, triggering
-                // the primitive-knife fallback in BuildWeaponModel.
-                return Create(
-                    0.38f,
-                    Vector3.zero,
-                    Vector3.zero,
-                    DefaultEnemyLocalPosition,
-                    DefaultEnemyLocalEuler);
+                return Create(0.32f,
+                    "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife");
             case 2:
                 return Create(0.95f,
                     "Weapons/Imported/Katana(level2)/source/Katana_low",
