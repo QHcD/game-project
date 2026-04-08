@@ -145,6 +145,7 @@ public class PlayerController : MonoBehaviour
     private bool wasMoving;
     private bool jumpRequested;
     private const float InputSmoothing = 10f;
+    private bool zoomHeld;
 
     // Camera
     private float cameraPitch;
@@ -305,6 +306,7 @@ public class PlayerController : MonoBehaviour
         HandleActionInput();
         ApplyMovement();
         ApplyLook();
+        UpdateCameraZoom();
         UpdateHeadBob();
         UpdateCameraKick();
         UpdateCombatState();
@@ -327,6 +329,8 @@ public class PlayerController : MonoBehaviour
         moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
         moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, InputSmoothing * Time.deltaTime);
         lookInput = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
+        zoomHeld = (Mouse.current != null && Mouse.current.rightButton.isPressed)
+                || (Gamepad.current != null && Gamepad.current.leftTrigger.ReadValue() > 0.35f);
     }
 
     private void HandleActionInput()
@@ -486,6 +490,15 @@ public class PlayerController : MonoBehaviour
     private void UpdateHeadBob()
     {
         // Head-bob was a first-person effect. Third-person only — nothing to do.
+    }
+
+    private void UpdateCameraZoom()
+    {
+        if (!isThirdPersonActive || runtimeThirdPersonCamera == null) return;
+
+        CameraController orbitCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
+        if (orbitCtrl != null)
+            orbitCtrl.SetZoom(zoomHeld);
     }
 
     private void UpdateCameraKick()
@@ -1038,8 +1051,12 @@ public class PlayerController : MonoBehaviour
         CameraController follow = camObj.AddComponent<CameraController>();
         follow.target           = transform;
         follow.offset           = new Vector3(1.2f, 2.2f, -5.5f);  // OTS right-shoulder
+        follow.zoomOffset       = new Vector3(0.55f, 0.45f, -2.35f);
         follow.smoothSpeed      = 12f;
         follow.lookHeight       = 1.4f;
+        follow.defaultFieldOfView = runtimeThirdPersonCamera.fieldOfView;
+        follow.zoomFieldOfView    = 52f;
+        follow.lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
 
         thirdPersonCam = runtimeThirdPersonCamera;
     }

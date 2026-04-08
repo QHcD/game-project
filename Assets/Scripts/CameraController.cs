@@ -3,15 +3,8 @@ using UnityEngine;
 /// <summary>
 /// Over-the-shoulder third-person camera.
 ///
-/// Changes from original:
-///   • Offset is now right-shoulder (X = +1.2) instead of dead-centre.
-///   • No zoom logic — zoom has been removed entirely.
-///   • LookAt targets the character's spine/chest bone so the body is always
-///     centred on screen instead of empty space ahead of the player.
-///   • Near clip plane is set to 0.01 in Start() to stop the camera from
-///     rendering the inside of the character mesh.
-///   • Wall collision uses a SphereCast so the camera never enters buildings
-///     or terrain; it snaps inward instantly and eases outward smoothly.
+/// The camera orbits around a live upper-body bone pivot instead of the player
+/// root, so zooming cannot drift toward empty space ahead of the character.
 /// </summary>
 public class CameraController : MonoBehaviour
 {
@@ -21,9 +14,11 @@ public class CameraController : MonoBehaviour
 
     // ── Over-the-Shoulder offset ─────────────────────────────────────────────
     [Header("OTS Offset")]
-    [Tooltip("Camera position relative to the player in local (orbit) space.\n" +
-             "X +1.2 = right shoulder, Y = height above pivot, Z = distance behind.")]
+    [Tooltip("Default camera position in local orbit space around the look target.")]
     public Vector3 offset = new Vector3(1.2f, 2.2f, -5.5f);
+
+    [Tooltip("Tighter over-the-shoulder offset used while zooming.")]
+    public Vector3 zoomOffset = new Vector3(0.55f, 0.45f, -2.35f);
 
     [Tooltip("Smooth-follow speed. Higher = snappier.")]
     public float smoothSpeed = 12f;
@@ -31,10 +26,31 @@ public class CameraController : MonoBehaviour
     // Vertical pitch (degrees) — set each frame by PlayerController.ApplyLook
     [HideInInspector] public float pitch = 0f;
 
+    [Range(0f, 1f)]
+    [Tooltip("Current zoom blend. 0 = default camera, 1 = fully zoomed.")]
+    [SerializeField] private float zoomBlend;
+
     // ── Look-at height ───────────────────────────────────────────────────────
     [Header("Look-At")]
     [Tooltip("World-space height to add to the player position when no spine bone is found.")]
     public float lookHeight = 1.4f;
+
+    [Tooltip("Extra local offset applied from the resolved look bone.")]
+    public Vector3 lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
+
+    [Tooltip("How quickly the orbit pivot follows the target bone.")]
+    public float lookTargetSmoothSpeed = 20f;
+
+    // ── Zoom ────────────────────────────────────────────────────────────────
+    [Header("Zoom")]
+    [Tooltip("Default field of view when not zooming.")]
+    public float defaultFieldOfView = 70f;
+
+    [Tooltip("Field of view while zooming.")]
+    public float zoomFieldOfView = 52f;
+
+    [Tooltip("How quickly zoom offset and FOV blend in/out.")]
+    public float zoomLerpSpeed = 10f;
 
     // ── Wall / Mesh Collision ────────────────────────────────────────────────
     [Header("Wall Collision")]
@@ -60,8 +76,11 @@ public class CameraController : MonoBehaviour
 
     // ── Private ──────────────────────────────────────────────────────────────
     private float     _currentDistance;
-    private float     _maxDistance;
-    private Transform _lookAtBone;   // cached spine bone, found once
+    private float     _zoomTarget;
+    private Vector3   _smoothedLookTarget;
+    private bool      _lookTargetInitialized;
+    private Transform _lookAtBone;
+    private Animator  _cachedAnimator;
 
     // ════════════════════════════════════════════════════════════════════════
     //  LIFECYCLE
@@ -69,13 +88,15 @@ public class CameraController : MonoBehaviour
 
     private void Start()
     {
-        _maxDistance     = offset.magnitude;
-        _currentDistance = _maxDistance;
-
         // Force near-clip to 0.01 so the camera never renders the inside of
         // the character mesh, even when pulled very close.
         Camera cam = GetComponent<Camera>();
         if (cam != null) cam.nearClipPlane = 0.01f;
+
+        if (cam != null)
+            defaultFieldOfView = cam.fieldOfView;
+
+        _currentDistance = GetCurrentOffset().magnitude;
     }
 
     private void LateUpdate()
@@ -92,21 +113,29 @@ public class CameraController : MonoBehaviour
             return;
         }
 
+        float step = zoomLerpSpeed * Time.deltaTime;
+        zoomBlend = Mathf.MoveTowards(zoomBlend, _zoomTarget, step);
+
+        Vector3 lookTarget = GetLookTarget();
+        Vector3 currentOffset = GetCurrentOffset();
+
         // ── Build orbit rotation ─────────────────────────────────────────────
         // Horizontal from the player's Y rotation, vertical from mouse pitch.
         Quaternion orbitRot     = Quaternion.Euler(pitch, target.eulerAngles.y, 0f);
-        Vector3    desiredPos   = target.position + orbitRot * offset;
+        Vector3    desiredPos   = lookTarget + orbitRot * currentOffset;
 
         // ── Resolve wall collision ───────────────────────────────────────────
         if (enableCollision)
-            desiredPos = ResolveCollision(desiredPos, orbitRot);
+            desiredPos = ResolveCollision(desiredPos, orbitRot, lookTarget, currentOffset);
 
         // ── Smooth follow ────────────────────────────────────────────────────
         transform.position = Vector3.Lerp(transform.position, desiredPos,
                                           smoothSpeed * Time.deltaTime);
 
+        UpdateFieldOfView();
+
         // ── Look at spine bone (never at empty space ahead of the player) ────
-        transform.LookAt(GetLookTarget());
+        transform.LookAt(lookTarget);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -117,15 +146,18 @@ public class CameraController : MonoBehaviour
     /// SphereCasts from chest height toward the desired camera position.
     /// If the cast hits a wall the camera is pulled in. Eases back out when clear.
     /// </summary>
-    private Vector3 ResolveCollision(Vector3 desiredPos, Quaternion orbitRot)
+    private Vector3 ResolveCollision(Vector3 desiredPos, Quaternion orbitRot, Vector3 lookTarget, Vector3 currentOffset)
     {
-        // Cast origin at roughly chest height so the sphere starts inside the body
-        Vector3 castOrigin = target.position + Vector3.up * 1.2f;
+        Vector3 fallbackCastOrigin = target.position + Vector3.up * 1.2f;
+        Vector3 castOrigin = Vector3.Lerp(fallbackCastOrigin, lookTarget, 0.85f);
         Vector3 castDir    = desiredPos - castOrigin;
         float   castDist   = castDir.magnitude;
-        castDir.Normalize();
+        if (castDist <= 0.001f)
+            return desiredPos;
 
-        float targetDist = _maxDistance;
+        castDir /= castDist;
+
+        float targetDist = castDist;
 
         if (Physics.SphereCast(castOrigin, collisionRadius, castDir,
                                out RaycastHit hit, castDist,
@@ -143,7 +175,7 @@ public class CameraController : MonoBehaviour
                                            recoverySpeed * Time.deltaTime);
 
         // Rebuild position along the same orbit direction at the clamped distance
-        Vector3 offsetDir = (orbitRot * offset).normalized;
+        Vector3 offsetDir = (orbitRot * currentOffset).normalized;
         return castOrigin + offsetDir * _currentDistance;
     }
 
@@ -155,25 +187,49 @@ public class CameraController : MonoBehaviour
     {
         if (target == null) return transform.position + transform.forward * 5f;
 
-        // Cache the spine bone — re-search if the body was respawned
-        if (_lookAtBone == null)
-            _lookAtBone = FindSpineBone(target);
+        Transform resolvedBone = ResolveLookBone(target);
+        Vector3 rawTarget = resolvedBone != null
+            ? resolvedBone.TransformPoint(lookTargetLocalOffset)
+            : target.position + Vector3.up * lookHeight;
 
-        if (_lookAtBone != null)
-            return _lookAtBone.position;
+        if (!_lookTargetInitialized)
+        {
+            _smoothedLookTarget = rawTarget;
+            _lookTargetInitialized = true;
+        }
+        else
+        {
+            _smoothedLookTarget = Vector3.Lerp(
+                _smoothedLookTarget,
+                rawTarget,
+                lookTargetSmoothSpeed * Time.deltaTime);
+        }
 
-        // Fallback: fixed height above player pivot (no look-ahead drift)
-        return target.position + Vector3.up * lookHeight;
+        return _smoothedLookTarget;
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  BONE HELPERS
     // ════════════════════════════════════════════════════════════════════════
 
-    private static Transform FindSpineBone(Transform root)
+    private Transform ResolveLookBone(Transform root)
+    {
+        Animator animator = root != null ? root.GetComponentInChildren<Animator>(true) : null;
+        if (animator != _cachedAnimator)
+        {
+            _cachedAnimator = animator;
+            _lookAtBone = null;
+        }
+
+        if (_lookAtBone == null || !IsChildOf(_lookAtBone, root))
+            _lookAtBone = FindLookBone(root, animator);
+
+        return _lookAtBone;
+    }
+
+    private static Transform FindLookBone(Transform root, Animator anim)
     {
         // ── Pass 1: Humanoid avatar API (works for Ronin / Crosby / Mixamo) ──
-        Animator anim = root.GetComponentInChildren<Animator>(true);
         if (anim != null && anim.isHuman)
         {
             Transform b;
@@ -185,11 +241,14 @@ public class CameraController : MonoBehaviour
 
         // ── Pass 2: Name-based search — covers non-humanoid / Generic rigs ───
         string[] names = {
-            "bip_spine_02", "bip_spine_1", "bip_spine",
-            "spine_02",     "Spine2",       "Spine1",  "Spine",
-            "j_spine_up",   "j_spine",
-            "mixamorig:Spine2", "mixamorig:Spine1", "mixamorig:Spine",
-            "Head",         "head",
+            "bip_spine_02", "Bip_Spine_02", "bip_spine2", "bip_spine_01",
+            "bip_spine_1",  "bip_spine",
+            "spine_02",     "spine2",       "Spine2",      "spine_01",
+            "Spine1",       "Spine",
+            "j_spine4",     "j_spineupper", "j_spine_up",  "j_spine",
+            "B-chest",      "B-spine",      "mixamorig:Spine2",
+            "mixamorig:Spine1", "mixamorig:Spine",
+            "j_head",       "Head",         "head",
         };
         foreach (string n in names)
         {
@@ -210,23 +269,64 @@ public class CameraController : MonoBehaviour
         return null;
     }
 
+    private static bool IsChildOf(Transform child, Transform potentialRoot)
+    {
+        if (child == null || potentialRoot == null) return false;
+
+        Transform current = child;
+        while (current != null)
+        {
+            if (current == potentialRoot)
+                return true;
+            current = current.parent;
+        }
+
+        return false;
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     //  PUBLIC UTILS
     // ════════════════════════════════════════════════════════════════════════
+
+    public void SetZoom(bool isZooming)
+    {
+        _zoomTarget = isZooming ? 1f : 0f;
+    }
 
     /// <summary>Instantly snaps the camera to its desired position (call on scene load).</summary>
     public void SnapToTarget()
     {
         if (target == null) return;
-        _maxDistance     = offset.magnitude;
-        _currentDistance = _maxDistance;
 
+        _lookTargetInitialized = false;
+        Vector3 lookTarget = GetLookTarget();
+        Vector3 currentOffset = GetCurrentOffset();
         Quaternion orbitRot   = Quaternion.Euler(pitch, target.eulerAngles.y, 0f);
-        Vector3    desiredPos = target.position + orbitRot * offset;
+        Vector3    desiredPos = lookTarget + orbitRot * currentOffset;
         if (enableCollision)
-            desiredPos = ResolveCollision(desiredPos, orbitRot);
+            desiredPos = ResolveCollision(desiredPos, orbitRot, lookTarget, currentOffset);
 
         transform.position = desiredPos;
-        transform.LookAt(GetLookTarget());
+        Vector3 fallbackCastOrigin = target.position + Vector3.up * 1.2f;
+        Vector3 castOrigin = Vector3.Lerp(fallbackCastOrigin, lookTarget, 0.85f);
+        _currentDistance = Vector3.Distance(castOrigin, desiredPos);
+        UpdateFieldOfView(immediate: true);
+        transform.LookAt(lookTarget);
+    }
+
+    private Vector3 GetCurrentOffset()
+    {
+        return Vector3.Lerp(offset, zoomOffset, zoomBlend);
+    }
+
+    private void UpdateFieldOfView(bool immediate = false)
+    {
+        Camera cam = GetComponent<Camera>();
+        if (cam == null) return;
+
+        float targetFov = Mathf.Lerp(defaultFieldOfView, zoomFieldOfView, zoomBlend);
+        cam.fieldOfView = immediate
+            ? targetFov
+            : Mathf.Lerp(cam.fieldOfView, targetFov, zoomLerpSpeed * Time.deltaTime);
     }
 }
