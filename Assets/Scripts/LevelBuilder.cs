@@ -512,59 +512,23 @@ public class LevelBuilder : MonoBehaviour
             return;
         }
 
-        // Find best right-hand bone on the enemy model
-        Transform handBone = FindRightHandBone(enemy.transform);
-        Transform attachPoint = handBone != null ? handBone : enemy.transform;
-
-        GameObject weapon = Instantiate(weaponPrefab);
-        weapon.name = "EnemyWeapon";
-        SetLayerRecursive(weapon, enemy.layer);
-        weapon.SetActive(true);
-        foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
-            child.gameObject.SetActive(true);
-
-        // ── Strip arm rigs / armatures that ship inside weapon FBX files ──
-        // These contain SkinnedMeshRenderers of character arms that explode
-        // in scale when parented to a different character's hand bone.
-        StripWeaponArmature(weapon);
-
-        // Scale weapon to a natural hand-held size BEFORE parenting, then
-        // preserve that world size after it is attached to the enemy hand.
-        EquipmentManager.ApplyAutoScale(weapon, loadout.TargetSize);
-        Vector3 desiredLossyScale = weapon.transform.lossyScale;
-        weapon.transform.SetParent(attachPoint, worldPositionStays: false);
-        weapon.transform.localPosition = loadout.EnemyLocalPosition;
-        weapon.transform.localRotation = Quaternion.Euler(loadout.EnemyLocalEuler);
-        ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
-
-        // Safety clamp — if lossy scale is still insane, force it small
-        ClampWeaponWorldScale(weapon, loadout.TargetSize * 2f);
-
-        // ── Issue #2: Last-resort visible scale guarantee ──────────────────────
-        // If, after all normalisation steps, the weapon has ended up effectively
-        // invisible (any world-space axis < 0.005 m), force a safe local scale
-        // of Vector3.one * 0.1f so the weapon is always seen in the hand.
-        Vector3 lossyFinal = weapon.transform.lossyScale;
-        float minAxis = Mathf.Min(Mathf.Abs(lossyFinal.x), Mathf.Min(Mathf.Abs(lossyFinal.y), Mathf.Abs(lossyFinal.z)));
-        if (minAxis < 0.005f)
+        EnemyController controller = enemy.GetComponent<EnemyController>();
+        if (controller == null)
         {
-            weapon.transform.localScale = Vector3.one * 0.1f;
-            Debug.LogWarning($"[LevelBuilder] Weapon '{weapon.name}' was near-zero scale — forced to (0.1, 0.1, 0.1).");
+            Debug.LogWarning("[LevelBuilder] EnemyController missing; cannot attach enemy weapon.");
+            return;
         }
 
-        // Add WeaponVisibilityFix so renderers are guaranteed enabled
-        if (weapon.GetComponent<WeaponVisibilityFix>() == null)
-            weapon.AddComponent<WeaponVisibilityFix>();
+        // Set explicit hand socket override when available.
+        Transform handBone = FindRightHandBone(enemy.transform);
+        if (handBone != null)
+            controller.weaponAttachPoint = handBone;
 
-        // Remove any colliders from the weapon so it doesn't interfere with NavMesh
-        foreach (Collider col in weapon.GetComponentsInChildren<Collider>(true))
-            col.enabled = false;
+        // Single source of truth for enemy weapon socketing/stabilization.
+        controller.AttachWeaponToHand(weaponPrefab, loadout.TargetSize);
 
-        EnemyController controller = enemy.GetComponent<EnemyController>();
-        if (controller != null)
-            controller.equippedWeaponObject = weapon;
-
-        Debug.Log($"[LevelBuilder] Enemy weapon attached. localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
+        if (controller.equippedWeaponObject != null)
+            SetLayerRecursive(controller.equippedWeaponObject, enemy.layer);
     }
 
     /// <summary>

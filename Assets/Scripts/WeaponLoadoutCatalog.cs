@@ -57,14 +57,14 @@ public static class WeaponLoadoutCatalog
         switch (Mathf.Clamp(level, 1, 16))
         {
             case 1:
+                // TacticalKnife FBX removed — LoadPrefab returns null, triggering
+                // the primitive-knife fallback in BuildWeaponModel.
                 return Create(
                     0.38f,
                     Vector3.zero,
                     Vector3.zero,
                     DefaultEnemyLocalPosition,
-                    DefaultEnemyLocalEuler,
-                    "Weapons/TacticalKnife/TacticalKnife",
-                    "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife");
+                    DefaultEnemyLocalEuler);
             case 2:
                 return Create(0.95f,
                     "Weapons/Imported/Katana(level2)/source/Katana_low",
@@ -112,9 +112,8 @@ public static class WeaponLoadoutCatalog
                 return Create(0.90f,
                     "Weapons/Imported/shield(level16)/source/RiotShield/Riot Shield");
             default:
-                return Create(0.30f,
-                    "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife",
-                    "Weapons/TacticalKnife/TacticalKnife");
+                // No fallback FBX — primitive knife generated in code.
+                return Create(0.30f);
         }
     }
 

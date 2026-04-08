@@ -293,6 +293,7 @@ public class PlayerController : MonoBehaviour
         // ── 4. Patch any missing/blank materials so the body isn't a white statue ──
         if (thirdPersonBody != null)
             EnsureProperMaterial(thirdPersonBody);
+        AssignMaterial();
 
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
@@ -1342,11 +1343,52 @@ public class PlayerController : MonoBehaviour
 
     private void EnsureAnimationEventSink(GameObject root)
     {
+        if (root == null) return;
+
         if (root.GetComponent<AnimationEventSink>() == null)
             root.AddComponent<AnimationEventSink>();
 
         if (root.GetComponent<MeleeAnimationEventSink>() == null)
             root.AddComponent<MeleeAnimationEventSink>();
+    }
+
+    private void AssignMaterial()
+    {
+        // Try explicit paths first, then search all Materials in Resources as a fallback.
+        Material material = Resources.Load<Material>("Materials/Ronin");
+        if (material == null)
+            material = Resources.Load<Material>("Materials/Enemy");
+        if (material == null)
+        {
+            // Broad fallback: find any material whose name contains "Ronin" or "Enemy"
+            foreach (Material m in Resources.LoadAll<Material>("Materials"))
+            {
+                if (m == null) continue;
+                string n = m.name.ToLowerInvariant();
+                if (n.Contains("ronin") || n.Contains("enemy") || n.Contains("player"))
+                {
+                    material = m;
+                    break;
+                }
+            }
+        }
+
+        if (material == null)
+        {
+            // Last resort: create a visible default so the character isn't white
+            material = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
+            material.color = new Color(0.6f, 0.45f, 0.35f); // warm skin tone
+        }
+
+        // Ensure AnimationEventSink is present to prevent CS0246 event-method errors
+        if (thirdPersonBody != null)
+            EnsureAnimationEventSink(thirdPersonBody);
+
+        foreach (SkinnedMeshRenderer smr in GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            if (smr == null) continue;
+            smr.material = material;
+        }
     }
 
     private void HideKnightWeaponProp(GameObject knight)
@@ -1466,15 +1508,42 @@ public class PlayerController : MonoBehaviour
             : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
         WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
 
-        // Search for "bip_hand_R" by name first, then fallback list
-        Transform handBone    = FindPlayerHandBone(body);
+        Animator bodyAnimator = body.GetComponentInChildren<Animator>(true);
+        Transform handBone = null;
+        if (bodyAnimator != null && bodyAnimator.isHuman)
+            handBone = bodyAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+
         Transform attachPoint = handBone != null ? handBone : body.transform;
-
-        if (handBone == null)
-            Debug.LogWarning("[PlayerController] bip_hand_R not found on player body. " +
-                             "Weapon attached to body root.");
-
         equippedWeaponObject = BuildWeaponModel(level, attachPoint, loadout);
+
+        if (equippedWeaponObject != null)
+        {
+            // STRICT socket fix: override whatever scale/position BuildWeaponModel computed
+            // so the weapon always sits in the palm regardless of rig import scale.
+            equippedWeaponObject.transform.localPosition = Vector3.zero;
+            equippedWeaponObject.transform.localRotation = Quaternion.identity;
+            equippedWeaponObject.transform.localScale    = Vector3.one * 0.1f;
+
+            equippedWeaponObject.SetActive(true);
+
+            foreach (Transform t in equippedWeaponObject.GetComponentsInChildren<Transform>(true))
+                t.gameObject.SetActive(true);
+
+            // Disable embedded weapon animators to avoid drifting/flying meshes.
+            foreach (Animator weaponAnimator in equippedWeaponObject.GetComponentsInChildren<Animator>(true))
+                weaponAnimator.enabled = false;
+
+            foreach (Rigidbody rb in equippedWeaponObject.GetComponentsInChildren<Rigidbody>(true))
+            {
+                rb.isKinematic = true;
+                rb.useGravity = false;
+                rb.linearVelocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+            }
+
+            foreach (Collider col in equippedWeaponObject.GetComponentsInChildren<Collider>(true))
+                col.enabled = false;
+        }
     }
 
     private Transform FindBone(Transform root, string boneName)

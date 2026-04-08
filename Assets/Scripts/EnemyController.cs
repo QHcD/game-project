@@ -175,6 +175,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void Start()
     {
         EnsureProperMaterial(gameObject);
+        AssignMaterial();
         // Start the coroutine-based target scanner (runs every detectionInterval)
         _scanCoroutine = StartCoroutine(TargetScanLoop());
     }
@@ -570,6 +571,44 @@ public class EnemyController : MonoBehaviour, IDamageable
             animatorHost.AddComponent<AnimationEventSink>();
     }
 
+    private void AssignMaterial()
+    {
+        // Try explicit paths first, then search all Materials in Resources as a fallback.
+        Material material = Resources.Load<Material>("Materials/Enemy");
+        if (material == null)
+            material = Resources.Load<Material>("Materials/Ronin");
+        if (material == null)
+        {
+            // Broad fallback: find any material whose name contains "Enemy" or "Ronin"
+            foreach (Material m in Resources.LoadAll<Material>("Materials"))
+            {
+                if (m == null) continue;
+                string n = m.name.ToLowerInvariant();
+                if (n.Contains("enemy") || n.Contains("ronin") || n.Contains("soldier"))
+                {
+                    material = m;
+                    break;
+                }
+            }
+        }
+
+        if (material == null)
+        {
+            // Last resort: create a visible default so the enemy isn't a white statue
+            material = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
+            material.color = new Color(0.25f, 0.35f, 0.25f); // military green
+        }
+
+        // Ensure AnimationEventSink is present to prevent CS0246 event-method errors
+        EnsureAnimationEventSink();
+
+        foreach (SkinnedMeshRenderer smr in GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            if (smr == null) continue;
+            smr.material = material;
+        }
+    }
+
     private bool HasAnimatorParameter(int hash)
     {
         return _anim != null
@@ -767,112 +806,37 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// </summary>
     private Transform FindFfaTarget(float radius)
     {
-        // ── Scan via OverlapSphere (layer-masked) ────────────────────────────
-        Collider[] hits = Physics.OverlapSphere(
-            transform.position, radius, detectionMask, QueryTriggerInteraction.Ignore);
+        // Use ~0 (all layers) so enemies detect EACH OTHER and the player equally.
+        // The previous detectionMask (Character layer only) caused all enemies to
+        // target only the player when enemies were on a different layer.
+        Collider[] hits = Physics.OverlapSphere(transform.position, radius, ~0, QueryTriggerInteraction.Ignore);
 
-        // If layer mask found nothing, retry with ALL layers so enemies always
-        // detect each other even when layer setup is incomplete.
-        if (hits.Length == 0)
-            hits = Physics.OverlapSphere(
-                transform.position, radius, ~0, QueryTriggerInteraction.Ignore);
-
-        Transform nearestAggressorEnemy = null;
-        float nearestAggressorDistance = float.MaxValue;
-
-        Transform nearestEnemy = null;
-        float nearestEnemyDistance = float.MaxValue;
-
-        Transform playerTarget = null;
-        float playerDistance = float.MaxValue;
-
+        Transform nearest = null;
+        float nearestDistSqr = float.MaxValue;
         var evaluated = new HashSet<int>();
 
         foreach (Collider hit in hits)
         {
             if (hit == null) continue;
             if (hit.transform == transform) continue;
-            // Only skip same-root if it's literally this gameObject
-            if (hit.gameObject == gameObject) continue;
 
             IDamageable dmg = hit.GetComponentInParent<IDamageable>();
             if (dmg == null || !dmg.IsAlive) continue;
-
-            // Skip if dmg IS this enemy
             if (dmg.gameObject == gameObject) continue;
 
             int id = dmg.gameObject.GetInstanceID();
             if (evaluated.Contains(id)) continue;
             evaluated.Add(id);
 
-            float dist = Vector3.Distance(transform.position, dmg.transform.position);
-
-            EnemyController otherEnemy = dmg.gameObject.GetComponentInParent<EnemyController>();
-            if (otherEnemy != null && otherEnemy != this)
+            float d2 = (dmg.transform.position - transform.position).sqrMagnitude;
+            if (d2 < nearestDistSqr)
             {
-                if (dist < nearestEnemyDistance)
-                {
-                    nearestEnemyDistance = dist;
-                    nearestEnemy = otherEnemy.transform;
-                }
-
-                // Check if that enemy is actively coming after US
-                bool isAggressingThisEnemy =
-                    otherEnemy._target != null &&
-                    (otherEnemy._target == transform ||
-                     otherEnemy._target.root == transform.root) &&
-                    otherEnemy._state != State.Dead;
-
-                if (isAggressingThisEnemy && dist < nearestAggressorDistance)
-                {
-                    nearestAggressorDistance = dist;
-                    nearestAggressorEnemy = otherEnemy.transform;
-                }
-
-                continue;
-            }
-
-            PlayerHealth player = dmg.gameObject.GetComponentInParent<PlayerHealth>();
-            if (player != null && dist < playerDistance)
-            {
-                playerDistance = dist;
-                playerTarget = player.transform;
+                nearestDistSqr = d2;
+                nearest = dmg.transform;
             }
         }
 
-        // ── Priority 1: enemy currently attacking this enemy ─────────────────
-        if (nearestAggressorEnemy != null)
-            return nearestAggressorEnemy;
-
-        // ── Priority 2: last enemy attacker still in range ───────────────────
-        if (_lastAttacker != null)
-        {
-            EnemyController lastEnemyAttacker = _lastAttacker.GetComponentInParent<EnemyController>();
-            if (lastEnemyAttacker != null && lastEnemyAttacker != this)
-            {
-                IDamageable attackerDmg = lastEnemyAttacker.GetComponentInParent<IDamageable>();
-                bool attackerAlive = attackerDmg != null && attackerDmg.IsAlive;
-                float attackerDist = Vector3.Distance(transform.position, lastEnemyAttacker.transform.position);
-
-                if (attackerAlive && attackerDist <= radius)
-                    return lastEnemyAttacker.transform;
-            }
-
-            _lastAttacker = null;
-        }
-
-        // ── Priority 3: nearest enemy in detection range ─────────────────────
-        if (nearestEnemy != null)
-            return nearestEnemy;
-
-        // ── Priority 4: nearest living enemy ANYWHERE in the arena ───────────
-        //    (FindObjectsByType doesn't depend on layer masks or colliders)
-        Transform arenaEnemy = FindNearestLivingEnemy();
-        if (arenaEnemy != null)
-            return arenaEnemy;
-
-        // ── Priority 5: player ONLY when no enemy target is available ────────
-        return playerTarget;
+        return nearest;
     }
 
     private Transform FindNearestLivingEnemy()
@@ -915,9 +879,10 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (weaponPrefab == null) return;
 
-        // ── 1. Find the hand bone — "bip_hand_R" has first priority ──────────
-        Transform handBone = weaponAttachPoint;   // Inspector override wins
-
+        // Strict hand socketing: Humanoid RightHand first.
+        Transform handBone = weaponAttachPoint;
+        if (handBone == null && _anim != null && _anim.isHuman)
+            handBone = _anim.GetBoneTransform(HumanBodyBones.RightHand);
         if (handBone == null)
             handBone = FindHandBone(gameObject);
 
@@ -935,16 +900,32 @@ public class EnemyController : MonoBehaviour, IDamageable
         // ── 3. Parent to hand bone with worldPositionStays=false ─────────────
         equippedWeaponObject.transform.SetParent(handBone, worldPositionStays: false);
 
-        // ── 4. Zero the local transform ──────────────────────────────────────
+        // STRICT: force weapon into the palm — overrides all rig/import scale inheritance.
         equippedWeaponObject.transform.localPosition = Vector3.zero;
         equippedWeaponObject.transform.localRotation = Quaternion.identity;
-
-        // ── 5. FORCE localScale = 0.1  (guaranteed visibility in hand) ───────
-        equippedWeaponObject.transform.localScale = Vector3.one * 0.1f;
+        equippedWeaponObject.transform.localScale    = Vector3.one * 0.1f;
+        equippedWeaponObject.SetActive(true);
 
         // ── 6. Activate every child renderer ─────────────────────────────────
         foreach (Transform t in equippedWeaponObject.GetComponentsInChildren<Transform>(true))
             t.gameObject.SetActive(true);
+
+        // Disable physics so weapon never flies/drifts away.
+        foreach (Rigidbody rb in equippedWeaponObject.GetComponentsInChildren<Rigidbody>(true))
+        {
+            rb.isKinematic = true;
+            rb.useGravity = false;
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+
+        // Disable weapon animators so they don't apply their own motion on top of hand socketing.
+        foreach (Animator weaponAnimator in equippedWeaponObject.GetComponentsInChildren<Animator>(true))
+            weaponAnimator.enabled = false;
+
+        // Disable colliders to prevent pushing/physics conflicts with enemy body.
+        foreach (Collider col in equippedWeaponObject.GetComponentsInChildren<Collider>(true))
+            col.enabled = false;
 
         // ── 7. Wire WeaponBase ────────────────────────────────────────────────
         WeaponBase wb = equippedWeaponObject.GetComponent<WeaponBase>();
