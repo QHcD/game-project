@@ -207,12 +207,9 @@ public class GameManager : MonoBehaviour
     // ── Enemy helpers ─────────────────────────────────────────────────────────
     public int GetEnemyCount()
     {
-        switch (difficulty)
-        {
-            case "Easy": return 10;
-            case "Hard": return 12;
-            default:     return 12;
-        }
+        // The arena should always spawn 12 enemies; difficulty is handled
+        // through speed and damage, not by reducing the combatant count.
+        return 12;
     }
 
     public float GetEnemySpeed()

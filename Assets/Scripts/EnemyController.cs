@@ -733,8 +733,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     //  Priority system (evaluated each scan tick):
     //    1. ENEMY AGGRESSOR — any other enemy currently targeting this enemy.
     //    2. RETALIATE      — last enemy that damaged us, if still valid.
-    //    3. RANDOM CHOICE  — randomly choose between the nearest enemy and the
-    //                        player. The player is NOT prioritised.
+    //    3. NEAREST ENEMY  — any living enemy in detection range.
+    //    4. ARENA FALLBACK — nearest living enemy anywhere in the arena.
+    //    5. PLAYER         — only if no enemy target is available.
     //
     //  This stops all enemies from hard-locking onto the player and creates a
     //  proper arena-wide free-for-all.
@@ -846,14 +847,39 @@ public class EnemyController : MonoBehaviour, IDamageable
             _lastAttacker = null;
         }
 
-        // ── Priority 3: random choice between nearest enemy and player ───────
-        if (nearestEnemy != null && playerTarget != null)
-            return Random.value < 0.5f ? nearestEnemy : playerTarget;
-
+        // ── Priority 3: nearest enemy in range ───────────────────────────────
         if (nearestEnemy != null)
             return nearestEnemy;
 
+        // ── Priority 4: nearest living enemy anywhere in the arena ──────────
+        Transform arenaEnemy = FindNearestLivingEnemy();
+        if (arenaEnemy != null)
+            return arenaEnemy;
+
+        // ── Priority 5: player only when no enemy target exists ─────────────
         return playerTarget;
+    }
+
+    private Transform FindNearestLivingEnemy()
+    {
+        EnemyController[] allEnemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        Transform nearest = null;
+        float nearestDistance = float.MaxValue;
+
+        foreach (EnemyController otherEnemy in allEnemies)
+        {
+            if (otherEnemy == null || otherEnemy == this || !otherEnemy.IsAlive)
+                continue;
+
+            float dist = Vector3.Distance(transform.position, otherEnemy.transform.position);
+            if (dist < nearestDistance)
+            {
+                nearestDistance = dist;
+                nearest = otherEnemy.transform;
+            }
+        }
+
+        return nearest;
     }
 
     // ════════════════════════════════════════════════════════════════════════

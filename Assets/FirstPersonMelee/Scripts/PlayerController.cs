@@ -1338,8 +1338,10 @@ public class PlayerController : MonoBehaviour
     // ── Hand bone priority list — "bip_hand_R" is searched first ────────────
     private static readonly string[] PlayerHandBoneNames =
     {
-        "bip_hand_R",           // Crosby rig (enemies use same bones as player on some levels)
+        "tag_weapon_right",     // Ronin dedicated weapon socket
+        "tag_accessory_right",  // Ronin fallback socket on right wrist
         "weapon_bone_R",        // Crosby weapon socket
+        "bip_hand_R",           // Crosby rig (enemies use same bones as player on some levels)
         "j_wrist_ri",           // Ronin (default player)
         "mixamorig:RightHand",  // Mixamo
         "RightHand",
@@ -1354,6 +1356,7 @@ public class PlayerController : MonoBehaviour
             Transform found = FindBoneExact(body.transform, boneName);
             if (found != null) return found;
         }
+
         // Humanoid avatar fallback
         Animator anim = body.GetComponentInChildren<Animator>(true);
         if (anim != null && anim.isHuman)
@@ -1388,6 +1391,7 @@ public class PlayerController : MonoBehaviour
         int level = weaponLevel >= 1
             ? weaponLevel
             : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
+        WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
 
         // Search for "bip_hand_R" by name first, then fallback list
         Transform handBone    = FindPlayerHandBone(body);
@@ -1397,7 +1401,7 @@ public class PlayerController : MonoBehaviour
             Debug.LogWarning("[PlayerController] bip_hand_R not found on player body. " +
                              "Weapon attached to body root.");
 
-        equippedWeaponObject = BuildWeaponModel(level, attachPoint);
+        equippedWeaponObject = BuildWeaponModel(level, attachPoint, loadout);
     }
 
     private Transform FindBone(Transform root, string boneName)
@@ -1447,44 +1451,27 @@ public class PlayerController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Per-level weapon target sizes (metres, longest axis).
-    /// Matches LevelBuilder.GetWeaponTargetSize so player and enemy weapons are identical.
-    /// </summary>
-    private static float GetPlayerWeaponTargetSize(int level)
+    private GameObject BuildWeaponModel(int level, Transform attachPoint, WeaponLoadout loadout)
     {
-        float[] sizes = {
-            0.30f, 0.95f, 1.00f, 0.85f, 0.30f,   // Levels 1-5
-            0.40f, 0.55f, 0.85f, 0.70f, 1.40f,   // Levels 6-10
-            1.00f, 0.40f, 0.35f, 0.50f, 0.60f,   // Levels 11-15
-            0.90f                                    // Level 16
-        };
-        return sizes[Mathf.Clamp(level - 1, 0, sizes.Length - 1)];
-    }
-
-    private GameObject BuildWeaponModel(int level, Transform attachPoint)
-    {
-        GameObject levelPrefab = ResolveWeaponPrefabForLevel(level);
+        GameObject levelPrefab = loadout.LoadPrefab();
         if (levelPrefab != null)
         {
-            // Instantiate at world root first to avoid parent scale contamination
             GameObject weapon = Instantiate(levelPrefab);
             weapon.name = "WeaponModel";
+            SetLayerRecursive(weapon, gameObject.layer);
 
             weapon.SetActive(true);
             foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
                 child.gameObject.SetActive(true);
 
             StripWeaponArmature(weapon);
+            EquipmentManager.ApplyAutoScale(weapon, loadout.TargetSize);
+            Vector3 desiredLossyScale = weapon.transform.lossyScale;
 
-            // ── Parent to hand bone with worldPositionStays=false ────────────
-            // Then FORCE localScale = 0.1f unconditionally.
-            // This is the most reliable approach: it doesn't depend on the
-            // bone chain's lossy scale and guarantees the weapon is visible.
             weapon.transform.SetParent(attachPoint, worldPositionStays: false);
-            weapon.transform.localPosition = Vector3.zero;
-            weapon.transform.localRotation = Quaternion.identity;
-            weapon.transform.localScale    = Vector3.one * 0.1f;  // ALWAYS forced
+            weapon.transform.localPosition = loadout.PlayerLocalPosition;
+            weapon.transform.localRotation = Quaternion.Euler(loadout.PlayerLocalEuler);
+            ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
 
             WeaponBase weaponBase = weapon.GetComponent<WeaponBase>();
             if (weaponBase == null)
@@ -1513,57 +1500,7 @@ public class PlayerController : MonoBehaviour
             return weapon;
         }
 
-        return BuildPrimitiveWeapon(level, attachPoint);
-    }
-
-    private GameObject ResolveWeaponPrefabForLevel(int level)
-    {
-        string importedPath = GetImportedWeaponResourcePath(level);
-        if (!string.IsNullOrEmpty(importedPath))
-        {
-            GameObject imported = Resources.Load<GameObject>(importedPath);
-            if (imported != null) return imported;
-        }
-
-        string weaponName = GameManager.Instance != null
-            ? GameManager.Instance.GetWeaponNameForLevel(level)
-            : string.Empty;
-
-        string sanitized = string.IsNullOrWhiteSpace(weaponName)
-            ? string.Empty
-            : weaponName.Replace(" ", string.Empty).Replace("-", string.Empty);
-
-        if (!string.IsNullOrEmpty(sanitized))
-        {
-            GameObject byName = Resources.Load<GameObject>("Weapons/" + sanitized);
-            if (byName != null) return byName;
-        }
-
-        return null;
-    }
-
-    private static string GetImportedWeaponResourcePath(int level)
-    {
-        switch (level)
-        {
-            case  1: return "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife";
-            case  2: return "Weapons/Imported/Katana(level2)/source/melee";
-            case  3: return "Weapons/Imported/shovel(level3)/source/Shovel/Shovel";
-            case  4: return "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k";
-            case  5: return "Weapons/Imported/nunchucks(level5)/Nunchucks";
-            case  6: return "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal";
-            case  7: return "Weapons/Imported/crowbar(level7)/source/CrowbarV2";
-            case  8: return "Weapons/Imported/Hammer(level8)l/source/Sledgehammer/Sledge hammer";
-            case  9: return "Weapons/Imported/axe(level9)/source/axe";
-            case 10: return "Weapons/Imported/Spear(level10)/source/Spear/Spear";
-            case 11: return "Weapons/Imported/nailed-plank(level11)/source/NailedPlank/NailedPlank";
-            case 12: return "Weapons/Imported/saw(level12)/source/extracted/saw_low";
-            case 13: return "Weapons/Imported/sickle(level13)/source/Sickle";
-            case 14: return "Weapons/Imported/medieval(level14)/source/Medieval_morgenstern_low2 scene";
-            case 15: return "Weapons/Imported/l3fte(level15)/source/L3FT_E";
-            case 16: return "Weapons/Imported/shield(level16)/source/RiotShield/Riot Shield";
-            default: return null;
-        }
+        return BuildPrimitiveWeapon(level, attachPoint, loadout);
     }
 
     private void CacheFirstPersonWeaponSlot()
@@ -1598,12 +1535,32 @@ public class PlayerController : MonoBehaviour
         // First-person weapon display removed — weapon is on the 3rd-person body only.
     }
 
-    private GameObject BuildPrimitiveWeapon(int level, Transform attachPoint)
+    private static void ApplyDesiredLossyScale(Transform target, Vector3 desiredLossyScale)
+    {
+        if (target == null) return;
+
+        Vector3 parentLossyScale = target.parent != null ? target.parent.lossyScale : Vector3.one;
+        target.localScale = new Vector3(
+            desiredLossyScale.x / Mathf.Max(Mathf.Abs(parentLossyScale.x), 0.0001f),
+            desiredLossyScale.y / Mathf.Max(Mathf.Abs(parentLossyScale.y), 0.0001f),
+            desiredLossyScale.z / Mathf.Max(Mathf.Abs(parentLossyScale.z), 0.0001f));
+    }
+
+    private static void SetLayerRecursive(GameObject obj, int layer)
+    {
+        if (obj == null || layer < 0) return;
+        obj.layer = layer;
+        foreach (Transform child in obj.GetComponentsInChildren<Transform>(true))
+            child.gameObject.layer = layer;
+    }
+
+    private GameObject BuildPrimitiveWeapon(int level, Transform attachPoint, WeaponLoadout loadout)
     {
         GameObject root = new GameObject("WeaponModel_Fallback");
         root.transform.SetParent(attachPoint, false);
-        root.transform.localPosition = new Vector3(0f, 0.08f, 0.02f);
-        root.transform.localRotation = Quaternion.Euler(0f, 0f, -90f);
+        root.transform.localPosition = loadout.PlayerLocalPosition;
+        root.transform.localRotation = Quaternion.Euler(loadout.PlayerLocalEuler);
+        SetLayerRecursive(root, gameObject.layer);
 
         BoxCollider weaponCollider = root.AddComponent<BoxCollider>();
         weaponCollider.isTrigger = true;

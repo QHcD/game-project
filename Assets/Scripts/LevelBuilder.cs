@@ -368,12 +368,12 @@ public class LevelBuilder : MonoBehaviour
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    //  ENEMY SPAWNING — Battle Royale (12 combatants + player)
+    //  ENEMY SPAWNING — 12 enemies plus the player
     // ════════════════════════════════════════════════════════════════════════
 
     private void SpawnEnemies(Transform enemyRoot)
     {
-        int   enemyCount  = GameManager.Instance != null ? GameManager.Instance.GetEnemyCount() : 11;
+        int   enemyCount  = GameManager.Instance != null ? GameManager.Instance.GetEnemyCount() : 12;
         float chaseSpeed  = GameManager.Instance != null ? GameManager.Instance.GetEnemySpeed() : 3.8f;
         float enemyDamage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() : 10f;
         int   currentLvl  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
@@ -504,13 +504,11 @@ public class LevelBuilder : MonoBehaviour
 
     private void AttachWeaponToEnemy(GameObject enemy, int level)
     {
-        string weaponPath = GetWeaponResourcePath(level);
-        if (string.IsNullOrEmpty(weaponPath)) return;
-
-        GameObject weaponPrefab = Resources.Load<GameObject>(weaponPath);
+        WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
+        GameObject weaponPrefab = loadout.LoadPrefab();
         if (weaponPrefab == null)
         {
-            Debug.LogWarning($"[LevelBuilder] Enemy weapon not found: {weaponPath}");
+            Debug.LogWarning($"[LevelBuilder] Enemy weapon not found for level {level}.");
             return;
         }
 
@@ -518,32 +516,29 @@ public class LevelBuilder : MonoBehaviour
         Transform handBone = FindRightHandBone(enemy.transform);
         Transform attachPoint = handBone != null ? handBone : enemy.transform;
 
-        // Instantiate at world root first (NOT parented) to avoid scale inheritance
         GameObject weapon = Instantiate(weaponPrefab);
         weapon.name = "EnemyWeapon";
-        weapon.layer = enemy.layer;
-        weapon.transform.position = Vector3.zero;
-        weapon.transform.rotation = Quaternion.identity;
-        weapon.transform.localScale = Vector3.one;
+        SetLayerRecursive(weapon, enemy.layer);
+        weapon.SetActive(true);
+        foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
+            child.gameObject.SetActive(true);
 
         // ── Strip arm rigs / armatures that ship inside weapon FBX files ──
         // These contain SkinnedMeshRenderers of character arms that explode
         // in scale when parented to a different character's hand bone.
         StripWeaponArmature(weapon);
 
-        // Scale weapon to a natural hand-held size BEFORE parenting
-        float targetSize = GetWeaponTargetSize(level);
-        NormalizeWeaponScale(weapon, targetSize);
-
-        // NOW parent to hand — use worldPositionStays=true so scale is preserved
-        weapon.transform.SetParent(attachPoint, true);
-
-        // Orient weapon so it points forward from the hand (melee grip)
-        weapon.transform.localPosition = new Vector3(0f, 0.05f, 0f);
-        weapon.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+        // Scale weapon to a natural hand-held size BEFORE parenting, then
+        // preserve that world size after it is attached to the enemy hand.
+        EquipmentManager.ApplyAutoScale(weapon, loadout.TargetSize);
+        Vector3 desiredLossyScale = weapon.transform.lossyScale;
+        weapon.transform.SetParent(attachPoint, worldPositionStays: false);
+        weapon.transform.localPosition = loadout.EnemyLocalPosition;
+        weapon.transform.localRotation = Quaternion.Euler(loadout.EnemyLocalEuler);
+        ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
 
         // Safety clamp — if lossy scale is still insane, force it small
-        ClampWeaponWorldScale(weapon, targetSize * 2f);
+        ClampWeaponWorldScale(weapon, loadout.TargetSize * 2f);
 
         // ── Issue #2: Last-resort visible scale guarantee ──────────────────────
         // If, after all normalisation steps, the weapon has ended up effectively
@@ -565,14 +560,17 @@ public class LevelBuilder : MonoBehaviour
         foreach (Collider col in weapon.GetComponentsInChildren<Collider>(true))
             col.enabled = false;
 
+        EnemyController controller = enemy.GetComponent<EnemyController>();
+        if (controller != null)
+            controller.equippedWeaponObject = weapon;
+
         Debug.Log($"[LevelBuilder] Enemy weapon attached. localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
     }
 
     /// <summary>
-    /// Destroys arm rigs, armatures, and SkinnedMeshRenderers that ship inside
-    /// weapon FBX files. These are character arm meshes meant for first-person
-    /// view — they must NOT exist when the weapon is attached to a different
-    /// character's skeleton, or they'll create giant floating geometry.
+    /// Destroys obvious armature helper nodes that ship inside some weapon FBX
+    /// files. We deliberately keep renderer components intact because some
+    /// imported weapons use SkinnedMeshRenderer for the visible weapon mesh.
     /// </summary>
     private static void StripWeaponArmature(GameObject weapon)
     {
@@ -592,17 +590,6 @@ public class LevelBuilder : MonoBehaviour
                     Debug.Log($"[StripWeaponArmature] Removing '{n}' from weapon '{weapon.name}'");
                     break;
                 }
-            }
-        }
-
-        // Also destroy ALL SkinnedMeshRenderers — weapon blades use MeshFilter/MeshRenderer,
-        // SkinnedMeshRenderers are always character arm skins
-        foreach (SkinnedMeshRenderer smr in weapon.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-        {
-            if (!toDestroy.Contains(smr.gameObject))
-            {
-                toDestroy.Add(smr.gameObject);
-                Debug.Log($"[StripWeaponArmature] Removing SkinnedMeshRenderer '{smr.gameObject.name}'");
             }
         }
 
@@ -635,6 +622,7 @@ public class LevelBuilder : MonoBehaviour
         // Issue #2 — "bip_hand_R" is the primary bone name used by the
         // Crosby enemy model. It must be checked before generic fallbacks.
         string[] exactNames = {
+            "weapon_bone_R",                      // dedicated weapon socket
             "bip_hand_R",                          // Crosby / BIP rig (primary)
             "Bip01 R Hand", "Bip001 R Hand",       // 3ds Max Biped
             "mixamorig:RightHand", "RightHand",    // Mixamo
@@ -654,45 +642,6 @@ public class LevelBuilder : MonoBehaviour
             ?? FindDeepChildContaining(root, "hand_r")
             ?? FindDeepChildContaining(root, "wrist_r")
             ?? FindDeepChildContaining(root, "r_hand");
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  WEAPON RESOURCE PATHS  (mirrors PlayerController)
-    // ════════════════════════════════════════════════════════════════════════
-
-    private static string GetWeaponResourcePath(int level)
-    {
-        switch (level)
-        {
-            case  1: return "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife";
-            case  2: return "Weapons/Imported/Katana(level2)/source/melee";
-            case  3: return "Weapons/Imported/shovel(level3)/source/Shovel/Shovel";
-            case  4: return "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k";
-            case  5: return "Weapons/Imported/nunchucks(level5)/Nunchucks";
-            case  6: return "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal";
-            case  7: return "Weapons/Imported/crowbar(level7)/source/CrowbarV2";
-            case  8: return "Weapons/Imported/Hammer(level8)l/source/Sledgehammer/Sledge hammer";
-            case  9: return "Weapons/Imported/axe(level9)/source/axe";
-            case 10: return "Weapons/Imported/Spear(level10)/source/Spear/Spear";
-            case 11: return "Weapons/Imported/nailed-plank(level11)/source/NailedPlank/NailedPlank";
-            case 12: return "Weapons/Imported/saw(level12)/source/extracted/saw_low";
-            case 13: return "Weapons/Imported/sickle(level13)/source/Sickle";
-            case 14: return "Weapons/Imported/medieval(level14)/source/Medieval_morgenstern_low2 scene";
-            case 15: return "Weapons/Imported/l3fte(level15)/source/L3FT_E";
-            case 16: return "Weapons/Imported/shield(level16)/source/RiotShield/Riot Shield";
-            default: return null;
-        }
-    }
-
-    private static float GetWeaponTargetSize(int level)
-    {
-        float[] sizes = {
-            0.30f, 0.95f, 1.00f, 0.85f, 0.30f,
-            0.40f, 0.55f, 0.85f, 0.70f, 1.40f,
-            1.00f, 0.40f, 0.35f, 0.50f, 0.60f,
-            0.90f
-        };
-        return sizes[Mathf.Clamp(level - 1, 0, sizes.Length - 1)];
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -716,34 +665,15 @@ public class LevelBuilder : MonoBehaviour
         enemy.transform.localScale = Vector3.one * scale;
     }
 
-    /// <summary>Scales weapon so its largest dimension equals targetSize.</summary>
-    private static void NormalizeWeaponScale(GameObject weapon, float targetSize)
+    private static void ApplyDesiredLossyScale(Transform target, Vector3 desiredLossyScale)
     {
-        Transform saved = weapon.transform.parent;
-        weapon.transform.SetParent(null, false);
-        weapon.transform.localScale = Vector3.one;
+        if (target == null) return;
 
-        Bounds b = new Bounds(Vector3.zero, Vector3.zero);
-        bool any = false;
-
-        foreach (MeshFilter mf in weapon.GetComponentsInChildren<MeshFilter>(true))
-        {
-            if (mf.sharedMesh == null) continue;
-            Bounds mb = mf.sharedMesh.bounds;
-            Vector3 wc = mf.transform.TransformPoint(mb.center);
-            Vector3 we = Vector3.Scale(mb.extents, mf.transform.lossyScale);
-            Bounds wb  = new Bounds(wc, we * 2f);
-            if (!any) { b = wb; any = true; }
-            else b.Encapsulate(wb);
-        }
-
-        weapon.transform.SetParent(saved, false);
-        if (!any) return;
-
-        float maxDim = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
-        if (maxDim < 0.001f) return;
-
-        weapon.transform.localScale = Vector3.one * (targetSize / maxDim);
+        Vector3 parentLossyScale = target.parent != null ? target.parent.lossyScale : Vector3.one;
+        target.localScale = new Vector3(
+            desiredLossyScale.x / Mathf.Max(Mathf.Abs(parentLossyScale.x), 0.0001f),
+            desiredLossyScale.y / Mathf.Max(Mathf.Abs(parentLossyScale.y), 0.0001f),
+            desiredLossyScale.z / Mathf.Max(Mathf.Abs(parentLossyScale.z), 0.0001f));
     }
 
     private Transform FindDeepChild(Transform root, string boneName)
