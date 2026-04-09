@@ -33,8 +33,8 @@ public class MeleeAnimationEventSink : MonoBehaviour
     //
     // The player's melee damage is routed EXCLUSIVELY through
     // PlayerController.AttackMelee(), which performs a strict, single-target
-    // OverlapSphere + forward-cone check and damages at most ONE enemy per
-    // swing. Enabling the physical trigger hitbox (WeaponHitbox) caused
+    // overlap/sweep query against real colliders and damages at most ONE
+    // enemy per swing. Enabling the physical trigger hitbox (WeaponHitbox) caused
     // massive AoE "Bluetooth" damage on large weapons (Baseball Bat, Axe)
     // on levels 4/7/9 — its collider swept through multiple enemies at once
     // and one-shot them via overlapping logic.

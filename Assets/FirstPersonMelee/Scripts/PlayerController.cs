@@ -172,7 +172,9 @@ public class PlayerController : MonoBehaviour
     private const float AttackCooldown = 0.15f;
     private const float AttackResetTime = 0.7f;
     private const float AttackFailsafeDuration = 1.0f;
+    private const int MaxMeleeOverlapHits = 32;
     private LayerMask resolvedAttackMask;
+    private readonly Collider[] meleeOverlapHits = new Collider[MaxMeleeOverlapHits];
 
     // Third-person body
     private GameObject thirdPersonBody;
@@ -545,7 +547,8 @@ public class PlayerController : MonoBehaviour
         // ── Weapon callback (visuals / VFX only) ─────────────────────────────
         // NOTE: The physical WeaponHitbox trigger collider is intentionally
         // NEVER enabled from the player. All damage is routed through
-        // AttackMelee() which performs a strict single-target Sphere/Raycast.
+        // AttackMelee() which performs a strict single-target overlap/sweep
+        // query against real colliders.
         // Enabling the trigger hitbox here caused massive AoE "Bluetooth"
         // damage on large weapons (Baseball Bat, Axe) in levels 4/7/9.
         if (equippedWeaponObject != null)
@@ -594,23 +597,20 @@ public class PlayerController : MonoBehaviour
 
     private void AttackRaycast()
     {
-        Camera cam = ActiveCamera;
-        if (cam == null) return;
-
-        AttackMelee(cam);
+        AttackMelee();
         cameraKickTarget = -1.2f;
     }
 
     private const float MeleeHitAngle = 60f;   // strict forward-facing cone (half-angle)
 
-    private void AttackMelee(Camera cam)
+    private void AttackMelee()
     {
         // ════════════════════════════════════════════════════════════════════
         //  STRICT SINGLE-TARGET MELEE
-        //  • Bounded Physics.OverlapSphere — never extends past attackDistance
-        //  • Forward-cone filter (≤ MeleeHitAngle) — no hits behind the player
+        //  • Non-alloc OverlapCapsule based on actual colliders, not target pivots
+        //  • Point-blank overlaps are valid hits even when already intersecting
+        //  • Forward-cone filter still prevents "behind the player" hits
         //  • Damages EXACTLY ONE enemy per swing (the closest valid target)
-        //  • No FindObjectsByType / global scans — no "telepathic" AoE
         // ════════════════════════════════════════════════════════════════════
 
         Vector3 playerCenter = transform.position + Vector3.up * 1.0f;
@@ -622,93 +622,132 @@ public class PlayerController : MonoBehaviour
         if (forwardFlat.sqrMagnitude < 0.0001f) return;
         forwardFlat.Normalize();
 
-        // Sphere is centred ON the player and capped at attackDistance.
-        // Triggers are IGNORED so phantom hitbox volumes can't be tagged.
-        Collider[] hits = Physics.OverlapSphere(
-            playerCenter,
-            attackDistance,
-            resolvedAttackMask,
-            QueryTriggerInteraction.Ignore);
+        // CharacterController / NavMeshAgent movement can update transforms
+        // outside the physics step. Sync once so the overlap query sees the
+        // latest positions before resolving the attack.
+        Physics.SyncTransforms();
 
-        if (hits == null || hits.Length == 0)
+        if (TryFindBestMeleeTarget(playerCenter, forwardFlat, out Transform bestTarget, out Vector3 hitPoint))
         {
-            TryPrecisionRayFallback(cam, forwardFlat);
+            if (TryDamageTarget(bestTarget, attackDamage))
+            {
+                ApplyHitReaction(bestTarget, forwardFlat);
+                HitTarget(hitPoint);
+            }
             return;
         }
 
-        // Sort candidates by HORIZONTAL distance so the closest is tried first.
-        System.Array.Sort(hits, (a, b) =>
-        {
-            if (a == null && b == null) return 0;
-            if (a == null) return 1;
-            if (b == null) return -1;
-            float dA = HorizontalSqrDistance(transform.position, a.transform.position);
-            float dB = HorizontalSqrDistance(transform.position, b.transform.position);
-            return dA.CompareTo(dB);
-        });
+        // No overlap candidate was valid — try a narrow forward sweep so thin
+        // targets at the edge of the knife still connect cleanly.
+        TryPrecisionSweepFallback(playerCenter, forwardFlat);
+    }
 
-        for (int i = 0; i < hits.Length; i++)
+    private bool TryFindBestMeleeTarget(Vector3 playerCenter, Vector3 forwardFlat,
+        out Transform bestTarget, out Vector3 bestHitPoint)
+    {
+        bestTarget = null;
+        bestHitPoint = playerCenter;
+
+        float capsuleRadius = Mathf.Max(0.1f, attackRadius);
+        float capsuleReach = Mathf.Max(0f, attackDistance - capsuleRadius);
+        Vector3 capsuleEnd = playerCenter + forwardFlat * capsuleReach;
+
+        int hitCount = Physics.OverlapCapsuleNonAlloc(
+            playerCenter,
+            capsuleEnd,
+            capsuleRadius,
+            meleeOverlapHits,
+            resolvedAttackMask,
+            QueryTriggerInteraction.Collide);
+
+        float bestDistanceSqr = float.PositiveInfinity;
+        for (int i = 0; i < hitCount; i++)
         {
-            Collider hit = hits[i];
+            Collider hit = meleeOverlapHits[i];
             if (hit == null) continue;
 
-            // Skip ourselves and anything parented to us.
-            if (hit.transform == transform || hit.transform.IsChildOf(transform))
+            Transform hitTransform = hit.transform;
+            if (hitTransform == transform || hitTransform.IsChildOf(transform))
                 continue;
 
-            // ── Strict range check (horizontal plane only) ──────────────────
-            Vector3 toTarget = hit.transform.position - transform.position;
+            Transform damageRoot = GetDamageTargetTransform(hitTransform);
+            if (damageRoot == null) continue;
+
+            Vector3 closestPoint = hit.ClosestPoint(playerCenter);
+            Vector3 toTarget = closestPoint - playerCenter;
             toTarget.y = 0f;
-            float horizontalDistance = toTarget.magnitude;
-            if (horizontalDistance < 0.0001f)        continue;
-            if (horizontalDistance > attackDistance) continue;
+            float horizontalDistanceSqr = toTarget.sqrMagnitude;
 
-            // ── Strict forward-cone check (rejects anyone behind / beside) ──
-            float angle = Vector3.Angle(forwardFlat, toTarget / horizontalDistance);
-            if (angle > MeleeHitAngle) continue;
+            if (horizontalDistanceSqr > attackDistance * attackDistance)
+                continue;
 
-            // ── Apply damage ONCE, then exit immediately (no chain hits) ────
-            if (TryDamageTarget(hit.transform, attackDamage))
+            if (horizontalDistanceSqr >= 0.0001f)
             {
-                ApplyHitReaction(hit.transform, forwardFlat);
-                HitTarget(hit.ClosestPoint(playerCenter));
-                return;   // ⭐ HARD STOP — only one enemy damaged per swing
+                float horizontalDistance = Mathf.Sqrt(horizontalDistanceSqr);
+
+                // Let truly point-blank overlaps through even if the target's
+                // root pivot is offset or partially beside the player.
+                if (horizontalDistance > capsuleRadius * 0.5f)
+                {
+                    float angle = Vector3.Angle(forwardFlat, toTarget / horizontalDistance);
+                    if (angle > MeleeHitAngle) continue;
+                }
+            }
+
+            if (horizontalDistanceSqr < bestDistanceSqr)
+            {
+                bestDistanceSqr = horizontalDistanceSqr;
+                bestTarget = damageRoot;
+                bestHitPoint = closestPoint;
             }
         }
 
-        // No enemy inside the cone — try a single precision raycast.
-        TryPrecisionRayFallback(cam, forwardFlat);
+        return bestTarget != null;
     }
 
     // Single, single-target, single-hit precision fallback.
-    // • Fires ONE camera-aligned ray
-    // • Capped at attackDistance
+    // • Fires ONE forward sphere cast from the player's chest
+    // • Starts just ahead of the player so self-overlap cannot block it
     // • Re-validates the forward-cone constraint
     // • Will damage at most ONE enemy and never chains
-    private void TryPrecisionRayFallback(Camera cam, Vector3 forwardFlat)
+    private void TryPrecisionSweepFallback(Vector3 playerCenter, Vector3 forwardFlat)
     {
-        if (cam == null) return;
+        float sweepRadius = Mathf.Clamp(attackRadius * 0.35f, 0.12f, 0.45f);
+        float sweepDistance = Mathf.Max(0.05f, attackDistance - sweepRadius);
+        Vector3 sweepOrigin = playerCenter + forwardFlat * sweepRadius;
 
-        if (!Physics.Raycast(cam.transform.position, cam.transform.forward,
-                out RaycastHit rayHit, attackDistance, resolvedAttackMask,
-                QueryTriggerInteraction.Ignore))
+        if (!Physics.SphereCast(
+                sweepOrigin,
+                sweepRadius,
+                forwardFlat,
+                out RaycastHit rayHit,
+                sweepDistance,
+                resolvedAttackMask,
+                QueryTriggerInteraction.Collide))
             return;
 
         if (rayHit.transform == transform || rayHit.transform.IsChildOf(transform))
             return;
 
-        // Re-check: the hit must still be inside the player's forward cone.
-        Vector3 toHit = rayHit.transform.position - transform.position;
+        Transform damageRoot = GetDamageTargetTransform(rayHit.transform);
+        if (damageRoot == null) return;
+
+        Vector3 targetPoint = rayHit.collider != null
+            ? rayHit.collider.ClosestPoint(playerCenter)
+            : rayHit.point;
+
+        Vector3 toHit = targetPoint - playerCenter;
         toHit.y = 0f;
-        if (toHit.sqrMagnitude < 0.0001f) return;
-        if (Vector3.Angle(forwardFlat, toHit.normalized) > MeleeHitAngle) return;
-
-        // Re-check: the hit must respect attackDistance horizontally.
-        if (toHit.magnitude > attackDistance) return;
-
-        if (TryDamageTarget(rayHit.transform, attackDamage))
+        if (toHit.sqrMagnitude >= 0.0001f)
         {
-            ApplyHitReaction(rayHit.transform, forwardFlat);
+            if (Vector3.Angle(forwardFlat, toHit.normalized) > MeleeHitAngle) return;
+        }
+
+        if (toHit.sqrMagnitude > attackDistance * attackDistance) return;
+
+        if (TryDamageTarget(damageRoot, attackDamage))
+        {
+            ApplyHitReaction(damageRoot, forwardFlat);
             HitTarget(rayHit.point);
         }
     }
@@ -720,14 +759,29 @@ public class PlayerController : MonoBehaviour
         return dx * dx + dz * dz;
     }
 
+    private Transform GetDamageTargetTransform(Transform target)
+    {
+        if (target == null) return null;
+
+        IDamageable damageable = target.GetComponentInParent<IDamageable>();
+        if (damageable != null && damageable.gameObject != gameObject && damageable.IsAlive)
+            return damageable.transform;
+
+        Actor actor = target.GetComponentInParent<Actor>();
+        if (actor != null && actor.gameObject != gameObject)
+            return actor.transform;
+
+        return null;
+    }
+
     private bool TryDamageTarget(Transform target, int damage)
     {
         if (target == null) return false;
 
-        EnemyController enemy = target.GetComponentInParent<EnemyController>();
-        if (enemy != null && enemy.gameObject != gameObject)
+        IDamageable damageable = target.GetComponentInParent<IDamageable>();
+        if (damageable != null && damageable.gameObject != gameObject && damageable.IsAlive)
         {
-            enemy.TakeDamage(damage, byPlayer: true);
+            damageable.ReceiveDamage(damage, gameObject);
             return true;
         }
 
