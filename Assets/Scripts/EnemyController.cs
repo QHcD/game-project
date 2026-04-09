@@ -109,6 +109,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private State _preJumpState;
     private HashSet<int> _animParameterHashes;
 
+    // Position-delta velocity (same technique the PlayerController uses)
+    private Vector3 _lastFramePosition;
+
     // Animator hashes
     private static readonly int HashSpeed     = Animator.StringToHash("Speed");
     private static readonly int HashVelX      = Animator.StringToHash("VelocityX");
@@ -138,12 +141,20 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             _agent.speed                  = moveSpeed;
             _agent.stoppingDistance       = attackRadius * 0.85f;
-            _agent.angularSpeed           = 360f;
             _agent.acceleration           = 12f;
             _agent.avoidancePriority      = Random.Range(30, 70);
             _agent.obstacleAvoidanceType  = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
             _agent.radius                 = 0.5f;
+
+            // NavMeshAgent owns POSITION; we own ROTATION via FaceTarget/FaceDirection.
+            _agent.updatePosition         = true;
+            _agent.updateRotation         = false;
+            _agent.angularSpeed           = 0f;
         }
+
+        // ── Animator: disable root motion so NavMeshAgent drives all movement ─
+        if (_anim != null)
+            _anim.applyRootMotion = false;
 
         // ── Rigidbody for jump physics ────────────────────────────────────────
         // Kinematic by default so NavMeshAgent controls movement.
@@ -174,6 +185,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        _lastFramePosition = transform.position;
         EnsureProperMaterial(gameObject);
         AssignMaterial();
         // Start the coroutine-based target scanner (runs every detectionInterval)
@@ -208,6 +220,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ── State handlers ────────────────────────────────────────────────────────
     private void UpdateIdle()
     {
+        // Agent stays stopped; SyncAnimator will drive Speed → 0.
+        if (_agent != null && _agent.enabled)
+            _agent.isStopped = true;
+
         // Target is assigned by the TargetScanLoop coroutine every 0.5s
         if (_target != null) TransitionTo(State.Chase);
     }
@@ -230,22 +246,51 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        float dist = Vector3.Distance(transform.position, _target.position);
+        Vector3 toTarget = _target.position - transform.position;
+        toTarget.y = 0f;
+        float dist = toTarget.magnitude;
 
         if (dist <= attackRadius)
         {
-            if (_agent.enabled) _agent.ResetPath();
             TransitionTo(State.Attack);
             return;
         }
 
-        if (_agent.enabled)
+        // ── Drive NavMeshAgent ───────────────────────────────────────────────
+        // SyncAnimator() (called at end of Update) is the SOLE writer of the
+        // Speed parameter. We just tell the agent where to go.
+        if (_agent != null && _agent.enabled)
         {
-            _agent.speed = chaseSpeed;
-            _agent.SetDestination(_target.position);
+            _agent.isStopped = false;
+            _agent.speed     = chaseSpeed;
+
+            if (!_agent.hasPath || (_agent.destination - _target.position).sqrMagnitude > 0.25f)
+                _agent.SetDestination(_target.position);
         }
-        FaceTarget();
+
         ApplySeparation();
+
+        // ── Smooth rotation ──────────────────────────────────────────────────
+        // Face agent's desired velocity (the path direction) so the body
+        // aligns with the route being followed; fall back to target direction
+        // when movement is negligible (e.g. first frame or repath).
+        Vector3 facingDir = Vector3.zero;
+        if (_agent != null && _agent.enabled)
+        {
+            facingDir = _agent.desiredVelocity;
+            facingDir.y = 0f;
+
+            if (facingDir.sqrMagnitude < 0.01f && _agent.hasPath)
+            {
+                facingDir = _agent.steeringTarget - transform.position;
+                facingDir.y = 0f;
+            }
+        }
+
+        if (facingDir.sqrMagnitude < 0.01f)
+            facingDir = toTarget;
+
+        FaceDirection(facingDir);
 
         // ── Stuck / Jump detection ──
         CheckAndJumpIfStuck();
@@ -529,25 +574,73 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         if (_anim == null) return;
 
-        // Determine actual velocity source
-        Vector3 worldVelocity = Vector3.zero;
-        if (_state == State.Jumping && _rb != null && !_rb.isKinematic)
-            worldVelocity = _rb.linearVelocity;
-        else if (_agent != null && _agent.enabled)
-            worldVelocity = _agent.velocity;
+        // ══════════════════════════════════════════════════════════════════════
+        //  POSITION-DELTA VELOCITY — identical to PlayerController
+        //  ─────────────────────────────────────────────────────────
+        //  Measure how far the transform ACTUALLY moved this frame, not what
+        //  the NavMeshAgent *reports*. This is the only reliable way to make
+        //  the walk animation's foot-speed match the visual displacement on
+        //  screen — it's exactly what the PlayerController does:
+        //      displacement = position - lastPosition
+        //      actualSpeed  = displacement.magnitude / deltaTime
+        //      normSpeed    = actualSpeed / maxSpeed
+        // ══════════════════════════════════════════════════════════════════════
 
-        // Normalise speed to [0,1] using chaseSpeed as the reference maximum
-        float normSpeed = Mathf.Clamp01(worldVelocity.magnitude / Mathf.Max(0.01f, chaseSpeed));
+        Vector3 displacement = transform.position - _lastFramePosition;
+        _lastFramePosition   = transform.position;
+        displacement.y       = 0f; // horizontal only
 
-        // Local-space velocity for directional blend trees (left/right legs)
-        Vector3 localVel = transform.InverseTransformDirection(worldVelocity);
-        float normX = Mathf.Clamp(localVel.x / Mathf.Max(0.01f, chaseSpeed), -1f, 1f);
-        float normZ = Mathf.Clamp(localVel.z / Mathf.Max(0.01f, chaseSpeed), -1f, 1f);
+        float actualSpeed = (Time.deltaTime > 0f)
+            ? displacement.magnitude / Time.deltaTime
+            : 0f;
 
-        SetAnimatorFloat(HashSpeed, normSpeed, 0.1f);
-        SetAnimatorFloat(HashVelX, normX, 0.1f);
-        SetAnimatorFloat(HashVelZ, normZ, 0.1f);
+        // Normalise against the current movement ceiling (same as Player)
+        float maxSpeed      = Mathf.Max(0.01f, chaseSpeed);
+        float normalizedSpeed = Mathf.Clamp01(actualSpeed / maxSpeed);
+
+        // ── Drive the "Speed" parameter (Float → blend tree) ─────────────
+        bool droveSpeed = SetAnimatorFloatChecked(HashSpeed, normalizedSpeed, 0.1f);
+
+        // Fallback: if the animator has no "Speed" parameter, force-crossfade
+        // into the correct state directly (same fallback PlayerController uses)
+        if (!droveSpeed)
+            ForceLocomotionState(normalizedSpeed);
+
+        // ── Directional blend-tree params (VelocityX / VelocityZ) ────────
+        if (actualSpeed > 0.05f)
+        {
+            Vector3 localVel = transform.InverseTransformDirection(displacement.normalized * normalizedSpeed);
+            SetAnimatorFloat(HashVelX, Mathf.Clamp(localVel.x, -1f, 1f), 0.1f);
+            SetAnimatorFloat(HashVelZ, Mathf.Clamp(localVel.z, -1f, 1f), 0.1f);
+        }
+        else
+        {
+            SetAnimatorFloat(HashVelX, 0f);
+            SetAnimatorFloat(HashVelZ, 0f);
+        }
+
         SetAnimatorBool(HashGrounded, _isGrounded);
+    }
+
+    /// <summary>
+    /// Fallback for animator controllers that lack a "Speed" float parameter.
+    /// Directly CrossFades into "Walk" or "Idle" states — same technique the
+    /// PlayerController.ForceLocomotionState() uses.
+    /// </summary>
+    private void ForceLocomotionState(float normalizedSpeed)
+    {
+        if (_anim == null || _anim.runtimeAnimatorController == null) return;
+
+        string stateName     = normalizedSpeed > 0.05f ? "Walk" : "Idle";
+        string fullStateName = "Base Layer." + stateName;
+        int    stateHash     = Animator.StringToHash(fullStateName);
+
+        if (!_anim.HasState(0, stateHash)) return;
+
+        AnimatorStateInfo current = _anim.GetCurrentAnimatorStateInfo(0);
+        if (current.fullPathHash == stateHash) return;
+
+        _anim.CrossFadeInFixedTime(fullStateName, 0.15f, 0);
     }
 
     private void CacheAnimatorParameters()
@@ -628,6 +721,19 @@ public class EnemyController : MonoBehaviour, IDamageable
             _anim.SetFloat(hash, value, dampTime, Time.deltaTime);
         else
             _anim.SetFloat(hash, value);
+    }
+
+    /// <summary>Same as SetAnimatorFloat but returns true if the parameter existed.</summary>
+    private bool SetAnimatorFloatChecked(int hash, float value, float dampTime = 0f)
+    {
+        if (!HasAnimatorParameter(hash))
+            return false;
+
+        if (dampTime > 0f)
+            _anim.SetFloat(hash, value, dampTime, Time.deltaTime);
+        else
+            _anim.SetFloat(hash, value);
+        return true;
     }
 
     private void SetAnimatorBool(int hash, bool value)
@@ -755,18 +861,39 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void TransitionTo(State newState)
     {
         _state = newState;
-        if (newState == State.Idle && _agent != null && _agent.enabled)
-            _agent.ResetPath();
+
+        // Stop the agent whenever we aren't actively chasing, so velocity
+        // drops to zero. SyncAnimator (the sole Speed writer) will read the
+        // new _state and drive the blend tree accordingly — no direct
+        // _anim.SetFloat here to avoid competing writers.
+        if (_agent != null && _agent.enabled)
+        {
+            if (newState != State.Chase && newState != State.Jumping)
+            {
+                _agent.isStopped = true;
+                _agent.ResetPath();
+            }
+        }
     }
 
     private void FaceTarget()
     {
         if (_target == null) return;
-        Vector3 dir = (_target.position - transform.position);
-        dir.y = 0f;
-        if (dir.sqrMagnitude < 0.001f) return;
-        Quaternion look = Quaternion.LookRotation(dir);
-        transform.rotation = Quaternion.Slerp(transform.rotation, look, rotationSpeed * Time.deltaTime);
+        FaceDirection(_target.position - transform.position);
+    }
+
+    private void FaceDirection(Vector3 direction)
+    {
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.001f) return;
+
+        Quaternion targetRot = Quaternion.LookRotation(direction.normalized, Vector3.up);
+        // Smooth Slerp — rotationSpeed acts as a responsive-but-natural
+        // interpolation factor (same pattern the PlayerController uses).
+        transform.rotation = Quaternion.Slerp(
+            transform.rotation,
+            targetRot,
+            rotationSpeed * Time.deltaTime);
     }
 
     // ════════════════════════════════════════════════════════════════════════
