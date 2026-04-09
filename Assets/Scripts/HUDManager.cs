@@ -1,6 +1,7 @@
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem.UI;
 using UnityEngine.UI;
 
 public class HUDManager : MonoBehaviour
@@ -615,15 +616,44 @@ public class HUDManager : MonoBehaviour
             GameManager.Instance?.GoToMainMenu();
         });
 
-        // ── Ensure an EventSystem exists — without it buttons are unclickable ──
+        // ── Ensure an EventSystem exists with a NEW-INPUT-SYSTEM-compatible module ──
+        //
+        // The project uses the Input System Package (new). The legacy
+        // StandaloneInputModule reads UnityEngine.Input.* internally, which
+        // throws InvalidOperationException under the new Input System and
+        // prevents any button click from being dispatched. That is exactly
+        // what was killing the RESTART / MAIN MENU buttons on the Match
+        // Finished overlay (levels 4/7/9 were reproducible because a match
+        // would end without the player ever opening the pause menu — so
+        // PauseMenuController had never created a correct EventSystem, and
+        // this method silently fell back to StandaloneInputModule).
+        //
+        // Fix:
+        //   1. Find or create the EventSystem.
+        //   2. Strip any stale StandaloneInputModule that was shipped with
+        //      the scene or added by older code.
+        //   3. Guarantee exactly one InputSystemUIInputModule is attached.
         EventSystem eventSystem = FindFirstObjectByType<EventSystem>();
         if (eventSystem == null)
         {
             GameObject esObj = new GameObject("EventSystem");
             eventSystem = esObj.AddComponent<EventSystem>();
-            esObj.AddComponent<StandaloneInputModule>();
         }
-        eventSystem.gameObject.SetActive(true);
+
+        GameObject eventSystemGO = eventSystem.gameObject;
+
+        // 2. Remove the broken legacy module if present.
+        StandaloneInputModule legacyModule = eventSystemGO.GetComponent<StandaloneInputModule>();
+        if (legacyModule != null)
+            Destroy(legacyModule);
+
+        // 3. Ensure the new-Input-System UI module is attached exactly once.
+        InputSystemUIInputModule uiModule = eventSystemGO.GetComponent<InputSystemUIInputModule>();
+        if (uiModule == null)
+            uiModule = eventSystemGO.AddComponent<InputSystemUIInputModule>();
+        uiModule.enabled = true;
+
+        eventSystemGO.SetActive(true);
 
         // Focus the Restart button so keyboard/gamepad navigation works immediately
         if (restartBtnObj != null)

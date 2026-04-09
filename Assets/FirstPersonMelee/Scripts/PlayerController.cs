@@ -542,31 +542,20 @@ public class PlayerController : MonoBehaviour
             audioSource.PlayOneShot(swordSwing);
         }
 
+        // ── Weapon callback (visuals / VFX only) ─────────────────────────────
+        // NOTE: The physical WeaponHitbox trigger collider is intentionally
+        // NEVER enabled from the player. All damage is routed through
+        // AttackMelee() which performs a strict single-target Sphere/Raycast.
+        // Enabling the trigger hitbox here caused massive AoE "Bluetooth"
+        // damage on large weapons (Baseball Bat, Axe) in levels 4/7/9.
         if (equippedWeaponObject != null)
         {
             WeaponBase weapon = equippedWeaponObject.GetComponent<WeaponBase>();
             if (weapon != null) weapon.Attack();
-
-            WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
-            if (hitbox != null)
-            {
-                hitbox.EnableHitbox();
-                CancelInvoke(nameof(DisableWeaponHitbox));
-                Invoke(nameof(DisableWeaponHitbox), attackDelay + 0.3f);
-            }
         }
 
         CancelInvoke(nameof(AttackRaycast));
         Invoke(nameof(AttackRaycast), attackDelay);
-    }
-
-    private void DisableWeaponHitbox()
-    {
-        if (equippedWeaponObject != null)
-        {
-            WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
-            if (hitbox != null) hitbox.DisableHitbox();
-        }
     }
 
     private void UpdateCombatState()
@@ -612,87 +601,123 @@ public class PlayerController : MonoBehaviour
         cameraKickTarget = -1.2f;
     }
 
-    private const float MeleeHitAngle = 75f;   // widened from 60° for more forgiving melee
+    private const float MeleeHitAngle = 60f;   // strict forward-facing cone (half-angle)
 
     private void AttackMelee(Camera cam)
     {
-        // Sphere is cast from chest height, centred halfway to the attack limit.
-        // We also try triggers (UseGlobal) so armour / hitbox triggers still register.
-        Vector3 meleeOrigin = transform.position + Vector3.up * 1.0f
-                            + transform.forward  * (attackDistance * 0.5f);
+        // ════════════════════════════════════════════════════════════════════
+        //  STRICT SINGLE-TARGET MELEE
+        //  • Bounded Physics.OverlapSphere — never extends past attackDistance
+        //  • Forward-cone filter (≤ MeleeHitAngle) — no hits behind the player
+        //  • Damages EXACTLY ONE enemy per swing (the closest valid target)
+        //  • No FindObjectsByType / global scans — no "telepathic" AoE
+        // ════════════════════════════════════════════════════════════════════
 
+        Vector3 playerCenter = transform.position + Vector3.up * 1.0f;
+
+        // Flatten the player's forward vector to the horizontal plane so the
+        // cone check ignores vertical aim and stays consistent on slopes.
+        Vector3 forwardFlat = transform.forward;
+        forwardFlat.y = 0f;
+        if (forwardFlat.sqrMagnitude < 0.0001f) return;
+        forwardFlat.Normalize();
+
+        // Sphere is centred ON the player and capped at attackDistance.
+        // Triggers are IGNORED so phantom hitbox volumes can't be tagged.
         Collider[] hits = Physics.OverlapSphere(
-            meleeOrigin,
-            attackRadius * 1.5f,         // slightly wider than before
+            playerCenter,
+            attackDistance,
             resolvedAttackMask,
-            QueryTriggerInteraction.UseGlobal);  // was Ignore — triggers count now
+            QueryTriggerInteraction.Ignore);
 
-        bool landed = false;
+        if (hits == null || hits.Length == 0)
+        {
+            TryPrecisionRayFallback(cam, forwardFlat);
+            return;
+        }
 
-        // Sort by distance so the closest enemy is tried first
+        // Sort candidates by HORIZONTAL distance so the closest is tried first.
         System.Array.Sort(hits, (a, b) =>
         {
-            float dA = (a.transform.position - meleeOrigin).sqrMagnitude;
-            float dB = (b.transform.position - meleeOrigin).sqrMagnitude;
+            if (a == null && b == null) return 0;
+            if (a == null) return 1;
+            if (b == null) return -1;
+            float dA = HorizontalSqrDistance(transform.position, a.transform.position);
+            float dB = HorizontalSqrDistance(transform.position, b.transform.position);
             return dA.CompareTo(dB);
         });
 
         for (int i = 0; i < hits.Length; i++)
         {
-            Vector3 dirToTarget = (hits[i].transform.position - transform.position);
-            dirToTarget.y = 0f;
-            float angle = Vector3.Angle(transform.forward, dirToTarget);
+            Collider hit = hits[i];
+            if (hit == null) continue;
 
+            // Skip ourselves and anything parented to us.
+            if (hit.transform == transform || hit.transform.IsChildOf(transform))
+                continue;
+
+            // ── Strict range check (horizontal plane only) ──────────────────
+            Vector3 toTarget = hit.transform.position - transform.position;
+            toTarget.y = 0f;
+            float horizontalDistance = toTarget.magnitude;
+            if (horizontalDistance < 0.0001f)        continue;
+            if (horizontalDistance > attackDistance) continue;
+
+            // ── Strict forward-cone check (rejects anyone behind / beside) ──
+            float angle = Vector3.Angle(forwardFlat, toTarget / horizontalDistance);
             if (angle > MeleeHitAngle) continue;
 
-            if (TryDamageTarget(hits[i].transform, attackDamage))
+            // ── Apply damage ONCE, then exit immediately (no chain hits) ────
+            if (TryDamageTarget(hit.transform, attackDamage))
             {
-                ApplyHitReaction(hits[i].transform, transform.forward);
-                HitTarget(hits[i].ClosestPoint(meleeOrigin));
-                landed = true;
-                break;
+                ApplyHitReaction(hit.transform, forwardFlat);
+                HitTarget(hit.ClosestPoint(playerCenter));
+                return;   // ⭐ HARD STOP — only one enemy damaged per swing
             }
         }
 
-        // ── Fallback A: camera-forward raycast ───────────────────────────────
-        if (!landed)
-        {
-            if (Physics.Raycast(cam.transform.position, cam.transform.forward,
+        // No enemy inside the cone — try a single precision raycast.
+        TryPrecisionRayFallback(cam, forwardFlat);
+    }
+
+    // Single, single-target, single-hit precision fallback.
+    // • Fires ONE camera-aligned ray
+    // • Capped at attackDistance
+    // • Re-validates the forward-cone constraint
+    // • Will damage at most ONE enemy and never chains
+    private void TryPrecisionRayFallback(Camera cam, Vector3 forwardFlat)
+    {
+        if (cam == null) return;
+
+        if (!Physics.Raycast(cam.transform.position, cam.transform.forward,
                 out RaycastHit rayHit, attackDistance, resolvedAttackMask,
-                QueryTriggerInteraction.UseGlobal))
-            {
-                if (TryDamageTarget(rayHit.transform, attackDamage))
-                {
-                    ApplyHitReaction(rayHit.transform, transform.forward);
-                    HitTarget(rayHit.point);
-                    landed = true;
-                }
-                else
-                {
-                    HitTarget(rayHit.point);
-                }
-            }
-        }
+                QueryTriggerInteraction.Ignore))
+            return;
 
-        // ── Fallback B: direct component scan (bypasses colliders entirely) ──
-        // Searches all EnemyController objects within range.
-        // This catches enemies whose colliders may be mis-configured.
-        if (!landed)
+        if (rayHit.transform == transform || rayHit.transform.IsChildOf(transform))
+            return;
+
+        // Re-check: the hit must still be inside the player's forward cone.
+        Vector3 toHit = rayHit.transform.position - transform.position;
+        toHit.y = 0f;
+        if (toHit.sqrMagnitude < 0.0001f) return;
+        if (Vector3.Angle(forwardFlat, toHit.normalized) > MeleeHitAngle) return;
+
+        // Re-check: the hit must respect attackDistance horizontally.
+        if (toHit.magnitude > attackDistance) return;
+
+        if (TryDamageTarget(rayHit.transform, attackDamage))
         {
-            EnemyController[] allEnemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
-            foreach (EnemyController ec in allEnemies)
-            {
-                if (ec == null) continue;
-                float dist = Vector3.Distance(transform.position, ec.transform.position);
-                if (dist > attackDistance + 1f) continue;
-
-                ec.TakeDamage(attackDamage, byPlayer: true);
-                ApplyHitReaction(ec.transform, transform.forward);
-                HitTarget(ec.transform.position + Vector3.up * 0.9f);
-                landed = true;
-                break;
-            }
+            ApplyHitReaction(rayHit.transform, forwardFlat);
+            HitTarget(rayHit.point);
         }
+    }
+
+    private static float HorizontalSqrDistance(Vector3 a, Vector3 b)
+    {
+        float dx = a.x - b.x;
+        float dz = a.z - b.z;
+        return dx * dx + dz * dz;
     }
 
     private bool TryDamageTarget(Transform target, int damage)

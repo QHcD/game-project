@@ -28,37 +28,33 @@ public class MeleeAnimationEventSink : MonoBehaviour
     public void ClearCache() => cachedHitbox = null;
 
     // ── Animation Event Receivers ──
+    //
+    // IMPORTANT: All Enable* entry points are intentional NO-OPS.
+    //
+    // The player's melee damage is routed EXCLUSIVELY through
+    // PlayerController.AttackMelee(), which performs a strict, single-target
+    // OverlapSphere + forward-cone check and damages at most ONE enemy per
+    // swing. Enabling the physical trigger hitbox (WeaponHitbox) caused
+    // massive AoE "Bluetooth" damage on large weapons (Baseball Bat, Axe)
+    // on levels 4/7/9 — its collider swept through multiple enemies at once
+    // and one-shot them via overlapping logic.
+    //
+    // These methods are kept as empty stubs so existing DragonSouls /
+    // ExplosiveLLC animation clips that embed these AnimationEvent names
+    // (EnableRightUnarmedHitboxes, EnableLeftUnarmedHitbox, etc.) continue
+    // to resolve at runtime without throwing "No receiver" warnings —
+    // they simply do nothing.
 
-    public void EnableRightUnarmedHitboxes()
-    {
-        WeaponHitbox hb = FindWeaponHitbox();
-        if (hb != null) hb.EnableHitbox();
-    }
+    public void EnableRightUnarmedHitboxes() { /* disabled — see header */ }
 
-    public void DisableUnarmedHitboxes()
-    {
-        WeaponHitbox hb = FindWeaponHitbox();
-        if (hb != null) hb.DisableHitbox();
-    }
+    public void DisableUnarmedHitboxes()     { /* disabled — see header */ }
 
-    public void EnableLeftUnarmedHitbox()
-    {
-        WeaponHitbox hb = FindWeaponHitbox();
-        if (hb != null) hb.EnableHitbox();
-    }
+    public void EnableLeftUnarmedHitbox()    { /* disabled — see header */ }
 
     // Generic enable/disable that can be added to any custom animation clip
-    public void EnableWeaponHitbox()
-    {
-        WeaponHitbox hb = FindWeaponHitbox();
-        if (hb != null) hb.EnableHitbox();
-    }
+    public void EnableWeaponHitbox()         { /* disabled — see header */ }
 
-    public void DisableWeaponHitbox()
-    {
-        WeaponHitbox hb = FindWeaponHitbox();
-        if (hb != null) hb.DisableHitbox();
-    }
+    public void DisableWeaponHitbox()        { /* disabled — see header */ }
 
     // ── SFX hooks (kept as no-ops for compatibility) ──
 

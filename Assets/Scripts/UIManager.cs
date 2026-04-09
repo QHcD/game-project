@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem.UI;
 
 /// <summary>
 /// Thin UIManager wrapper for projects that already use HUDManager internally.
@@ -31,15 +32,31 @@ public class UIManager : MonoBehaviour
 
     private static void EnsureEventSystem()
     {
+        // The project uses the Input System Package (new). The legacy
+        // StandaloneInputModule reads UnityEngine.Input.* internally and
+        // throws InvalidOperationException under the new Input System,
+        // which prevents any UI button from receiving click events. We
+        // must use InputSystemUIInputModule instead, and strip any stale
+        // legacy module that may already be attached to an existing
+        // EventSystem (e.g. from a scene import or older code path).
         EventSystem eventSystem = FindFirstObjectByType<EventSystem>();
-        if (eventSystem != null)
+        if (eventSystem == null)
         {
-            eventSystem.gameObject.SetActive(true);
-            return;
+            GameObject eventSystemObject = new GameObject("EventSystem");
+            eventSystem = eventSystemObject.AddComponent<EventSystem>();
         }
 
-        GameObject eventSystemObject = new GameObject("EventSystem");
-        eventSystemObject.AddComponent<EventSystem>();
-        eventSystemObject.AddComponent<StandaloneInputModule>();
+        GameObject go = eventSystem.gameObject;
+
+        StandaloneInputModule legacy = go.GetComponent<StandaloneInputModule>();
+        if (legacy != null)
+            Destroy(legacy);
+
+        InputSystemUIInputModule uiModule = go.GetComponent<InputSystemUIInputModule>();
+        if (uiModule == null)
+            uiModule = go.AddComponent<InputSystemUIInputModule>();
+        uiModule.enabled = true;
+
+        go.SetActive(true);
     }
 }
