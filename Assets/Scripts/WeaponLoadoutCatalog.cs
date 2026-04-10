@@ -48,6 +48,7 @@ public readonly struct WeaponLoadout
 public static class WeaponLoadoutCatalog
 {
     private static readonly Vector3 OneHandedGripEuler = new Vector3(0f, 0f, 90f);
+    private static readonly Vector3 ReversedOneHandedGripEuler = new Vector3(0f, 180f, 90f);
     private static readonly Vector3 DefaultPlayerLocalPosition = new Vector3(-0.015f, -0.005f, 0f);
     private static readonly Vector3 DefaultPlayerLocalEuler = OneHandedGripEuler;
     private static readonly Vector3 DefaultEnemyLocalPosition = new Vector3(-0.01f, -0.0025f, 0f);
@@ -58,6 +59,41 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 LongEnemyLocalPosition = new Vector3(-0.035f, -0.0025f, 0f);
     private static readonly Vector3 PolePlayerLocalPosition = new Vector3(-0.06f, -0.0075f, 0f);
     private static readonly Vector3 PoleEnemyLocalPosition = new Vector3(-0.05f, -0.003f, 0f);
+    private static readonly Vector3 WrenchPlayerLocalPosition = new Vector3(-0.115f, -0.0125f, 0.0025f);
+    private static readonly Vector3 WrenchPlayerLocalEuler = new Vector3(10f, 0f, 90f);
+    private static readonly Vector3 WrenchEnemyLocalPosition = new Vector3(-0.095f, -0.0085f, 0.0025f);
+    private static readonly Vector3 WrenchEnemyLocalEuler = new Vector3(12f, 0f, 90f);
+    private static readonly Vector3 CrowbarPlayerLocalPosition = new Vector3(-0.135f, -0.006f, 0.006f);
+    private static readonly Vector3 CrowbarPlayerLocalEuler = new Vector3(0f, 180f, 104f);
+    private static readonly Vector3 CrowbarEnemyLocalPosition = new Vector3(-0.115f, -0.0035f, 0.006f);
+    private static readonly Vector3 CrowbarEnemyLocalEuler = new Vector3(0f, 180f, 104f);
+    private static readonly Vector3 HammerPlayerLocalPosition = new Vector3(-0.18f, -0.0125f, 0f);
+    private static readonly Vector3 HammerPlayerLocalEuler = new Vector3(8f, 0f, 90f);
+    private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.155f, -0.009f, 0f);
+    private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(10f, 0f, 90f);
+    // ── Level 9 axe (single source of truth) ──
+    // Empirically verified on the real Crosby body (bip_hand_R) with the
+    // runtime 0.70m autoscale applied. The axe FBX has an extremely
+    // asymmetric pivot: long axis is X with mesh range [-0.0094..+0.0431]
+    // and the dense head bulk sitting at X≈-0.0094. After autoscale
+    // (uniformScale = 0.70 / 0.0525 ≈ 13.33) the head is 0.125m from the
+    // pivot and the handle butt is 0.575m from the pivot.
+    //
+    // The Z=90 component preserves the project-wide one-handed grip
+    // convention; under Unity's intrinsic ZXY order Z=90 maps mesh +X to
+    // socket -Y, which is why the offset lives on the socket Y axis (NOT
+    // X like the wrench/crowbar/hammer). The 180° Y flip swaps the model
+    // end-for-end so the wooden handle sits in the palm and the head
+    // extends outward away from the body.
+    //
+    // Player Y = -0.475 places the hand 0.10m from the butt and 0.60m
+    // from the head — the natural grip section of the handle, not at the
+    // extreme butt edge. Enemy uses a slightly reduced magnitude per the
+    // existing wrench/crowbar/hammer player-vs-enemy convention.
+    private static readonly Vector3 AxePlayerLocalPosition = new Vector3(0f, -0.475f, 0f);
+    private static readonly Vector3 AxePlayerLocalEuler = new Vector3(0f, 180f, 90f);
+    private static readonly Vector3 AxeEnemyLocalPosition = new Vector3(0f, -0.405f, 0f);
+    private static readonly Vector3 AxeEnemyLocalEuler = new Vector3(0f, 180f, 90f);
 
     // ── Guaranteed fallback paths (tried in order when the level weapon is missing) ──
     private static readonly string[] FallbackPaths =
@@ -122,16 +158,36 @@ public static class WeaponLoadoutCatalog
                 return CreateShortGrip(0.30f,
                     "Weapons/Imported/nunchucks(level5)/Nunchucks");
             case 6:
-                return CreateShortGrip(0.40f,
+                return CreateExactGrip(
+                    0.40f,
+                    WrenchPlayerLocalPosition,
+                    WrenchPlayerLocalEuler,
+                    WrenchEnemyLocalPosition,
+                    WrenchEnemyLocalEuler,
                     "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal");
             case 7:
-                return CreateMediumGrip(0.55f,
+                return CreateExactGrip(
+                    0.55f,
+                    CrowbarPlayerLocalPosition,
+                    CrowbarPlayerLocalEuler,
+                    CrowbarEnemyLocalPosition,
+                    CrowbarEnemyLocalEuler,
                     "Weapons/Imported/crowbar(level7)/source/CrowbarV2");
             case 8:
-                return CreatePoleGrip(0.85f,
+                return CreateExactGrip(
+                    0.85f,
+                    HammerPlayerLocalPosition,
+                    HammerPlayerLocalEuler,
+                    HammerEnemyLocalPosition,
+                    HammerEnemyLocalEuler,
                     "Weapons/Imported/Hammer(level8)l/source/Sledgehammer/Sledge hammer");
             case 9:
-                return CreateLongGrip(0.70f,
+                return CreateExactGrip(
+                    0.70f,
+                    AxePlayerLocalPosition,
+                    AxePlayerLocalEuler,
+                    AxeEnemyLocalPosition,
+                    AxeEnemyLocalEuler,
                     "Weapons/Imported/axe(level9)/source/axe");
             case 10:
                 return CreatePoleGrip(1.40f,
@@ -212,6 +268,23 @@ public static class WeaponLoadoutCatalog
             DefaultPlayerLocalEuler,
             PoleEnemyLocalPosition,
             DefaultEnemyLocalEuler,
+            resourcePaths);
+    }
+
+    private static WeaponLoadout CreateExactGrip(
+        float targetSize,
+        Vector3 playerLocalPosition,
+        Vector3 playerLocalEuler,
+        Vector3 enemyLocalPosition,
+        Vector3 enemyLocalEuler,
+        params string[] resourcePaths)
+    {
+        return Create(
+            targetSize,
+            playerLocalPosition,
+            playerLocalEuler,
+            enemyLocalPosition,
+            enemyLocalEuler,
             resourcePaths);
     }
 
