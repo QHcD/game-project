@@ -504,8 +504,11 @@ public class LevelBuilder : MonoBehaviour
 
     private void AttachWeaponToEnemy(GameObject enemy, int level)
     {
-        float targetSize;
-        GameObject weaponPrefab = WeaponLoadoutCatalog.LoadPrefabWithFallback(level, out targetSize);
+        WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
+        float targetSize = loadout.TargetSize;
+        GameObject weaponPrefab = loadout.LoadPrefab();
+        if (weaponPrefab == null)
+            weaponPrefab = WeaponLoadoutCatalog.LoadPrefabWithFallback(level, out targetSize);
         if (weaponPrefab == null)
         {
             Debug.LogWarning($"[LevelBuilder] All weapon sources exhausted for level {level}.");
@@ -523,6 +526,9 @@ public class LevelBuilder : MonoBehaviour
         Transform handBone = FindRightHandBone(enemy.transform);
         if (handBone != null)
             controller.weaponAttachPoint = handBone;
+
+        controller.weaponGripLocalPosition = loadout.EnemyLocalPosition;
+        controller.weaponGripLocalEulerAngles = loadout.EnemyLocalEuler;
 
         // Single source of truth for enemy weapon socketing/stabilization.
         controller.AttachWeaponToHand(weaponPrefab, targetSize);

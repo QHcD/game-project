@@ -13,6 +13,8 @@ using UnityEngine.InputSystem;
 /// </summary>
 public class PlayerController : MonoBehaviour
 {
+    private const string WeaponSocketName = "__PlayerWeaponSocket";
+
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
     // ════════════════════════════════════════════════════════════════════════
@@ -1519,14 +1521,14 @@ public class PlayerController : MonoBehaviour
         ikHandler.DisableIK();
     }
 
-    // ── Hand bone priority list — "bip_hand_R" is searched first ────────────
+    // ── Hand bone priority list — melee grip sockets first, firearm tag last ─
     private static readonly string[] PlayerHandBoneNames =
     {
-        "tag_weapon_right",     // Ronin dedicated weapon socket
         "tag_accessory_right",  // Ronin fallback socket on right wrist
+        "j_wrist_ri",           // Ronin wrist bone
         "weapon_bone_R",        // Crosby weapon socket
         "bip_hand_R",           // Crosby rig (enemies use same bones as player on some levels)
-        "j_wrist_ri",           // Ronin (default player)
+        "tag_weapon_right",     // Ronin firearm socket (kept as last-resort fallback)
         "mixamorig:RightHand",  // Mixamo
         "RightHand",
         "Hand_R", "hand_R", "hand_r",
@@ -1535,7 +1537,18 @@ public class PlayerController : MonoBehaviour
 
     private static Transform FindPlayerHandBone(GameObject body)
     {
-        // ── Priority 1: Humanoid avatar API (most reliable for ANY humanoid rig) ──
+        // ── Priority 1: explicit weapon/hand sockets authored on the rig ────
+        foreach (string boneName in PlayerHandBoneNames)
+        {
+            Transform found = FindBoneExact(body.transform, boneName);
+            if (found != null)
+            {
+                Debug.Log($"[PlayerController] Hand bone found via name search: '{found.name}'");
+                return found;
+            }
+        }
+
+        // ── Priority 2: Humanoid avatar API fallback ───────────────────────
         Animator anim = body.GetComponentInChildren<Animator>(true);
         if (anim != null && anim.isHuman)
         {
@@ -1544,17 +1557,6 @@ public class PlayerController : MonoBehaviour
             {
                 Debug.Log($"[PlayerController] Hand bone found via Animator API: '{bone.name}'");
                 return bone;
-            }
-        }
-
-        // ── Priority 2: Name-based search (fallback for non-humanoid rigs) ──
-        foreach (string boneName in PlayerHandBoneNames)
-        {
-            Transform found = FindBoneExact(body.transform, boneName);
-            if (found != null)
-            {
-                Debug.Log($"[PlayerController] Hand bone found via name search: '{found.name}'");
-                return found;
             }
         }
 
@@ -1594,7 +1596,8 @@ public class PlayerController : MonoBehaviour
         {
             Debug.LogWarning($"[PlayerController] All weapon sources exhausted for level {level}, using primitive.");
             Transform fallbackBone = FindPlayerHandBone(body) ?? body.transform;
-            equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackBone, loadout);
+            Transform fallbackSocket = GetOrCreateWeaponSocket(fallbackBone);
+            equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackSocket, loadout);
             return;
         }
 
@@ -1605,6 +1608,7 @@ public class PlayerController : MonoBehaviour
             Debug.LogWarning("[PlayerController] Right hand bone not found, attaching to body root.");
             handBone = body.transform;
         }
+        Transform weaponSocket = GetOrCreateWeaponSocket(handBone);
 
         // ── 3. Instantiate (unparented to get clean world-space bounds) ─────
         GameObject weapon = Instantiate(prefab);
@@ -1625,21 +1629,24 @@ public class PlayerController : MonoBehaviour
         if (weaponExtent < 0.001f) weaponExtent = 1f;
 
         // ── 5. Parent to hand, reset local transform ────────────────────────
-        weapon.transform.SetParent(handBone, worldPositionStays: false);
+        weapon.transform.SetParent(weaponSocket, worldPositionStays: false);
         weapon.transform.localPosition = Vector3.zero;
         weapon.transform.localRotation = Quaternion.identity;
 
         // ── 6. Compute localScale so weapon reaches desired WORLD size ──────
         float desiredWorldSize = finalTargetSize;
         float uniformScale = desiredWorldSize / weaponExtent;
-        Vector3 parentLossy = handBone.lossyScale;
+        Vector3 parentLossy = weaponSocket.lossyScale;
         weapon.transform.localScale = new Vector3(
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
+        ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
 
         Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
+                  $"localPosition={weapon.transform.localPosition} " +
+                  $"localEuler={weapon.transform.localEulerAngles} " +
                   $"localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
 
         // ── 7. Disable physics, embedded animators, colliders ───────────────
@@ -1682,6 +1689,35 @@ public class PlayerController : MonoBehaviour
         }
 
         equippedWeaponObject = weapon;
+    }
+
+    private static Transform GetOrCreateWeaponSocket(Transform handBone)
+    {
+        Transform socket = handBone.Find(WeaponSocketName);
+        if (socket == null)
+        {
+            GameObject socketObject = new GameObject(WeaponSocketName);
+            socket = socketObject.transform;
+            socket.SetParent(handBone, worldPositionStays: false);
+        }
+
+        socket.localPosition = Vector3.zero;
+        socket.localRotation = Quaternion.identity;
+
+        Vector3 handLossy = handBone.lossyScale;
+        socket.localScale = new Vector3(
+            1f / Mathf.Max(Mathf.Abs(handLossy.x), 0.0001f),
+            1f / Mathf.Max(Mathf.Abs(handLossy.y), 0.0001f),
+            1f / Mathf.Max(Mathf.Abs(handLossy.z), 0.0001f));
+
+        return socket;
+    }
+
+    private static void ApplyWeaponGripPose(Transform weaponRoot, Vector3 localPosition, Vector3 localEuler)
+    {
+        if (weaponRoot == null) return;
+        weaponRoot.localPosition = localPosition;
+        weaponRoot.localRotation = Quaternion.Euler(localEuler);
     }
 
     /// <summary>
@@ -1752,6 +1788,9 @@ public class PlayerController : MonoBehaviour
         GameObject levelPrefab = loadout.LoadPrefab();
         if (levelPrefab != null)
         {
+            Transform weaponSocket = attachPoint != null && attachPoint.name == WeaponSocketName
+                ? attachPoint
+                : GetOrCreateWeaponSocket(attachPoint);
             GameObject weapon = Instantiate(levelPrefab);
             weapon.name = "WeaponModel";
             SetLayerRecursive(weapon, gameObject.layer);
@@ -1764,10 +1803,11 @@ public class PlayerController : MonoBehaviour
             EquipmentManager.ApplyAutoScale(weapon, loadout.TargetSize);
             Vector3 desiredLossyScale = weapon.transform.lossyScale;
 
-            weapon.transform.SetParent(attachPoint, worldPositionStays: false);
-            weapon.transform.localPosition = loadout.PlayerLocalPosition;
-            weapon.transform.localRotation = Quaternion.Euler(loadout.PlayerLocalEuler);
+            weapon.transform.SetParent(weaponSocket, worldPositionStays: false);
+            weapon.transform.localPosition = Vector3.zero;
+            weapon.transform.localRotation = Quaternion.identity;
             ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
+            ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
 
             // Safety: if scale ended up near-zero, force a visible fallback
             Vector3 lossyFinal = weapon.transform.lossyScale;
@@ -1779,7 +1819,7 @@ public class PlayerController : MonoBehaviour
                 Debug.LogWarning($"[PlayerController] Weapon near-zero scale — forced to (0.1,0.1,0.1).");
             }
 
-            Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{attachPoint.name}' " +
+            Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{weaponSocket.name}' " +
                       $"targetSize={loadout.TargetSize} localScale={weapon.transform.localScale} " +
                       $"lossyScale={weapon.transform.lossyScale}");
 
@@ -1866,10 +1906,14 @@ public class PlayerController : MonoBehaviour
 
     private GameObject BuildPrimitiveWeapon(int level, Transform attachPoint, WeaponLoadout loadout)
     {
+        Transform weaponSocket = attachPoint != null && attachPoint.name == WeaponSocketName
+            ? attachPoint
+            : GetOrCreateWeaponSocket(attachPoint);
         GameObject root = new GameObject("WeaponModel_Fallback");
-        root.transform.SetParent(attachPoint, false);
-        root.transform.localPosition = loadout.PlayerLocalPosition;
-        root.transform.localRotation = Quaternion.Euler(loadout.PlayerLocalEuler);
+        root.transform.SetParent(weaponSocket, false);
+        root.transform.localPosition = Vector3.zero;
+        root.transform.localRotation = Quaternion.identity;
+        ApplyWeaponGripPose(root.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
         SetLayerRecursive(root, gameObject.layer);
 
         BoxCollider weaponCollider = root.AddComponent<BoxCollider>();

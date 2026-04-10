@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.Serialization;
 using System.Collections;
 using System.Collections.Generic;
 
@@ -54,6 +55,11 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Drag the enemy's right-hand bone here in the Inspector (optional). " +
              "If null, EquipmentManager auto-detects bip_hand_R / weapon_bone_R.")]
     public Transform weaponAttachPoint;
+    [Tooltip("Local grip position offset applied after the weapon is parented to the right hand socket.")]
+    public Vector3 weaponGripLocalPosition = new Vector3(-0.01f, -0.0025f, 0f);
+    [Tooltip("Local grip rotation offset in degrees so the blade/head extends forward from the hand.")]
+    [FormerlySerializedAs("weaponGripLocalEuler")]
+    public Vector3 weaponGripLocalEulerAngles = new Vector3(0f, 0f, 90f);
 
     [HideInInspector] public GameObject equippedWeaponObject;
 
@@ -1184,10 +1190,10 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
         Transform handBone = weaponAttachPoint;
-        if (handBone == null && _anim != null && _anim.isHuman)
-            handBone = _anim.GetBoneTransform(HumanBodyBones.RightHand);
         if (handBone == null)
             handBone = FindHandBone(gameObject);
+        if (handBone == null && _anim != null && _anim.isHuman)
+            handBone = _anim.GetBoneTransform(HumanBodyBones.RightHand);
 
         if (handBone == null)
         {
@@ -1227,9 +1233,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (inheritedExtent < 0.001f) inheritedExtent = weaponExtent;
         float uniformScale = desiredWorldSize / inheritedExtent;
         equippedWeaponObject.transform.localScale = Vector3.one * uniformScale;
+        ApplyWeaponGripPose();
 
         Debug.Log($"[EnemyController] '{name}' weapon → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
+                  $"localPosition={equippedWeaponObject.transform.localPosition} " +
+                  $"localEuler={equippedWeaponObject.transform.localEulerAngles} " +
                   $"localScale={equippedWeaponObject.transform.localScale} " +
                   $"lossyScale={equippedWeaponObject.transform.lossyScale}");
 
@@ -1287,6 +1296,14 @@ public class EnemyController : MonoBehaviour, IDamageable
         return socket;
     }
 
+    private void ApplyWeaponGripPose()
+    {
+        if (equippedWeaponObject == null) return;
+
+        equippedWeaponObject.transform.localRotation = Quaternion.Euler(weaponGripLocalEulerAngles);
+        equippedWeaponObject.transform.localPosition = weaponGripLocalPosition;
+    }
+
     /// <summary>
     /// Returns the largest axis of the combined renderer bounds for a weapon GameObject.
     /// Must be called BEFORE parenting (at world scale 1,1,1) for accurate results.
@@ -1303,11 +1320,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         return Mathf.Max(combined.size.x, combined.size.y, combined.size.z);
     }
 
-    // ── Bone search: "bip_hand_R" first, then common fallback names ──────────
+    // ── Bone search: authored weapon sockets first, then common hand bones ───
     private static readonly string[] HandBoneNames =
     {
-        "bip_hand_R",           // Crosby (enemy) — must be first
         "weapon_bone_R",        // Crosby weapon socket
+        "bip_hand_R",           // Crosby primary right hand
         "j_wrist_ri",           // Ronin (player)
         "mixamorig:RightHand",  // Mixamo
         "RightHand",
@@ -1317,7 +1334,18 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private static Transform FindHandBone(GameObject body)
     {
-        // ── Priority 1: Humanoid avatar API (most reliable for ANY humanoid rig) ──
+        // ── Priority 1: explicit weapon/hand sockets authored on the rig ────
+        foreach (string boneName in HandBoneNames)
+        {
+            Transform found = FindBoneByName(body.transform, boneName);
+            if (found != null)
+            {
+                Debug.Log($"[EnemyController] Hand bone found via name search: '{found.name}'");
+                return found;
+            }
+        }
+
+        // ── Priority 2: Humanoid avatar API fallback ───────────────────────
         Animator anim = body.GetComponentInChildren<Animator>(true);
         if (anim != null && anim.isHuman)
         {
@@ -1326,17 +1354,6 @@ public class EnemyController : MonoBehaviour, IDamageable
             {
                 Debug.Log($"[EnemyController] Hand bone found via Animator API: '{bone.name}'");
                 return bone;
-            }
-        }
-
-        // ── Priority 2: Name-based search (fallback for non-humanoid rigs) ──
-        foreach (string boneName in HandBoneNames)
-        {
-            Transform found = FindBoneByName(body.transform, boneName);
-            if (found != null)
-            {
-                Debug.Log($"[EnemyController] Hand bone found via name search: '{found.name}'");
-                return found;
             }
         }
         return null;
