@@ -26,10 +26,17 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float attackCooldown   = 1.4f;
     public int   maxHealth        = 60;
 
-    [Header("Movement")]
+    [Header("Movement — mirrors Player feel")]
+    [Tooltip("Base walking speed (matches PlayerController.moveSpeed = 3.5).")]
     public float moveSpeed        = 3.5f;
-    public float chaseSpeed       = 4.8f;
-    public float rotationSpeed    = 8f;
+    [Tooltip("Chase/sprint speed — slightly faster than the player's sprint (4.8) for aggression.")]
+    public float chaseSpeed       = 5.8f;
+    [Tooltip("Manual rotation Slerp rate in Attack state (player body uses 8f — we bump slightly for responsiveness).")]
+    public float rotationSpeed    = 12f;
+    [Tooltip("NavMeshAgent acceleration. Player uses MoveTowards(12). Agent PID needs ≈24 to feel equivalent.")]
+    public float agentAcceleration = 24f;
+    [Tooltip("NavMeshAgent angular speed (deg/sec). ~720 matches the player body Slerp pacing.")]
+    public float agentAngularSpeed = 720f;
 
     [Header("Jump (Obstacle Avoidance)")]
     [Tooltip("Height the enemy jumps when blocked (matches Player formula).")]
@@ -55,7 +62,23 @@ public class EnemyController : MonoBehaviour, IDamageable
     public LayerMask detectionMask = ~0;
 
     [Tooltip("Seconds between target scans (coroutine-based for performance).")]
-    public float detectionInterval = 0.5f;
+    public float detectionInterval = 0.2f;
+
+    [Header("Target Locking & LoS")]
+    [Tooltip("How long (seconds) the AI commits to a target before considering switching.")]
+    public float targetLockDuration = 3.5f;
+    [Tooltip("A new candidate target must be this many metres closer than the current one to steal focus.")]
+    public float targetSwitchHysteresis = 2.0f;
+    [Tooltip("Extra metres added to attackRadius when deciding it is time to swing.")]
+    public float attackRangePadding = 0.35f;
+    [Tooltip("Extra metres beyond attack radius before the attacker breaks off to chase again (hysteresis).")]
+    public float breakAttackPadding = 0.9f;
+    [Tooltip("Eye height used for line-of-sight raycasts.")]
+    public float lineOfSightEyeHeight = 1.2f;
+    [Tooltip("Layers that block line of sight. Leave empty to disable LoS checks (always visible).")]
+    public LayerMask lineOfSightBlockers = 0;
+    [Tooltip("Max seconds the 'last attacker' retaliation priority remains hot.")]
+    public float retaliationMemory = 6f;
 
     [Header("Separation (Anti-Stacking)")]
     public float separationRadius   = 2.0f;
@@ -86,12 +109,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private Rigidbody    _rb;
     private int          _currentHealth;
 
-    // Player-style movement state
+    // CharacterController is intentionally disabled at runtime — kept as a
+    // reference only so the jump system can toggle it during the arc.
     private CharacterController _controller;
-    private Vector3 _horizontalVelocity;
-    private Vector3 _verticalVelocity;
-    public float acceleration = 12f;
-    public float deceleration = 12f;
     private float        _attackTimer;
     private Transform    _target;
     private bool         _lastHitByPlayer;
@@ -101,6 +121,10 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     // FFA: track whoever last damaged this enemy so we can retaliate
     private Transform _lastAttacker;
+    private float     _lastAttackerTime = -999f;
+
+    // Target lock / commitment timer
+    private float _targetLockTimer;
 
     // Coroutine-based target scanning
     private Coroutine _scanCoroutine;
@@ -128,6 +152,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private static readonly int HashDead      = Animator.StringToHash("Dead");
     private static readonly int HashHit       = Animator.StringToHash("Hit");
     private static readonly int HashGrounded  = Animator.StringToHash("IsGrounded");
+    private const string WeaponSocketName     = "__EnemyWeaponSocket";
 
     // ── Unity lifecycle ──────────────────────────────────────────────────────
     private void Awake()
@@ -145,33 +170,17 @@ public class EnemyController : MonoBehaviour, IDamageable
         _audio.playOnAwake  = false;
 
         // ── NavMeshAgent ──────────────────────────────────────────────────────
+        // The agent FULLY owns position AND rotation. Tuning below is chosen
+        // to mirror the PlayerController feel (MoveTowards with acceleration
+        // = 12, body rotation Slerp at 8f). With autoBraking DISABLED the
+        // enemy charges into melee range at full speed instead of ramping
+        // down — this is the single biggest "sluggish near target" fix.
         if (_agent != null)
-        {
-            _agent.speed                  = moveSpeed;
-            _agent.stoppingDistance       = attackRadius * 0.85f;
-            _agent.acceleration           = 12f;
-            _agent.avoidancePriority      = Random.Range(30, 70);
-            _agent.obstacleAvoidanceType  = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
-            _agent.radius                 = 0.5f;
+            ConfigureAgent();
 
-            // We now own POSITION via CharacterController, just like the player.
-            _agent.updatePosition         = false;
-            _agent.updateRotation         = false;
-            _agent.angularSpeed           = 0f;
-        }
-
-       // Setup CharacterController exactly like the Player
+        // ── Disable any CharacterController so it never fights the agent ─────
         _controller = GetComponent<CharacterController>();
-        if (_controller == null)
-        {
-            _controller = gameObject.AddComponent<CharacterController>();
-            _controller.height          = 2f;
-            _controller.radius          = 0.5f;
-            _controller.center          = new Vector3(0f, 1f, 0f);
-            _controller.skinWidth       = 0.08f;
-            _controller.stepOffset      = 0.3f;
-            _controller.minMoveDistance = 0.001f;
-        }
+        if (_controller != null) _controller.enabled = false;
 
         // ── Animator: disable root motion so NavMeshAgent drives all movement ─
         if (_anim != null)
@@ -206,10 +215,27 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        // LevelBuilder assigns maxHealth/chaseSpeed after AddComponent(), so
+        // re-apply runtime state here once the spawner has finished tuning us.
+        _currentHealth = maxHealth;
+        ConfigureAgent();
+
         _lastFramePosition = transform.position;
         EnsureProperMaterial(gameObject);
         AssignMaterial();
-        // Start the coroutine-based target scanner (runs every detectionInterval)
+
+        // ── Warp the agent onto the NavMesh ──────────────────────────────────
+        // Enemies that spawn even a centimetre off-mesh will refuse to move.
+        // Sample the nearest valid NavMesh point and warp the agent to it.
+        if (_agent != null && _agent.enabled)
+        {
+            if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+                _agent.Warp(hit.position);
+            else
+                _agent.Warp(transform.position);
+        }
+
+        // Start the coroutine-based target scanner
         _scanCoroutine = StartCoroutine(TargetScanLoop());
     }
 
@@ -239,112 +265,102 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     // ── State handlers ────────────────────────────────────────────────────────
+    //
+    //  Philosophy: the NavMeshAgent owns EVERYTHING movement-related.
+    //  State handlers are tiny — they only set destinations, toggle
+    //  isStopped, and pick targets. No manual gravity, no CharacterController,
+    //  no velocity smoothing. The agent's internal acceleration curve drives
+    //  the feel (and we tune it aggressively in Awake for snappy reactions).
+    //
     private void UpdateIdle()
     {
-        // Agent stays stopped; SyncAnimator will drive Speed → 0.
         if (_agent != null && _agent.enabled)
             _agent.isStopped = true;
 
-        // Target is assigned by the TargetScanLoop coroutine every 0.5s
-        if (_target != null) TransitionTo(State.Chase);
+        // Immediately react to any valid target (no wait for scan tick).
+        if (IsTargetValid(_target))
+            TransitionTo(State.Chase);
     }
 
     private void UpdateChase()
     {
-        // If the target died or was destroyed, go idle and wait for next scan
-        if (_target == null)
-        {
-            TransitionTo(State.Idle);
-            return;
-        }
-
-        // Check if target is still alive via IDamageable
-        IDamageable targetDmg = _target.GetComponentInParent<IDamageable>();
-        if (targetDmg != null && !targetDmg.IsAlive)
+        // ── Validation ───────────────────────────────────────────────────────
+        if (!IsTargetValid(_target))
         {
             _target = null;
             TransitionTo(State.Idle);
             return;
         }
 
-        Vector3 toTarget = _target.position - transform.position;
-        toTarget.y = 0f;
-        float dist = toTarget.magnitude;
+        float dist = Vector3.Distance(transform.position, _target.position);
 
-        if (dist <= attackRadius)
+        // Enter attack range. Padding so we commit rather than hover at the edge.
+        float engageDist = attackRadius + attackRangePadding;
+        if (dist <= engageDist)
         {
             TransitionTo(State.Attack);
             return;
         }
 
-     // ── Update Path ──────────────────────────────────────────────────────
+        // ── Drive the agent directly ────────────────────────────────────────
         if (_agent != null && _agent.enabled)
         {
-            if (!_agent.hasPath || (_agent.destination - _target.position).sqrMagnitude > 0.25f)
+            if (_agent.isStopped) _agent.isStopped = false;
+
+            // Keep the tuning live — matches the player's acceleration feel
+            // and guarantees autoBraking stays off (some scripts may toggle it).
+            _agent.speed            = chaseSpeed;
+            _agent.acceleration     = agentAcceleration;
+            _agent.angularSpeed     = agentAngularSpeed;
+            _agent.autoBraking      = false;
+            _agent.stoppingDistance = Mathf.Max(0.1f, attackRadius * 0.5f);
+
+            // Only re-path when the target has meaningfully moved. This keeps
+            // the path solver from thrashing every frame (expensive AND jittery).
+            bool needsPath =
+                !_agent.hasPath ||
+                _agent.pathStatus == NavMeshPathStatus.PathInvalid ||
+                (_agent.destination - _target.position).sqrMagnitude > 0.6f;
+
+            if (needsPath && !_agent.pathPending)
                 _agent.SetDestination(_target.position);
         }
 
-        // ── Player-Style Movement (Acceleration, Gravity, CharacterController) ──
-        Vector3 inputDir = Vector3.zero;
-        if (_agent != null && _agent.hasPath)
-        {
-            inputDir = _agent.steeringTarget - transform.position;
-            inputDir.y = 0f;
-            if (inputDir.sqrMagnitude > 0.01f)
-                inputDir.Normalize();
-        }
-
-        // Apply Acceleration / Deceleration
-        float targetSpeed = chaseSpeed;
-        Vector3 targetVelocity = inputDir * targetSpeed;
-        float rate = inputDir.sqrMagnitude > 0.01f ? acceleration : deceleration;
-        
-        _horizontalVelocity = Vector3.MoveTowards(_horizontalVelocity, targetVelocity, rate * Time.deltaTime);
-
-        // Apply Gravity
-        if (_controller != null && _controller.isGrounded)
-        {
-            _verticalVelocity.y = -2f;
-        }
-        else
-        {
-            _verticalVelocity.y += gravity * Time.deltaTime;
-            _verticalVelocity.y = Mathf.Max(_verticalVelocity.y, -40f);
-        }
-
-        // Execute Move
-        if (_controller != null && _controller.enabled)
-        {
-            _controller.Move((_horizontalVelocity + _verticalVelocity) * Time.deltaTime);
-            
-            // Sync NavMeshAgent to actual position so it calculates paths from where the enemy physically is
-            if (_agent != null) _agent.nextPosition = transform.position;
-        }
-
-        ApplySeparation();
-
-        // ── Smooth rotation ──────────────────────────────────────────────────
-        // Face the actual horizontal velocity (just like the player does)
-        Vector3 facingDir = _horizontalVelocity;
-        facingDir.y = 0f;
-        
-        if (facingDir.sqrMagnitude < 0.01f)
-            facingDir = toTarget;
-
-        FaceDirection(facingDir);
-
-        // ── Stuck / Jump detection ──
         CheckAndJumpIfStuck();
     }
 
     private void UpdateAttack()
     {
-        if (_target == null) { TransitionTo(State.Idle); return; }
+        if (!IsTargetValid(_target))
+        {
+            _target = null;
+            TransitionTo(State.Idle);
+            return;
+        }
 
-        float dist = Vector3.Distance(transform.position, _target.position);
-        if (dist > attackRadius * 1.4f) { TransitionTo(State.Chase); return; }
+        if (_agent != null && _agent.enabled)
+        {
+            _agent.isStopped = true;
+            // Zero velocity so the agent stops IMMEDIATELY — no drift-slide
+            // past the target while the swing animation plays.
+            _agent.velocity  = Vector3.zero;
+        }
 
-        FaceTarget();
+        Vector3 toTarget = _target.position - transform.position;
+        toTarget.y = 0f;
+        float dist = toTarget.magnitude;
+
+        // Hysteresis: only leave Attack when the target has moved noticeably
+        // outside the engagement ring — prevents Chase↔Attack thrash.
+        float breakDist = attackRadius + attackRangePadding + breakAttackPadding;
+        if (dist > breakDist)
+        {
+            TransitionTo(State.Chase);
+            return;
+        }
+
+        // Manual snappy rotation (agent is stopped, so it won't rotate itself).
+        FaceDirection(toTarget);
 
         if (_attackTimer <= 0f)
         {
@@ -356,8 +372,15 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void UpdateFlinch()
     {
         _flinchTimer -= Time.deltaTime;
+
+        if (_agent != null && _agent.enabled)
+        {
+            _agent.isStopped = true;
+            _agent.velocity  = Vector3.zero;
+        }
+
         if (_flinchTimer <= 0f)
-            TransitionTo(_target != null ? State.Chase : State.Idle);
+            TransitionTo(IsTargetValid(_target) ? State.Chase : State.Idle);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -443,13 +466,14 @@ public class EnemyController : MonoBehaviour, IDamageable
             _rb.linearVelocity = Vector3.zero;
             _rb.isKinematic    = true;
 
-            // Re-hand control back to NavMeshAgent
+            // Re-hand control back to NavMeshAgent (which owns movement)
             if (_agent != null)
             {
                 _agent.enabled = true;
                 _agent.Warp(transform.position);
             }
-            if (_controller != null) _controller.enabled = true;
+            // NOTE: do NOT re-enable _controller — it would fight the agent
+            // (the same hybrid that caused the original sluggish/jitter bug).
             SetAnimatorBool(HashGrounded, true);
 
             // Resume what we were doing before the jump
@@ -504,9 +528,30 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
-        // Record attacker so the FFA scan can retaliate on the next tick
-        if (attackerRoot != null)
-            _lastAttacker = attackerRoot.transform;
+        // ── Record attacker & retaliate immediately ─────────────────────────
+        if (attackerRoot != null && attackerRoot != gameObject)
+        {
+            Transform attackerT = attackerRoot.transform;
+
+            // Walk up to the IDamageable root so we lock onto the correct
+            // Transform (not a weapon hitbox child).
+            IDamageable atkDmg = attackerRoot.GetComponentInParent<IDamageable>();
+            if (atkDmg != null) attackerT = atkDmg.transform;
+
+            _lastAttacker     = attackerT;
+            _lastAttackerTime = Time.time;
+
+            // Immediate retaliation: if we were idle, chasing someone far, or
+            // our current target is dead/invalid, snap onto the attacker.
+            if (IsTargetValid(attackerT) &&
+                (!IsTargetValid(_target) || _target == null || _target == attackerT ||
+                 Vector3.Distance(transform.position, attackerT.position) <
+                 Vector3.Distance(transform.position, _target.position) - 0.5f))
+            {
+                _target          = attackerT;
+                _targetLockTimer = targetLockDuration;
+            }
+        }
 
         bool fromPlayer = attackerRoot != null
                        && attackerRoot.GetComponentInParent<PlayerHealth>() != null;
@@ -617,31 +662,33 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_anim == null) return;
 
         // ══════════════════════════════════════════════════════════════════════
-        //  POSITION-DELTA VELOCITY — identical to PlayerController
-        //  ─────────────────────────────────────────────────────────
-        //  Measure how far the transform ACTUALLY moved this frame, not what
-        //  the NavMeshAgent *reports*. This is the only reliable way to make
-        //  the walk animation's foot-speed match the visual displacement on
-        //  screen — it's exactly what the PlayerController does:
-        //      displacement = position - lastPosition
-        //      actualSpeed  = displacement.magnitude / deltaTime
-        //      normSpeed    = actualSpeed / maxSpeed
+        //  NAVMESHAGENT VELOCITY SYNC
+        //  ──────────────────────────
+        //  Now that the NavMeshAgent owns position AND rotation, its
+        //  `velocity` field is the single source of truth for locomotion
+        //  animation. This eliminates the desync between the walk-cycle
+        //  foot-speed and the visible displacement that the old position-delta
+        //  method suffered when the agent was fighting a CharacterController.
         // ══════════════════════════════════════════════════════════════════════
 
-        Vector3 displacement = transform.position - _lastFramePosition;
-        _lastFramePosition   = transform.position;
-        displacement.y       = 0f; // horizontal only
+        Vector3 agentVelocity = (_agent != null && _agent.enabled)
+            ? _agent.velocity
+            : Vector3.zero;
+        agentVelocity.y = 0f;
 
-        float actualSpeed = (Time.deltaTime > 0f)
-            ? displacement.magnitude / Time.deltaTime
-            : 0f;
+        float actualSpeed = agentVelocity.magnitude;
 
-        // Normalise against the current movement ceiling (same as Player)
-        float maxSpeed      = Mathf.Max(0.01f, chaseSpeed);
+        // Normalise against the current movement ceiling.
+        float maxSpeed        = Mathf.Max(0.01f, chaseSpeed);
         float normalizedSpeed = Mathf.Clamp01(actualSpeed / maxSpeed);
 
+        // Keep _lastFramePosition updated for any legacy callers.
+        _lastFramePosition = transform.position;
+
         // ── Drive the "Speed" parameter (Float → blend tree) ─────────────
-        bool droveSpeed = SetAnimatorFloatChecked(HashSpeed, normalizedSpeed, 0.1f);
+        // Tight damp (0.05) keeps the locomotion tree snappy — matches the
+        // player's position-delta responsiveness without visible jitter.
+        bool droveSpeed = SetAnimatorFloatChecked(HashSpeed, normalizedSpeed, 0.05f);
 
         // Fallback: if the animator has no "Speed" parameter, force-crossfade
         // into the correct state directly (same fallback PlayerController uses)
@@ -651,14 +698,15 @@ public class EnemyController : MonoBehaviour, IDamageable
         // ── Directional blend-tree params (VelocityX / VelocityZ) ────────
         if (actualSpeed > 0.05f)
         {
-            Vector3 localVel = transform.InverseTransformDirection(displacement.normalized * normalizedSpeed);
-            SetAnimatorFloat(HashVelX, Mathf.Clamp(localVel.x, -1f, 1f), 0.1f);
-            SetAnimatorFloat(HashVelZ, Mathf.Clamp(localVel.z, -1f, 1f), 0.1f);
+            Vector3 localVel = transform.InverseTransformDirection(
+                agentVelocity.normalized * normalizedSpeed);
+            SetAnimatorFloat(HashVelX, Mathf.Clamp(localVel.x, -1f, 1f), 0.05f);
+            SetAnimatorFloat(HashVelZ, Mathf.Clamp(localVel.z, -1f, 1f), 0.05f);
         }
         else
         {
-            SetAnimatorFloat(HashVelX, 0f);
-            SetAnimatorFloat(HashVelZ, 0f);
+            SetAnimatorFloat(HashVelX, 0f, 0.05f);
+            SetAnimatorFloat(HashVelZ, 0f, 0.05f);
         }
 
         SetAnimatorBool(HashGrounded, _isGrounded);
@@ -859,62 +907,91 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     // ════════════════════════════════════════════════════════════════════════
     //  SEPARATION (Anti-Stacking)
+    //  NavMeshAgent.obstacleAvoidanceType = HighQualityObstacleAvoidance
+    //  + randomized avoidancePriority (set in Awake) handles enemy-vs-enemy
+    //  separation natively now that the agent owns movement. No manual
+    //  push-vector math required.
     // ════════════════════════════════════════════════════════════════════════
 
-    private void ApplySeparation()
+    /// <summary>True if the transform points at something still alive we can damage.</summary>
+    private bool IsTargetValid(Transform t)
     {
-        if (_agent == null || !_agent.enabled) return;
+        if (t == null) return false;
+        IDamageable dmg = t.GetComponentInParent<IDamageable>();
+        return dmg != null && dmg.IsAlive;
+    }
 
-        Collider[] neighbours = Physics.OverlapSphere(transform.position, separationRadius);
-        Vector3 push = Vector3.zero;
-        int pushCount = 0;
+    /// <summary>Raycast-based LoS. Returns true if no blocker layer is set.</summary>
+    private bool HasLineOfSight(Transform t)
+    {
+        if (t == null) return false;
+        if (lineOfSightBlockers.value == 0) return true;
 
-        foreach (Collider nb in neighbours)
-        {
-            if (nb.transform == transform) continue;
-            if (nb.GetComponent<EnemyController>() == null) continue;
+        Vector3 from = transform.position + Vector3.up * lineOfSightEyeHeight;
+        Vector3 to   = t.position + Vector3.up * lineOfSightEyeHeight;
+        Vector3 dir  = to - from;
+        float   d    = dir.magnitude;
+        if (d < 0.05f) return true;
 
-            Vector3 away = transform.position - nb.transform.position;
-            away.y = 0f;
-            float dist = away.magnitude;
-            if (dist < 0.01f)
-            {
-                away = new Vector3(Random.Range(-1f, 1f), 0f, Random.Range(-1f, 1f)).normalized;
-                dist = 0.01f;
-            }
-
-            float strength = 1f - Mathf.Clamp01(dist / separationRadius);
-            push += away.normalized * strength;
-            pushCount++;
-        }
-
-        if (pushCount > 0 && push.sqrMagnitude > 0.001f)
-        {
-            Vector3 offset  = push.normalized * separationStrength * Time.deltaTime;
-            Vector3 newDest = _agent.destination + offset;
-            if (_agent.hasPath) _agent.SetDestination(newDest);
-        }
+        return !Physics.Raycast(
+            from, dir / d, d, lineOfSightBlockers, QueryTriggerInteraction.Ignore);
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  HELPERS
     // ════════════════════════════════════════════════════════════════════════
 
+    private void ConfigureAgent()
+    {
+        if (_agent == null) return;
+
+        _agent.speed                 = chaseSpeed;
+        _agent.stoppingDistance      = Mathf.Max(0.1f, attackRadius * 0.5f);
+        _agent.acceleration          = agentAcceleration;
+        _agent.angularSpeed          = agentAngularSpeed;
+        _agent.avoidancePriority     = Random.Range(30, 70);
+        _agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+        _agent.radius                = 0.45f;
+        _agent.autoBraking           = false;
+        _agent.autoRepath            = true;
+        _agent.updatePosition        = true;
+        _agent.updateRotation        = true;
+    }
+
     private void TransitionTo(State newState)
     {
+        State prevState = _state;
         _state = newState;
 
-        // Stop the agent whenever we aren't actively chasing, so velocity
-        // drops to zero. SyncAnimator (the sole Speed writer) will read the
-        // new _state and drive the blend tree accordingly — no direct
-        // _anim.SetFloat here to avoid competing writers.
-        if (_agent != null && _agent.enabled)
+        if (_agent == null || !_agent.enabled) return;
+
+        switch (newState)
         {
-            if (newState != State.Chase && newState != State.Jumping)
-            {
+            case State.Chase:
+                // Re-engage the agent and immediately seed a destination so
+                // there is never a frame where the agent reports no path.
+                _agent.isStopped = false;
+                if (IsTargetValid(_target))
+                    _agent.SetDestination(_target.position);
+                break;
+
+            case State.Attack:
+                // Stop in place BUT keep the last path so we can resume
+                // chasing instantly on hysteresis break without a re-path delay.
                 _agent.isStopped = true;
-                _agent.ResetPath();
-            }
+                _agent.velocity  = Vector3.zero;
+                break;
+
+            case State.Idle:
+            case State.Flinch:
+                _agent.isStopped = true;
+                _agent.velocity  = Vector3.zero;
+                if (prevState != State.Flinch) _agent.ResetPath();
+                break;
+
+            case State.Jumping:
+                // Jump handler takes over the agent entirely.
+                break;
         }
     }
 
@@ -929,9 +1006,13 @@ public class EnemyController : MonoBehaviour, IDamageable
         direction.y = 0f;
         if (direction.sqrMagnitude < 0.001f) return;
 
-        Quaternion targetRot = Quaternion.LookRotation(direction.normalized, Vector3.up);
-        // Smooth Slerp — rotationSpeed acts as a responsive-but-natural
-        // interpolation factor (same pattern the PlayerController uses).
+        // ★ Exact port of PlayerController's body-rotation Slerp:
+        //     rot = Slerp(rot, Euler(0, targetY, 0), rate * dt)
+        // Using only the Y-axis of the target rotation keeps the enemy
+        // upright even if the target is on uneven ground.
+        float targetY = Quaternion.LookRotation(direction.normalized, Vector3.up).eulerAngles.y;
+        Quaternion targetRot = Quaternion.Euler(0f, targetY, 0f);
+
         transform.rotation = Quaternion.Slerp(
             transform.rotation,
             targetRot,
@@ -939,76 +1020,126 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    //  FFA TARGET SCANNING — "All-Out War" logic
+    //  FFA TARGET SCANNING — "All-Out War" logic with Target Locking
     //
-    //  Priority system (evaluated each scan tick):
-    //    1. ENEMY AGGRESSOR — any other enemy currently targeting this enemy.
-    //    2. RETALIATE      — last enemy that damaged us, if still valid.
-    //    3. NEAREST ENEMY  — any living enemy in detection range.
-    //    4. ARENA FALLBACK — nearest living enemy anywhere in the arena.
-    //    5. PLAYER         — only if no enemy target is available.
+    //  Each scan tick (detectionInterval seconds):
+    //    1. Decrement the lock timer.
+    //    2. If our current target is still valid AND lock > 0 AND still in a
+    //       reasonable range → KEEP IT. (No more flip-flopping every tick.)
+    //    3. If recent attacker memory is hot and the attacker is valid → that
+    //       overrides lock and becomes our new target.
+    //    4. Otherwise scan for the closest valid threat (enemy OR player) and
+    //       only switch if the new candidate is meaningfully closer (hysteresis).
     //
-    //  This stops all enemies from hard-locking onto the player and creates a
-    //  proper arena-wide free-for-all.
+    //  This creates stable engagements — enemies commit to a fight instead of
+    //  constantly re-evaluating targets every frame.
     // ════════════════════════════════════════════════════════════════════════
 
     private IEnumerator TargetScanLoop()
     {
-        // Stagger start so all 11 enemies don't scan on the same frame
+        // Stagger scan start so all spawned enemies don't all scan on the
+        // same frame (tiny perf win + prevents synchronized destination thrash).
         yield return new WaitForSeconds(Random.Range(0f, detectionInterval));
 
+        var wait = new WaitForSeconds(detectionInterval);
         while (true)
         {
             if (_state != State.Dead)
-            {
-                float radius = (_state == State.Chase)
-                    ? detectionRadius * 1.5f
-                    : detectionRadius;
-
-                _target = FindFfaTarget(radius);
-            }
-
-            yield return new WaitForSeconds(detectionInterval);
+                EvaluateTargets();
+            yield return wait;
         }
     }
 
+    private void EvaluateTargets()
+    {
+        _targetLockTimer -= detectionInterval;
+
+        bool currentValid = IsTargetValid(_target);
+
+        // ── 1. Retaliation priority ─────────────────────────────────────────
+        // If we were hit recently and the attacker is still a legal target,
+        // prefer them over the current focus (but still respect range).
+        bool attackerHot = (Time.time - _lastAttackerTime) <= retaliationMemory;
+        if (attackerHot && IsTargetValid(_lastAttacker) && _lastAttacker != _target)
+        {
+            float atkDist = Vector3.Distance(transform.position, _lastAttacker.position);
+            if (atkDist <= detectionRadius * 1.4f)
+            {
+                _target          = _lastAttacker;
+                _targetLockTimer = targetLockDuration;
+                return;
+            }
+        }
+
+        // ── 2. Commit to the existing target while the lock is still hot ──
+        if (currentValid && _targetLockTimer > 0f)
+        {
+            float d = Vector3.Distance(transform.position, _target.position);
+            // Only drop the lock if the target has run miles away.
+            if (d <= detectionRadius * 2.2f) return;
+        }
+
+        // ── 3. Scan for a new candidate ─────────────────────────────────────
+        float scanRadius = currentValid ? detectionRadius * 1.5f : detectionRadius;
+        Transform candidate = FindFfaTarget(scanRadius);
+
+        if (candidate == null)
+        {
+            if (!currentValid) _target = null;
+            return;
+        }
+
+        // ── 4. Hysteresis — don't switch unless newcomer is clearly closer ─
+        if (currentValid && candidate != _target)
+        {
+            float curD = Vector3.Distance(transform.position, _target.position);
+            float newD = Vector3.Distance(transform.position, candidate.position);
+            if (newD >= curD - targetSwitchHysteresis) return; // keep current
+        }
+
+        _target          = candidate;
+        _targetLockTimer = targetLockDuration;
+    }
+
     /// <summary>
-    /// Free-for-All targeting with attacker retaliation.
-    /// Enemies prioritise fighting OTHER ENEMIES over the player.
+    /// Free-for-All targeting. Returns the closest living IDamageable in
+    /// range, preferring visible targets (LoS) and excluding self.
+    /// Both the player and other enemies are fair game.
     /// </summary>
     private Transform FindFfaTarget(float radius)
     {
-        // Use ~0 (all layers) so enemies detect EACH OTHER and the player equally.
-        // The previous detectionMask (Character layer only) caused all enemies to
-        // target only the player when enemies were on a different layer.
-        Collider[] hits = Physics.OverlapSphere(transform.position, radius, ~0, QueryTriggerInteraction.Ignore);
+        Collider[] hits = Physics.OverlapSphere(
+            transform.position, radius, detectionMask, QueryTriggerInteraction.Ignore);
 
-        Transform nearest = null;
-        float nearestDistSqr = float.MaxValue;
-        var evaluated = new HashSet<int>();
+        Transform best      = null;
+        float     bestScore = float.MaxValue;
+        var       evaluated = new HashSet<int>();
 
         foreach (Collider hit in hits)
         {
-            if (hit == null) continue;
-            if (hit.transform == transform) continue;
+            if (hit == null || hit.transform == transform) continue;
 
             IDamageable dmg = hit.GetComponentInParent<IDamageable>();
             if (dmg == null || !dmg.IsAlive) continue;
             if (dmg.gameObject == gameObject) continue;
 
             int id = dmg.gameObject.GetInstanceID();
-            if (evaluated.Contains(id)) continue;
-            evaluated.Add(id);
+            if (!evaluated.Add(id)) continue;
 
-            float d2 = (dmg.transform.position - transform.position).sqrMagnitude;
-            if (d2 < nearestDistSqr)
+            Transform t  = dmg.transform;
+            float     d2 = (t.position - transform.position).sqrMagnitude;
+
+            // Penalise targets we can't see so visible threats win ties.
+            if (!HasLineOfSight(t)) d2 *= 2.25f;
+
+            if (d2 < bestScore)
             {
-                nearestDistSqr = d2;
-                nearest = dmg.transform;
+                bestScore = d2;
+                best      = t;
             }
         }
 
-        return nearest;
+        return best;
     }
 
     private Transform FindNearestLivingEnemy()
@@ -1036,9 +1167,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ════════════════════════════════════════════════════════════════════════
     //  WEAPON ATTACHMENT — Ghost Melee Fix
     //  Searches for "bip_hand_R" by name first (Crosby rig), then falls back
-    //  to other common bone names.  After parenting, localScale is ALWAYS
-    //  forced to (0.1, 0.1, 0.1) so the weapon is visible regardless of
-    //  the skeleton's import scale.
+    //  to other common bone names. A neutral socket is inserted under the
+    //  hand so imported bone compensation scales do not collapse the weapon
+    //  transform or distort its final world size.
     // ════════════════════════════════════════════════════════════════════════
 
     public void AttachWeaponToHand(GameObject weaponPrefab, float targetSize = 0.5f)
@@ -1078,21 +1209,27 @@ public class EnemyController : MonoBehaviour, IDamageable
         float weaponExtent = GetMaxRendererExtent(equippedWeaponObject);
         if (weaponExtent < 0.001f) weaponExtent = 1f;
 
-        // ── 4. Parent to hand bone, reset local transform ───────────────────
-        equippedWeaponObject.transform.SetParent(handBone, worldPositionStays: false);
+        // ── 4. Parent to a neutral socket so imported bone scales do not
+        // shrink the weapon transform down to near-zero local values. ───────
+        Transform weaponSocket = GetOrCreateWeaponSocket(handBone);
+        equippedWeaponObject.transform.SetParent(weaponSocket, worldPositionStays: false);
         equippedWeaponObject.transform.localPosition = Vector3.zero;
         equippedWeaponObject.transform.localRotation = Quaternion.identity;
 
-        // ── 5. Compute localScale so weapon reaches desired WORLD size ──────
-        float uniformScale = targetSize / weaponExtent;
-        Vector3 parentLossy = handBone.lossyScale;
-        equippedWeaponObject.transform.localScale = new Vector3(
-            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
-            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
-            uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
+        // ── 5. Compute localScale from the ACTUAL inherited world size ─────
+        // This is more robust than dividing by handBone.lossyScale directly,
+        // because many imported enemy rigs bake compensation scales into
+        // intermediate bones. Measuring post-parenting keeps the world size
+        // stable without collapsing the weapon root transform.
+        float desiredWorldSize = Mathf.Max(0.01f, targetSize);
+        equippedWeaponObject.transform.localScale = Vector3.one;
+        float inheritedExtent = GetMaxRendererExtent(equippedWeaponObject);
+        if (inheritedExtent < 0.001f) inheritedExtent = weaponExtent;
+        float uniformScale = desiredWorldSize / inheritedExtent;
+        equippedWeaponObject.transform.localScale = Vector3.one * uniformScale;
 
         Debug.Log($"[EnemyController] '{name}' weapon → hand '{handBone.name}' " +
-                  $"targetSize={targetSize} extent={weaponExtent} " +
+                  $"targetSize={desiredWorldSize} extent={weaponExtent} " +
                   $"localScale={equippedWeaponObject.transform.localScale} " +
                   $"lossyScale={equippedWeaponObject.transform.lossyScale}");
 
@@ -1126,6 +1263,28 @@ public class EnemyController : MonoBehaviour, IDamageable
         // ── 9. Visibility fix (URP) ─────────────────────────────────────────
         if (equippedWeaponObject.GetComponent<WeaponVisibilityFix>() == null)
             equippedWeaponObject.AddComponent<WeaponVisibilityFix>();
+    }
+
+    private static Transform GetOrCreateWeaponSocket(Transform handBone)
+    {
+        Transform socket = handBone.Find(WeaponSocketName);
+        if (socket == null)
+        {
+            GameObject socketObject = new GameObject(WeaponSocketName);
+            socket = socketObject.transform;
+            socket.SetParent(handBone, worldPositionStays: false);
+        }
+
+        socket.localPosition = Vector3.zero;
+        socket.localRotation = Quaternion.identity;
+
+        Vector3 handLossy = handBone.lossyScale;
+        socket.localScale = new Vector3(
+            1f / Mathf.Max(Mathf.Abs(handLossy.x), 0.0001f),
+            1f / Mathf.Max(Mathf.Abs(handLossy.y), 0.0001f),
+            1f / Mathf.Max(Mathf.Abs(handLossy.z), 0.0001f));
+
+        return socket;
     }
 
     /// <summary>
