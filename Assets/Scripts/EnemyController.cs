@@ -76,6 +76,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float deathPopForce     = 2f;
 
     // ── State ────────────────────────────────────────────────────────────────
+  // ── State ────────────────────────────────────────────────────────────────
     private enum State { Idle, Chase, Attack, Flinch, Jumping, Dead }
     private State _state = State.Idle;
 
@@ -84,6 +85,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     private AudioSource  _audio;
     private Rigidbody    _rb;
     private int          _currentHealth;
+
+    // Player-style movement state
+    private CharacterController _controller;
+    private Vector3 _horizontalVelocity;
+    private Vector3 _verticalVelocity;
+    public float acceleration = 12f;
+    public float deceleration = 12f;
     private float        _attackTimer;
     private Transform    _target;
     private bool         _lastHitByPlayer;
@@ -146,10 +154,23 @@ public class EnemyController : MonoBehaviour, IDamageable
             _agent.obstacleAvoidanceType  = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
             _agent.radius                 = 0.5f;
 
-            // NavMeshAgent owns POSITION; we own ROTATION via FaceTarget/FaceDirection.
-            _agent.updatePosition         = true;
+            // We now own POSITION via CharacterController, just like the player.
+            _agent.updatePosition         = false;
             _agent.updateRotation         = false;
             _agent.angularSpeed           = 0f;
+        }
+
+       // Setup CharacterController exactly like the Player
+        _controller = GetComponent<CharacterController>();
+        if (_controller == null)
+        {
+            _controller = gameObject.AddComponent<CharacterController>();
+            _controller.height          = 2f;
+            _controller.radius          = 0.5f;
+            _controller.center          = new Vector3(0f, 1f, 0f);
+            _controller.skinWidth       = 0.08f;
+            _controller.stepOffset      = 0.3f;
+            _controller.minMoveDistance = 0.001f;
         }
 
         // ── Animator: disable root motion so NavMeshAgent drives all movement ─
@@ -256,37 +277,57 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        // ── Drive NavMeshAgent ───────────────────────────────────────────────
-        // SyncAnimator() (called at end of Update) is the SOLE writer of the
-        // Speed parameter. We just tell the agent where to go.
+     // ── Update Path ──────────────────────────────────────────────────────
         if (_agent != null && _agent.enabled)
         {
-            _agent.isStopped = false;
-            _agent.speed     = chaseSpeed;
-
             if (!_agent.hasPath || (_agent.destination - _target.position).sqrMagnitude > 0.25f)
                 _agent.SetDestination(_target.position);
+        }
+
+        // ── Player-Style Movement (Acceleration, Gravity, CharacterController) ──
+        Vector3 inputDir = Vector3.zero;
+        if (_agent != null && _agent.hasPath)
+        {
+            inputDir = _agent.steeringTarget - transform.position;
+            inputDir.y = 0f;
+            if (inputDir.sqrMagnitude > 0.01f)
+                inputDir.Normalize();
+        }
+
+        // Apply Acceleration / Deceleration
+        float targetSpeed = chaseSpeed;
+        Vector3 targetVelocity = inputDir * targetSpeed;
+        float rate = inputDir.sqrMagnitude > 0.01f ? acceleration : deceleration;
+        
+        _horizontalVelocity = Vector3.MoveTowards(_horizontalVelocity, targetVelocity, rate * Time.deltaTime);
+
+        // Apply Gravity
+        if (_controller != null && _controller.isGrounded)
+        {
+            _verticalVelocity.y = -2f;
+        }
+        else
+        {
+            _verticalVelocity.y += gravity * Time.deltaTime;
+            _verticalVelocity.y = Mathf.Max(_verticalVelocity.y, -40f);
+        }
+
+        // Execute Move
+        if (_controller != null && _controller.enabled)
+        {
+            _controller.Move((_horizontalVelocity + _verticalVelocity) * Time.deltaTime);
+            
+            // Sync NavMeshAgent to actual position so it calculates paths from where the enemy physically is
+            if (_agent != null) _agent.nextPosition = transform.position;
         }
 
         ApplySeparation();
 
         // ── Smooth rotation ──────────────────────────────────────────────────
-        // Face agent's desired velocity (the path direction) so the body
-        // aligns with the route being followed; fall back to target direction
-        // when movement is negligible (e.g. first frame or repath).
-        Vector3 facingDir = Vector3.zero;
-        if (_agent != null && _agent.enabled)
-        {
-            facingDir = _agent.desiredVelocity;
-            facingDir.y = 0f;
-
-            if (facingDir.sqrMagnitude < 0.01f && _agent.hasPath)
-            {
-                facingDir = _agent.steeringTarget - transform.position;
-                facingDir.y = 0f;
-            }
-        }
-
+        // Face the actual horizontal velocity (just like the player does)
+        Vector3 facingDir = _horizontalVelocity;
+        facingDir.y = 0f;
+        
         if (facingDir.sqrMagnitude < 0.01f)
             facingDir = toTarget;
 
@@ -357,6 +398,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         // Hand movement over to physics
         if (_agent != null) _agent.enabled = false;
+        if (_controller != null) _controller.enabled = false;
         _rb.isKinematic = false;
 
         // Same formula the Player uses in Jump():
@@ -407,7 +449,7 @@ public class EnemyController : MonoBehaviour, IDamageable
                 _agent.enabled = true;
                 _agent.Warp(transform.position);
             }
-
+            if (_controller != null) _controller.enabled = true;
             SetAnimatorBool(HashGrounded, true);
 
             // Resume what we were doing before the jump
