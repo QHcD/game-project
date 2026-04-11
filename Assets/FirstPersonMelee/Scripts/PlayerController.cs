@@ -1642,6 +1642,7 @@ public class PlayerController : MonoBehaviour
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
         ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
+        WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
 
         Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
@@ -1808,6 +1809,10 @@ public class PlayerController : MonoBehaviour
             weapon.transform.localRotation = Quaternion.identity;
             ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
             ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
+            WeaponLoadoutCatalog.ApplyRuntimeOverrides(
+                GameManager.Instance != null ? GameManager.Instance.currentLevel : 1,
+                levelPrefab,
+                weapon);
 
             // Safety: if scale ended up near-zero, force a visible fallback
             Vector3 lossyFinal = weapon.transform.lossyScale;

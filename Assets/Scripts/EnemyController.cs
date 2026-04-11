@@ -1237,6 +1237,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         float uniformScale = desiredWorldSize / inheritedExtent;
         equippedWeaponObject.transform.localScale = Vector3.one * uniformScale;
         ApplyWeaponGripPose();
+        WeaponLoadoutCatalog.ApplyRuntimeOverrides(GameManager.Instance != null ? GameManager.Instance.currentLevel : 1, weaponPrefab, equippedWeaponObject);
 
         Debug.Log($"[EnemyController] '{name}' weapon → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +

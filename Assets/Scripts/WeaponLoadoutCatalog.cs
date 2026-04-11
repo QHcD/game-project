@@ -78,6 +78,15 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.156f, -0.007f, -0.04f);
     private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(8f, 0f, 90f);
     private static readonly Vector3 HammerEnemySocketLocalEuler = new Vector3(15.2525f, -24.1971f, -111.6271f);
+    // Level 12 saw: the imported mesh keeps the blade on negative X and the
+    // actual hand grip on the positive-X handle shell. With the project-wide
+    // Z=90 one-handed convention, that handle pocket maps to large +X / -Y
+    // socket offsets, so a generic short-grip preset lands the palm on the
+    // blade body instead of the usable handle.
+    private static readonly Vector3 SawPlayerLocalPosition = new Vector3(0.246f, -0.270f, 0.002f);
+    private static readonly Vector3 SawPlayerLocalEuler = new Vector3(0f, 0f, 90f);
+    private static readonly Vector3 SawEnemyLocalPosition = new Vector3(0.244f, -0.264f, 0.002f);
+    private static readonly Vector3 SawEnemyLocalEuler = new Vector3(0f, 0f, 90f);
     // ── Level 9 axe (single source of truth) ──
     // Empirically verified on the real Crosby body (bip_hand_R) with the
     // runtime 0.70m autoscale applied. The axe FBX has an extremely
@@ -203,7 +212,12 @@ public static class WeaponLoadoutCatalog
                 return CreateLongGrip(1.00f,
                     "Weapons/Imported/nailed-plank(level11)/source/NailedPlank/NailedPlank");
             case 12:
-                return CreateShortGrip(0.40f,
+                return CreateExactGrip(
+                    0.40f,
+                    SawPlayerLocalPosition,
+                    SawPlayerLocalEuler,
+                    SawEnemyLocalPosition,
+                    SawEnemyLocalEuler,
                     "Weapons/Imported/saw(level12)/source/extracted/saw_low");
             case 13:
                 return CreateShortGrip(0.35f,
@@ -231,6 +245,20 @@ public static class WeaponLoadoutCatalog
                 return HammerEnemySocketLocalEuler;
             default:
                 return Vector3.zero;
+        }
+    }
+
+    public static void ApplyRuntimeOverrides(int level, GameObject sourcePrefab, GameObject weaponRoot)
+    {
+        if (sourcePrefab == null || weaponRoot == null)
+            return;
+
+        switch (Mathf.Clamp(level, 1, 16))
+        {
+            case 12:
+                if (sourcePrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    ApplyBlackSawMaterialOverride(weaponRoot);
+                break;
         }
     }
 
@@ -321,5 +349,45 @@ public static class WeaponLoadoutCatalog
             playerLocalEuler,
             enemyLocalPosition,
             enemyLocalEuler);
+    }
+
+    private static void ApplyBlackSawMaterialOverride(GameObject weaponRoot)
+    {
+        Color sawBlack = new Color(0.045f, 0.045f, 0.045f, 1f);
+        Shader fallbackShader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+        if (fallbackShader == null)
+            return;
+
+        Renderer[] renderers = weaponRoot.GetComponentsInChildren<Renderer>(true);
+
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null)
+                continue;
+
+            Material[] materials = renderer.materials;
+            if (materials == null || materials.Length == 0)
+                materials = new[] { new Material(fallbackShader) };
+
+            for (int j = 0; j < materials.Length; j++)
+            {
+                Material source = materials[j];
+                Material material = source != null ? new Material(source) : new Material(fallbackShader);
+
+                if (material.HasProperty("_BaseMap")) material.SetTexture("_BaseMap", null);
+                if (material.HasProperty("_MainTex")) material.SetTexture("_MainTex", null);
+                if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", sawBlack);
+                if (material.HasProperty("_Color")) material.SetColor("_Color", sawBlack);
+                if (material.HasProperty("_EmissionColor")) material.SetColor("_EmissionColor", Color.black);
+                if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", 0.12f);
+                if (material.HasProperty("_Glossiness")) material.SetFloat("_Glossiness", 0.18f);
+                if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", 0.18f);
+
+                materials[j] = material;
+            }
+
+            renderer.materials = materials;
+        }
     }
 }
