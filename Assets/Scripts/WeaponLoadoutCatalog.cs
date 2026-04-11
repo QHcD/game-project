@@ -57,6 +57,19 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 MediumEnemyLocalPosition = new Vector3(-0.025f, -0.0025f, 0f);
     private static readonly Vector3 LongPlayerLocalPosition = new Vector3(-0.045f, -0.005f, 0f);
     private static readonly Vector3 LongEnemyLocalPosition = new Vector3(-0.035f, -0.0025f, 0f);
+    // Crosby's right-hand basis inverts the katana end-for-end relative to
+    // the Ronin wrist basis, so level 2 needs an enemy-only grip reversal
+    // while keeping the player pose unchanged.
+    private static readonly Vector3 KatanaEnemyLocalEuler = ReversedOneHandedGripEuler;
+    // Same Crosby hand basis issue as the katana: the bat needs an enemy-only
+    // end-for-end correction while preserving the player grip basis.
+    private static readonly Vector3 BaseballBatEnemyLocalEuler = ReversedOneHandedGripEuler;
+    // Level 15 shares the same enemy hand-basis inversion, so it also needs
+    // an enemy-only end-for-end correction to match the player's forward grip.
+    private static readonly Vector3 Level15EnemyLocalEuler = ReversedOneHandedGripEuler;
+    // Level 16 shield also inherits the enemy hand-basis inversion, so it
+    // needs an enemy-only forward-facing correction to match the player grip.
+    private static readonly Vector3 Level16EnemyLocalEuler = ReversedOneHandedGripEuler;
     private static readonly Vector3 PolePlayerLocalPosition = new Vector3(-0.06f, -0.0075f, 0f);
     private static readonly Vector3 PoleEnemyLocalPosition = new Vector3(-0.05f, -0.003f, 0f);
     // Level 6 wrench: dedicated exact grip values. The imported FBX long axis
@@ -78,6 +91,10 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.156f, -0.007f, -0.04f);
     private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(8f, 0f, 90f);
     private static readonly Vector3 HammerEnemySocketLocalEuler = new Vector3(15.2525f, -24.1971f, -111.6271f);
+    // Crosby's hand basis points the pole shaft backward relative to the
+    // player wrist basis, so pole levels need a pre-grip socket flip on the
+    // enemy side instead of more per-weapon position nudges.
+    private static readonly Vector3 PoleEnemySocketLocalEuler = new Vector3(0f, 180f, 0f);
     // Level 12 saw: the imported mesh keeps the blade on negative X and the
     // actual hand grip on the positive-X handle shell. With the project-wide
     // Z=90 one-handed convention, that handle pocket maps to large +X / -Y
@@ -87,6 +104,17 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 SawPlayerLocalEuler = new Vector3(0f, 0f, 90f);
     private static readonly Vector3 SawEnemyLocalPosition = new Vector3(0.244f, -0.264f, 0.002f);
     private static readonly Vector3 SawEnemyLocalEuler = new Vector3(0f, 0f, 90f);
+    private static readonly Vector3 SawRuntimeMeshLocalEuler = OneHandedGripEuler;
+    // The socket-side helper only neutralizes the hand socket. The actual
+    // source-of-truth grip lives on the weapon as a handle anchor derived
+    // from the saw mesh bounds so both player and enemy grab the real rear
+    // handle opening instead of the blade body.
+    private const string SawRuntimeSocketAnchorName = "Level12SawSocketAnchor";
+    private const string SawRuntimeHandleAnchorName = "Level12SawHandleAnchor";
+    private static readonly Vector3 SawRuntimeFallbackGripPoint = new Vector3(0.332f, 0.124f, 0.002f);
+    private const float SawHandleGripXNormalized = 0.835f;
+    private const float SawHandleGripYNormalized = 0.295f;
+    private const float SawHandleGripZNormalized = 0.50f;
     // ── Level 9 axe (single source of truth) ──
     // Empirically verified on the real Crosby body (bip_hand_R) with the
     // runtime 0.70m autoscale applied. The axe FBX has an extremely
@@ -161,10 +189,12 @@ public static class WeaponLoadoutCatalog
                 return CreateShortGrip(0.32f,
                     "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife");
             case 2:
-                return CreatePlayerMatchedGrip(
+                return CreateExactGrip(
                     0.95f,
                     LongPlayerLocalPosition,
                     DefaultPlayerLocalEuler,
+                    LongEnemyLocalPosition,
+                    KatanaEnemyLocalEuler,
                     "Weapons/Imported/Katana(level2)/source/Katana_low",
                     "Weapons/Imported/Katana(level2)/source/melee");
             case 3:
@@ -174,10 +204,12 @@ public static class WeaponLoadoutCatalog
                     DefaultPlayerLocalEuler,
                     "Weapons/Imported/shovel(level3)/source/Shovel/Shovel");
             case 4:
-                return CreatePlayerMatchedGrip(
+                return CreateExactGrip(
                     0.85f,
                     LongPlayerLocalPosition,
                     DefaultPlayerLocalEuler,
+                    LongEnemyLocalPosition,
+                    BaseballBatEnemyLocalEuler,
                     "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k");
             case 5:
                 return CreateShortGrip(0.30f,
@@ -239,16 +271,20 @@ public static class WeaponLoadoutCatalog
                 return CreateMediumGrip(0.50f,
                     "Weapons/Imported/medieval(level14)/source/Medieval_morgenstern_low2 scene");
             case 15:
-                return CreatePlayerMatchedGrip(
+                return CreateExactGrip(
                     0.60f,
                     MediumPlayerLocalPosition,
                     DefaultPlayerLocalEuler,
+                    MediumEnemyLocalPosition,
+                    Level15EnemyLocalEuler,
                     "Weapons/Imported/l3fte(level15)/source/L3FT_E");
             case 16:
-                return CreatePlayerMatchedGrip(
+                return CreateExactGrip(
                     0.90f,
                     DefaultPlayerLocalPosition,
                     DefaultPlayerLocalEuler,
+                    DefaultEnemyLocalPosition,
+                    Level16EnemyLocalEuler,
                     "Weapons/Imported/shield(level16)/source/RiotShield/Riot Shield");
             default:
                 // No fallback FBX — primitive knife generated in code.
@@ -260,6 +296,9 @@ public static class WeaponLoadoutCatalog
     {
         switch (Mathf.Clamp(level, 1, 16))
         {
+            case 3:
+            case 10:
+                return PoleEnemySocketLocalEuler;
             case 8:
                 return HammerEnemySocketLocalEuler;
             default:
@@ -278,6 +317,164 @@ public static class WeaponLoadoutCatalog
                 if (sourcePrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0)
                     ApplyBlackSawMaterialOverride(weaponRoot);
                 break;
+        }
+    }
+
+    public static bool UsesRuntimeGripAnchor(int level, GameObject sourcePrefab)
+    {
+        return Mathf.Clamp(level, 1, 16) == 12
+            && sourcePrefab != null
+            && sourcePrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    public static Transform GetOrCreateRuntimeGripAnchor(int level, GameObject sourcePrefab, Transform weaponSocket)
+    {
+        if (!UsesRuntimeGripAnchor(level, sourcePrefab) || weaponSocket == null)
+            return weaponSocket;
+
+        Transform gripAnchor = weaponSocket.Find(SawRuntimeSocketAnchorName);
+        if (gripAnchor == null)
+        {
+            GameObject gripObject = new GameObject(SawRuntimeSocketAnchorName);
+            gripAnchor = gripObject.transform;
+            gripAnchor.SetParent(weaponSocket, worldPositionStays: false);
+        }
+
+        gripAnchor.localPosition = Vector3.zero;
+        gripAnchor.localRotation = Quaternion.identity;
+        gripAnchor.localScale = Vector3.one;
+        return gripAnchor;
+    }
+
+    public static bool ApplyRuntimeGripPose(int level, GameObject sourcePrefab, Transform weaponRoot)
+    {
+        if (!UsesRuntimeGripAnchor(level, sourcePrefab) || weaponRoot == null)
+            return false;
+
+        weaponRoot.localRotation = Quaternion.Euler(SawRuntimeMeshLocalEuler);
+        weaponRoot.localPosition = Vector3.zero;
+
+        Vector3 gripPoint = TryGetSawRuntimeGripPoint(weaponRoot, out Vector3 computedGripPoint)
+            ? computedGripPoint
+            : SawRuntimeFallbackGripPoint;
+
+        Transform handleAnchor = GetOrCreateSawRuntimeHandleAnchor(weaponRoot);
+        handleAnchor.localPosition = gripPoint;
+        handleAnchor.localRotation = Quaternion.identity;
+        handleAnchor.localScale = Vector3.one;
+
+        Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
+        weaponRoot.localPosition = -(weaponRoot.localRotation * scaledGripPoint);
+        return true;
+    }
+
+    private static Transform GetOrCreateSawRuntimeHandleAnchor(Transform weaponRoot)
+    {
+        Transform handleAnchor = weaponRoot.Find(SawRuntimeHandleAnchorName);
+        if (handleAnchor == null)
+        {
+            GameObject handleAnchorObject = new GameObject(SawRuntimeHandleAnchorName);
+            handleAnchor = handleAnchorObject.transform;
+            handleAnchor.SetParent(weaponRoot, worldPositionStays: false);
+        }
+
+        return handleAnchor;
+    }
+
+    private static bool TryGetSawRuntimeGripPoint(Transform weaponRoot, out Vector3 gripPoint)
+    {
+        gripPoint = SawRuntimeFallbackGripPoint;
+
+        if (!TryGetCombinedLocalBounds(weaponRoot, out Bounds localBounds))
+            return false;
+
+        gripPoint = new Vector3(
+            Mathf.Lerp(localBounds.min.x, localBounds.max.x, SawHandleGripXNormalized),
+            Mathf.Lerp(localBounds.min.y, localBounds.max.y, SawHandleGripYNormalized),
+            Mathf.Lerp(localBounds.min.z, localBounds.max.z, SawHandleGripZNormalized));
+        return true;
+    }
+
+    private static bool TryGetCombinedLocalBounds(Transform root, out Bounds combinedBounds)
+    {
+        combinedBounds = new Bounds();
+        if (root == null)
+            return false;
+
+        bool hasBounds = false;
+        Matrix4x4 rootWorldToLocal = root.worldToLocalMatrix;
+
+        MeshFilter[] meshFilters = root.GetComponentsInChildren<MeshFilter>(true);
+        for (int i = 0; i < meshFilters.Length; i++)
+        {
+            MeshFilter meshFilter = meshFilters[i];
+            if (meshFilter == null || meshFilter.sharedMesh == null)
+                continue;
+
+            EncapsulateTransformedBounds(
+                ref combinedBounds,
+                ref hasBounds,
+                meshFilter.sharedMesh.bounds,
+                rootWorldToLocal * meshFilter.transform.localToWorldMatrix);
+        }
+
+        SkinnedMeshRenderer[] skinnedMeshes = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+        for (int i = 0; i < skinnedMeshes.Length; i++)
+        {
+            SkinnedMeshRenderer skinnedMesh = skinnedMeshes[i];
+            if (skinnedMesh == null)
+                continue;
+
+            Bounds sourceBounds = skinnedMesh.localBounds;
+            if (sourceBounds.size.sqrMagnitude <= 0f && skinnedMesh.sharedMesh != null)
+                sourceBounds = skinnedMesh.sharedMesh.bounds;
+
+            if (sourceBounds.size.sqrMagnitude <= 0f)
+                continue;
+
+            EncapsulateTransformedBounds(
+                ref combinedBounds,
+                ref hasBounds,
+                sourceBounds,
+                rootWorldToLocal * skinnedMesh.transform.localToWorldMatrix);
+        }
+
+        return hasBounds;
+    }
+
+    private static void EncapsulateTransformedBounds(
+        ref Bounds combinedBounds,
+        ref bool hasBounds,
+        Bounds sourceBounds,
+        Matrix4x4 localToRoot)
+    {
+        Vector3 min = sourceBounds.min;
+        Vector3 max = sourceBounds.max;
+
+        Vector3[] corners =
+        {
+            new Vector3(min.x, min.y, min.z),
+            new Vector3(min.x, min.y, max.z),
+            new Vector3(min.x, max.y, min.z),
+            new Vector3(min.x, max.y, max.z),
+            new Vector3(max.x, min.y, min.z),
+            new Vector3(max.x, min.y, max.z),
+            new Vector3(max.x, max.y, min.z),
+            new Vector3(max.x, max.y, max.z),
+        };
+
+        for (int i = 0; i < corners.Length; i++)
+        {
+            Vector3 point = localToRoot.MultiplyPoint3x4(corners[i]);
+            if (!hasBounds)
+            {
+                combinedBounds = new Bounds(point, Vector3.zero);
+                hasBounds = true;
+            }
+            else
+            {
+                combinedBounds.Encapsulate(point);
+            }
         }
     }
 
@@ -424,4 +621,5 @@ public static class WeaponLoadoutCatalog
             renderer.materials = materials;
         }
     }
+
 }

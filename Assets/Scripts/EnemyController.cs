@@ -1224,6 +1224,16 @@ public class EnemyController : MonoBehaviour, IDamageable
         equippedWeaponObject.transform.SetParent(weaponSocket, worldPositionStays: false);
         equippedWeaponObject.transform.localPosition = Vector3.zero;
         equippedWeaponObject.transform.localRotation = Quaternion.identity;
+        Transform runtimeGripParent = WeaponLoadoutCatalog.GetOrCreateRuntimeGripAnchor(
+            GameManager.Instance != null ? GameManager.Instance.currentLevel : 1,
+            weaponPrefab,
+            weaponSocket);
+        if (runtimeGripParent != weaponSocket)
+        {
+            equippedWeaponObject.transform.SetParent(runtimeGripParent, worldPositionStays: false);
+            equippedWeaponObject.transform.localPosition = Vector3.zero;
+            equippedWeaponObject.transform.localRotation = Quaternion.identity;
+        }
 
         // ── 5. Compute localScale from the ACTUAL inherited world size ─────
         // This is more robust than dividing by handBone.lossyScale directly,
@@ -1236,8 +1246,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (inheritedExtent < 0.001f) inheritedExtent = weaponExtent;
         float uniformScale = desiredWorldSize / inheritedExtent;
         equippedWeaponObject.transform.localScale = Vector3.one * uniformScale;
-        ApplyWeaponGripPose();
-        WeaponLoadoutCatalog.ApplyRuntimeOverrides(GameManager.Instance != null ? GameManager.Instance.currentLevel : 1, weaponPrefab, equippedWeaponObject);
+        int currentLevel = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(currentLevel, weaponPrefab, equippedWeaponObject.transform))
+            ApplyWeaponGripPose();
+        WeaponLoadoutCatalog.ApplyRuntimeOverrides(currentLevel, weaponPrefab, equippedWeaponObject);
 
         Debug.Log($"[EnemyController] '{name}' weapon → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +

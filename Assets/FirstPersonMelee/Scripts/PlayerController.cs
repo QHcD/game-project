@@ -1632,16 +1632,24 @@ public class PlayerController : MonoBehaviour
         weapon.transform.SetParent(weaponSocket, worldPositionStays: false);
         weapon.transform.localPosition = Vector3.zero;
         weapon.transform.localRotation = Quaternion.identity;
+        Transform runtimeGripParent = WeaponLoadoutCatalog.GetOrCreateRuntimeGripAnchor(level, prefab, weaponSocket);
+        if (runtimeGripParent != weaponSocket)
+        {
+            weapon.transform.SetParent(runtimeGripParent, worldPositionStays: false);
+            weapon.transform.localPosition = Vector3.zero;
+            weapon.transform.localRotation = Quaternion.identity;
+        }
 
         // ── 6. Compute localScale so weapon reaches desired WORLD size ──────
         float desiredWorldSize = finalTargetSize;
         float uniformScale = desiredWorldSize / weaponExtent;
-        Vector3 parentLossy = weaponSocket.lossyScale;
+        Vector3 parentLossy = weapon.transform.parent != null ? weapon.transform.parent.lossyScale : weaponSocket.lossyScale;
         weapon.transform.localScale = new Vector3(
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
-        ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
+        if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(level, prefab, weapon.transform))
+            ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
 
         Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
