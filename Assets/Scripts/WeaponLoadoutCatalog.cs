@@ -59,9 +59,15 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 LongEnemyLocalPosition = new Vector3(-0.035f, -0.0025f, 0f);
     private static readonly Vector3 PolePlayerLocalPosition = new Vector3(-0.06f, -0.0075f, 0f);
     private static readonly Vector3 PoleEnemyLocalPosition = new Vector3(-0.05f, -0.003f, 0f);
-    private static readonly Vector3 WrenchPlayerLocalPosition = new Vector3(-0.115f, -0.0125f, 0.0025f);
+    // Level 6 wrench: dedicated exact grip values. The imported FBX long axis
+    // is local Y with bounds roughly [-25.1559 .. +18.9399]. After the 0.40m
+    // autoscale, the handle butt sits ~0.228m from the pivot on the -Y end.
+    // With the project-wide Z=90 one-handed convention that butt end maps to
+    // +X in socket space, so the weapon root must move in -X for the palm to
+    // close around the start of the handle instead of the middle/head.
+    private static readonly Vector3 WrenchPlayerLocalPosition = new Vector3(-0.208f, -0.0125f, 0.0025f);
     private static readonly Vector3 WrenchPlayerLocalEuler = new Vector3(10f, 0f, 90f);
-    private static readonly Vector3 WrenchEnemyLocalPosition = new Vector3(-0.095f, -0.0085f, 0.0025f);
+    private static readonly Vector3 WrenchEnemyLocalPosition = new Vector3(-0.182f, -0.0085f, 0.0025f);
     private static readonly Vector3 WrenchEnemyLocalEuler = new Vector3(12f, 0f, 90f);
     private static readonly Vector3 CrowbarPlayerLocalPosition = new Vector3(-0.135f, -0.006f, 0.006f);
     private static readonly Vector3 CrowbarPlayerLocalEuler = new Vector3(0f, 180f, 104f);
