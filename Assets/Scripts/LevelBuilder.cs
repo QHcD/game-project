@@ -529,6 +529,7 @@ public class LevelBuilder : MonoBehaviour
 
         controller.weaponGripLocalPosition = loadout.EnemyLocalPosition;
         controller.weaponGripLocalEulerAngles = loadout.EnemyLocalEuler;
+        controller.weaponSocketLocalEulerAngles = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
 
         // Single source of truth for enemy weapon socketing/stabilization.
         controller.AttachWeaponToHand(weaponPrefab, targetSize);

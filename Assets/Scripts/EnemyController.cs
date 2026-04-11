@@ -60,6 +60,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Local grip rotation offset in degrees so the blade/head extends forward from the hand.")]
     [FormerlySerializedAs("weaponGripLocalEuler")]
     public Vector3 weaponGripLocalEulerAngles = new Vector3(0f, 0f, 90f);
+    [Tooltip("Optional local socket rotation normalization applied before per-weapon grip offsets.")]
+    public Vector3 weaponSocketLocalEulerAngles = Vector3.zero;
 
     [HideInInspector] public GameObject equippedWeaponObject;
 
@@ -1218,6 +1220,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // ── 4. Parent to a neutral socket so imported bone scales do not
         // shrink the weapon transform down to near-zero local values. ───────
         Transform weaponSocket = GetOrCreateWeaponSocket(handBone);
+        weaponSocket.localRotation = Quaternion.Euler(weaponSocketLocalEulerAngles);
         equippedWeaponObject.transform.SetParent(weaponSocket, worldPositionStays: false);
         equippedWeaponObject.transform.localPosition = Vector3.zero;
         equippedWeaponObject.transform.localRotation = Quaternion.identity;

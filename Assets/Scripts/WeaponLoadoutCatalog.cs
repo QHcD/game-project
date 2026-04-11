@@ -75,8 +75,9 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 CrowbarEnemyLocalEuler = new Vector3(0f, 180f, 104f);
     private static readonly Vector3 HammerPlayerLocalPosition = new Vector3(-0.156f, -0.0085f, -0.03f);
     private static readonly Vector3 HammerPlayerLocalEuler = new Vector3(8f, 0f, 90f);
-    private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.134f, -0.006f, -0.026f);
-    private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(10f, 0f, 90f);
+    private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.156f, -0.007f, -0.04f);
+    private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(8f, 0f, 90f);
+    private static readonly Vector3 HammerEnemySocketLocalEuler = new Vector3(15.2525f, -24.1971f, -111.6271f);
     // ── Level 9 axe (single source of truth) ──
     // Empirically verified on the real Crosby body (bip_hand_R) with the
     // runtime 0.70m autoscale applied. The axe FBX has an extremely
@@ -219,6 +220,17 @@ public static class WeaponLoadoutCatalog
             default:
                 // No fallback FBX — primitive knife generated in code.
                 return Create(0.30f);
+        }
+    }
+
+    public static Vector3 GetEnemySocketLocalEuler(int level)
+    {
+        switch (Mathf.Clamp(level, 1, 16))
+        {
+            case 8:
+                return HammerEnemySocketLocalEuler;
+            default:
+                return Vector3.zero;
         }
     }
 
