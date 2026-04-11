@@ -522,15 +522,15 @@ public class LevelBuilder : MonoBehaviour
             return;
         }
 
-        // Set explicit hand socket override when available.
-        Transform handBone = level == 1 || level == 5 || level == 6
-            ? FindDeepChild(enemy.transform, "bip_hand_R") ?? FindRightHandBone(enemy.transform)
-            : FindRightHandBone(enemy.transform);
+        // Prefer the rig-authored weapon socket so Crosby presents the melee
+        // weapon with the same underhand grip silhouette as the player body.
+        Transform handBone = FindRightHandBone(enemy.transform);
         if (handBone != null)
             controller.weaponAttachPoint = handBone;
 
         controller.weaponGripLocalPosition = loadout.EnemyLocalPosition;
         controller.weaponGripLocalEulerAngles = loadout.EnemyLocalEuler;
+        controller.stabilizeWeaponSocketAgainstHandPose = level == 9;
         controller.weaponSocketLocalEulerAngles = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
 
         // Single source of truth for enemy weapon socketing/stabilization.

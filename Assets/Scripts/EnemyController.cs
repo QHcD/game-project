@@ -62,6 +62,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     public Vector3 weaponGripLocalEulerAngles = new Vector3(0f, 0f, 90f);
     [Tooltip("Optional local socket rotation normalization applied before per-weapon grip offsets.")]
     public Vector3 weaponSocketLocalEulerAngles = Vector3.zero;
+    [Tooltip("When enabled, continuously removes the animated hand bone basis so the weapon can keep a player-matched pose on Crosby.")]
+    public bool stabilizeWeaponSocketAgainstHandPose = false;
 
     [HideInInspector] public GameObject equippedWeaponObject;
 
@@ -148,6 +150,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool  _isGrounded = true;
     private State _preJumpState;
     private HashSet<int> _animParameterHashes;
+    private Transform _activeWeaponSocket;
+    private Transform _activeWeaponHandBone;
 
     // Position-delta velocity (same technique the PlayerController uses)
     private Vector3 _lastFramePosition;
@@ -270,6 +274,19 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         SyncAnimator();
+    }
+
+    private void LateUpdate()
+    {
+        if (!stabilizeWeaponSocketAgainstHandPose)
+            return;
+
+        if (_activeWeaponSocket == null || _activeWeaponHandBone == null)
+            return;
+
+        _activeWeaponSocket.localRotation =
+            Quaternion.Inverse(_activeWeaponHandBone.localRotation) *
+            Quaternion.Euler(weaponSocketLocalEulerAngles);
     }
 
     // ── State handlers ────────────────────────────────────────────────────────
@@ -1187,6 +1204,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             Destroy(equippedWeaponObject);
             equippedWeaponObject = null;
         }
+        _activeWeaponSocket = null;
+        _activeWeaponHandBone = null;
 
         if (weaponPrefab == null) return;
 
@@ -1220,7 +1239,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         // ── 4. Parent to a neutral socket so imported bone scales do not
         // shrink the weapon transform down to near-zero local values. ───────
         Transform weaponSocket = GetOrCreateWeaponSocket(handBone);
-        weaponSocket.localRotation = Quaternion.Euler(weaponSocketLocalEulerAngles);
+        Quaternion socketRotation = Quaternion.Euler(weaponSocketLocalEulerAngles);
+        if (stabilizeWeaponSocketAgainstHandPose)
+            socketRotation = Quaternion.Inverse(handBone.localRotation) * socketRotation;
+        weaponSocket.localRotation = socketRotation;
+        _activeWeaponSocket = weaponSocket;
+        _activeWeaponHandBone = handBone;
         equippedWeaponObject.transform.SetParent(weaponSocket, worldPositionStays: false);
         equippedWeaponObject.transform.localPosition = Vector3.zero;
         equippedWeaponObject.transform.localRotation = Quaternion.identity;
