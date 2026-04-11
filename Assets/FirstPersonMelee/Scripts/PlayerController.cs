@@ -1648,7 +1648,7 @@ public class PlayerController : MonoBehaviour
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
-        if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(level, prefab, weapon.transform))
+        if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, prefab, weapon.transform))
             ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
 
@@ -1816,7 +1816,8 @@ public class PlayerController : MonoBehaviour
             weapon.transform.localPosition = Vector3.zero;
             weapon.transform.localRotation = Quaternion.identity;
             ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
-            ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
+            if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, levelPrefab, weapon.transform))
+                ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
             WeaponLoadoutCatalog.ApplyRuntimeOverrides(
                 GameManager.Instance != null ? GameManager.Instance.currentLevel : 1,
                 levelPrefab,

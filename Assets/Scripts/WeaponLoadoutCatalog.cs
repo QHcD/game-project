@@ -136,6 +136,16 @@ public static class WeaponLoadoutCatalog
     private const float SawHandleGripXNormalized = 0.835f;
     private const float SawHandleGripYNormalized = 0.295f;
     private const float SawHandleGripZNormalized = 0.50f;
+    // Level 13 sickle: the imported FBX pivot sits too close to the blade mass
+    // for the generic short-grip preset, so the player grabs through the mesh
+    // and the weapon reads as tiny/hidden on frame one. Use a player-only
+    // handle anchor derived from the sickle bounds and keep the usual one-hand
+    // silhouette instead of altering the shared scale pipeline.
+    private static readonly Vector3 SicklePlayerLocalPosition = new Vector3(-0.082f, 0.026f, 0.028f);
+    private static readonly Vector3 SicklePlayerLocalEuler = new Vector3(12f, 180f, 102f);
+    private const float SickleHandleGripXNormalized = 0.68f;
+    private const float SickleHandleGripYNormalized = 0.31f;
+    private const float SickleHandleGripZNormalized = 0.50f;
     // ── Level 9 axe (single source of truth) ──
     // Empirically verified on the real Crosby body (bip_hand_R) with the
     // runtime 0.70m autoscale applied. The axe FBX has an extremely
@@ -298,7 +308,12 @@ public static class WeaponLoadoutCatalog
                     SawEnemyLocalEuler,
                     "Weapons/Imported/saw(level12)/source/extracted/saw_low");
             case 13:
-                return CreateShortGrip(0.35f,
+                return CreateExactGrip(
+                    0.72f,
+                    SicklePlayerLocalPosition,
+                    SicklePlayerLocalEuler,
+                    DefaultEnemyLocalPosition,
+                    DefaultEnemyLocalEuler,
                     "Weapons/Imported/sickle(level13)/source/Sickle");
             case 14:
                 return CreateMediumGrip(0.50f,
@@ -401,6 +416,36 @@ public static class WeaponLoadoutCatalog
         Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
         weaponRoot.localPosition = -(weaponRoot.localRotation * scaledGripPoint);
         return true;
+    }
+
+    public static bool ApplyPlayerRuntimeGripPose(int level, GameObject sourcePrefab, Transform weaponRoot)
+    {
+        if (weaponRoot == null)
+            return false;
+
+        int clampedLevel = Mathf.Clamp(level, 1, 16);
+        if (clampedLevel == 13
+            && sourcePrefab != null
+            && sourcePrefab.name.IndexOf("sickle", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            weaponRoot.localRotation = Quaternion.Euler(SicklePlayerLocalEuler);
+
+            if (TryGetCombinedLocalBounds(weaponRoot, out Bounds localBounds))
+            {
+                Vector3 gripPoint = new Vector3(
+                    Mathf.Lerp(localBounds.min.x, localBounds.max.x, SickleHandleGripXNormalized),
+                    Mathf.Lerp(localBounds.min.y, localBounds.max.y, SickleHandleGripYNormalized),
+                    Mathf.Lerp(localBounds.min.z, localBounds.max.z, SickleHandleGripZNormalized));
+                Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
+                weaponRoot.localPosition = SicklePlayerLocalPosition - (weaponRoot.localRotation * scaledGripPoint);
+                return true;
+            }
+
+            weaponRoot.localPosition = SicklePlayerLocalPosition;
+            return true;
+        }
+
+        return ApplyRuntimeGripPose(level, sourcePrefab, weaponRoot);
     }
 
     private static Transform GetOrCreateSawRuntimeHandleAnchor(Transform weaponRoot)
