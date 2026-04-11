@@ -161,14 +161,23 @@ public static class WeaponLoadoutCatalog
                 return CreateShortGrip(0.32f,
                     "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife");
             case 2:
-                return CreateLongGrip(0.95f,
+                return CreatePlayerMatchedGrip(
+                    0.95f,
+                    LongPlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
                     "Weapons/Imported/Katana(level2)/source/Katana_low",
                     "Weapons/Imported/Katana(level2)/source/melee");
             case 3:
-                return CreatePoleGrip(1.00f,
+                return CreatePlayerMatchedGrip(
+                    1.00f,
+                    PolePlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
                     "Weapons/Imported/shovel(level3)/source/Shovel/Shovel");
             case 4:
-                return CreateLongGrip(0.85f,
+                return CreatePlayerMatchedGrip(
+                    0.85f,
+                    LongPlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
                     "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k");
             case 5:
                 return CreateShortGrip(0.30f,
@@ -182,12 +191,10 @@ public static class WeaponLoadoutCatalog
                     WrenchEnemyLocalEuler,
                     "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal");
             case 7:
-                return CreateExactGrip(
+                return CreatePlayerMatchedGrip(
                     0.55f,
                     CrowbarPlayerLocalPosition,
                     CrowbarPlayerLocalEuler,
-                    CrowbarEnemyLocalPosition,
-                    CrowbarEnemyLocalEuler,
                     "Weapons/Imported/crowbar(level7)/source/CrowbarV2");
             case 8:
                 return CreateExactGrip(
@@ -206,10 +213,16 @@ public static class WeaponLoadoutCatalog
                     AxeEnemyLocalEuler,
                     "Weapons/Imported/axe(level9)/source/axe");
             case 10:
-                return CreatePoleGrip(1.40f,
+                return CreatePlayerMatchedGrip(
+                    1.40f,
+                    PolePlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
                     "Weapons/Imported/Spear(level10)/source/Spear/Spear");
             case 11:
-                return CreateLongGrip(1.00f,
+                return CreatePlayerMatchedGrip(
+                    1.00f,
+                    LongPlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
                     "Weapons/Imported/nailed-plank(level11)/source/NailedPlank/NailedPlank");
             case 12:
                 return CreateExactGrip(
@@ -226,10 +239,16 @@ public static class WeaponLoadoutCatalog
                 return CreateMediumGrip(0.50f,
                     "Weapons/Imported/medieval(level14)/source/Medieval_morgenstern_low2 scene");
             case 15:
-                return CreateMediumGrip(0.60f,
+                return CreatePlayerMatchedGrip(
+                    0.60f,
+                    MediumPlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
                     "Weapons/Imported/l3fte(level15)/source/L3FT_E");
             case 16:
-                return Create(0.90f,
+                return CreatePlayerMatchedGrip(
+                    0.90f,
+                    DefaultPlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
                     "Weapons/Imported/shield(level16)/source/RiotShield/Riot Shield");
             default:
                 // No fallback FBX — primitive knife generated in code.
@@ -314,6 +333,21 @@ public static class WeaponLoadoutCatalog
             DefaultPlayerLocalEuler,
             PoleEnemyLocalPosition,
             DefaultEnemyLocalEuler,
+            resourcePaths);
+    }
+
+    private static WeaponLoadout CreatePlayerMatchedGrip(
+        float targetSize,
+        Vector3 localPosition,
+        Vector3 localEuler,
+        params string[] resourcePaths)
+    {
+        return Create(
+            targetSize,
+            localPosition,
+            localEuler,
+            localPosition,
+            localEuler,
             resourcePaths);
     }
 
