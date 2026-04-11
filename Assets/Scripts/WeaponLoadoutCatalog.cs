@@ -153,12 +153,12 @@ public static class WeaponLoadoutCatalog
     //
     // Player Y = -0.475 places the hand 0.10m from the butt and 0.60m
     // from the head — the natural grip section of the handle, not at the
-    // extreme butt edge. Enemy uses a slightly reduced magnitude per the
-    // existing wrench/crowbar/hammer player-vs-enemy convention.
+    // extreme butt edge. Level 9 enemy now uses the same final handle
+    // placement once the socket basis is normalized to the player's style.
     private static readonly Vector3 AxePlayerLocalPosition = new Vector3(0f, -0.475f, 0f);
     private static readonly Vector3 AxePlayerLocalEuler = new Vector3(0f, 180f, 90f);
-    private static readonly Vector3 AxeEnemyLocalPosition = new Vector3(0f, -0.405f, 0f);
-    private static readonly Vector3 AxeEnemyLocalEuler = new Vector3(0f, 180f, 90f);
+    private static readonly Vector3 AxeEnemyLocalPosition = AxePlayerLocalPosition;
+    private static readonly Vector3 AxeEnemyLocalEuler = AxePlayerLocalEuler;
 
     // ── Guaranteed fallback paths (tried in order when the level weapon is missing) ──
     private static readonly string[] FallbackPaths =
