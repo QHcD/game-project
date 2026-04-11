@@ -73,9 +73,9 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 CrowbarPlayerLocalEuler = new Vector3(0f, 180f, 104f);
     private static readonly Vector3 CrowbarEnemyLocalPosition = new Vector3(-0.115f, -0.0035f, 0.006f);
     private static readonly Vector3 CrowbarEnemyLocalEuler = new Vector3(0f, 180f, 104f);
-    private static readonly Vector3 HammerPlayerLocalPosition = new Vector3(-0.18f, -0.0125f, 0f);
+    private static readonly Vector3 HammerPlayerLocalPosition = new Vector3(-0.156f, -0.0085f, -0.03f);
     private static readonly Vector3 HammerPlayerLocalEuler = new Vector3(8f, 0f, 90f);
-    private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.155f, -0.009f, 0f);
+    private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.134f, -0.006f, -0.026f);
     private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(10f, 0f, 90f);
     // ── Level 9 axe (single source of truth) ──
     // Empirically verified on the real Crosby body (bip_hand_R) with the
