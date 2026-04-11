@@ -523,7 +523,7 @@ public class LevelBuilder : MonoBehaviour
         }
 
         // Set explicit hand socket override when available.
-        Transform handBone = level == 1 || level == 5
+        Transform handBone = level == 1 || level == 5 || level == 6
             ? FindDeepChild(enemy.transform, "bip_hand_R") ?? FindRightHandBone(enemy.transform)
             : FindRightHandBone(enemy.transform);
         if (handBone != null)

@@ -95,7 +95,10 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 WrenchPlayerLocalPosition = new Vector3(-0.208f, -0.0125f, 0.0025f);
     private static readonly Vector3 WrenchPlayerLocalEuler = new Vector3(10f, 0f, 90f);
     private static readonly Vector3 WrenchEnemyLocalPosition = new Vector3(-0.182f, -0.0085f, 0.0025f);
-    private static readonly Vector3 WrenchEnemyLocalEuler = new Vector3(12f, 0f, 90f);
+    // Level 6 uses the same believable player-local wrench pose once the enemy
+    // hand basis is normalized on the socket side. Without that normalization,
+    // Crosby's hand drives the tool forward/backward regardless of root grip.
+    private static readonly Vector3 WrenchEnemyLocalEuler = WrenchPlayerLocalEuler;
     private static readonly Vector3 CrowbarPlayerLocalPosition = new Vector3(-0.135f, -0.006f, 0.006f);
     private static readonly Vector3 CrowbarPlayerLocalEuler = new Vector3(0f, 180f, 104f);
     private static readonly Vector3 CrowbarEnemyLocalPosition = new Vector3(-0.115f, -0.0035f, 0.006f);
@@ -104,6 +107,10 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 HammerPlayerLocalEuler = new Vector3(8f, 0f, 90f);
     private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.156f, -0.007f, -0.04f);
     private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(8f, 0f, 90f);
+    // Crosby's raw hand basis needs a socket-side normalization for tool-style
+    // one-handed grips so the authored player-like root pose doesn't end up
+    // pointing forward/backward on the enemy.
+    private static readonly Vector3 WrenchEnemySocketLocalEuler = new Vector3(15.2525f, -24.1971f, -111.6271f);
     private static readonly Vector3 HammerEnemySocketLocalEuler = new Vector3(15.2525f, -24.1971f, -111.6271f);
     // Crosby's hand basis points the pole shaft backward relative to the
     // player wrist basis, so pole levels need a pre-grip socket flip on the
@@ -322,6 +329,8 @@ public static class WeaponLoadoutCatalog
     {
         switch (Mathf.Clamp(level, 1, 16))
         {
+            case 6:
+                return WrenchEnemySocketLocalEuler;
             case 3:
             case 10:
                 return PoleEnemySocketLocalEuler;
