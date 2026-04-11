@@ -523,7 +523,9 @@ public class LevelBuilder : MonoBehaviour
         }
 
         // Set explicit hand socket override when available.
-        Transform handBone = FindRightHandBone(enemy.transform, preferWeaponSocket: level != 1);
+        Transform handBone = level == 1
+            ? FindDeepChild(enemy.transform, "bip_hand_R") ?? FindRightHandBone(enemy.transform)
+            : FindRightHandBone(enemy.transform);
         if (handBone != null)
             controller.weaponAttachPoint = handBone;
 
@@ -588,32 +590,17 @@ public class LevelBuilder : MonoBehaviour
     }
 
     /// <summary>Searches the transform hierarchy for a right-hand bone.</summary>
-    private Transform FindRightHandBone(Transform root, bool preferWeaponSocket = true)
+    private Transform FindRightHandBone(Transform root)
     {
-        // Small one-handed weapons like the level 1 knife need the actual hand
-        // bone instead of the Crosby firearm socket, otherwise they can end up
-        // buried in the wrist/body from frame 1.
-        string[] exactNames = preferWeaponSocket
-            ? new[]
-            {
-                "weapon_bone_R",                      // dedicated weapon socket
-                "bip_hand_R",                         // Crosby / BIP rig (primary hand)
-                "Bip01 R Hand", "Bip001 R Hand",     // 3ds Max Biped
-                "mixamorig:RightHand", "RightHand",  // Mixamo
-                "Hand_R", "right_hand", "R_Hand",
-                "HandRight", "Wrist_R",
-                "jointItemR", "RIGHT_HAND_COMBAT", "RIGHT_HAND_REST"
-            }
-            : new[]
-            {
-                "bip_hand_R",                         // Crosby / BIP rig (primary hand)
-                "weapon_bone_R",                      // dedicated weapon socket fallback
-                "Bip01 R Hand", "Bip001 R Hand",     // 3ds Max Biped
-                "mixamorig:RightHand", "RightHand",  // Mixamo
-                "Hand_R", "right_hand", "R_Hand",
-                "HandRight", "Wrist_R",
-                "jointItemR", "RIGHT_HAND_COMBAT", "RIGHT_HAND_REST"
-            };
+        string[] exactNames = {
+            "weapon_bone_R",                      // dedicated weapon socket
+            "bip_hand_R",                         // Crosby / BIP rig (primary)
+            "Bip01 R Hand", "Bip001 R Hand",     // 3ds Max Biped
+            "mixamorig:RightHand", "RightHand",  // Mixamo
+            "Hand_R", "right_hand", "R_Hand",
+            "HandRight", "Wrist_R",
+            "jointItemR", "RIGHT_HAND_COMBAT", "RIGHT_HAND_REST"
+        };
 
         foreach (string name in exactNames)
         {

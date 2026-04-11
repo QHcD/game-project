@@ -53,6 +53,13 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 DefaultPlayerLocalEuler = OneHandedGripEuler;
     private static readonly Vector3 DefaultEnemyLocalPosition = new Vector3(-0.01f, -0.0025f, 0f);
     private static readonly Vector3 DefaultEnemyLocalEuler = OneHandedGripEuler;
+    // Level 1 knife keeps its grip pivot very close to the blade center on the
+    // imported FBX, so the generic Crosby one-handed preset tucks the mesh into
+    // the palm. The original enemy-only knife basis uses the real hand bone and
+    // a forward Y offset / X-axis quarter-turn so the blade clears the wrist
+    // from the first frame.
+    private static readonly Vector3 Level1EnemyLocalPosition = new Vector3(0f, 0.05f, 0f);
+    private static readonly Vector3 Level1EnemyLocalEuler = new Vector3(-90f, 0f, 0f);
     private static readonly Vector3 MediumPlayerLocalPosition = new Vector3(-0.03f, -0.005f, 0f);
     private static readonly Vector3 MediumEnemyLocalPosition = new Vector3(-0.025f, -0.0025f, 0f);
     private static readonly Vector3 LongPlayerLocalPosition = new Vector3(-0.045f, -0.005f, 0f);
@@ -143,6 +150,7 @@ public static class WeaponLoadoutCatalog
     private static readonly string[] FallbackPaths =
     {
         "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife",
+        "Weapons/TacticalKnife/TacticalKnife",
         "Weapons/KnuckleDuster",
         "Weapons/BlinkDaggerPack/_PrefabsDaggers/Dagger1_3_5",
         "Weapons/BlinkDaggerPack/Meshes_Dagger/Dagger1_3",
@@ -186,8 +194,14 @@ public static class WeaponLoadoutCatalog
         switch (Mathf.Clamp(level, 1, 16))
         {
             case 1:
-                return CreateShortGrip(0.32f,
-                    "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife");
+                return CreateExactGrip(
+                    0.32f,
+                    DefaultPlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
+                    Level1EnemyLocalPosition,
+                    Level1EnemyLocalEuler,
+                    "Weapons/Imported/tactical-knife(level1)/source/TacticalKnife/Tactical Knife",
+                    "Weapons/TacticalKnife/TacticalKnife");
             case 2:
                 return CreateExactGrip(
                     0.95f,

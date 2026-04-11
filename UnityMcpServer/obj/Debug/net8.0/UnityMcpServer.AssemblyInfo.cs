@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("UnityMcpServer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+70318178118988e6c3a32c01f01c2aa4da3f4969")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+031f9002b2e6a834339cb19bb8729d1d2fe71d98")]
 [assembly: System.Reflection.AssemblyProductAttribute("UnityMcpServer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("UnityMcpServer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
