@@ -60,6 +60,13 @@ public static class WeaponLoadoutCatalog
     // from the first frame.
     private static readonly Vector3 Level1EnemyLocalPosition = new Vector3(0f, 0.05f, 0f);
     private static readonly Vector3 Level1EnemyLocalEuler = new Vector3(-90f, 0f, 0f);
+    // Level 5 nunchucks pivot around the chain midpoint, not around a single
+    // handle grip. They still need the enemy-only visibility lift on Crosby,
+    // but the actual weapon-facing basis should stay in the same one-handed
+    // family as the player and then apply the usual Crosby end-for-end flip so
+    // the visible handle points forward instead of backward.
+    private static readonly Vector3 Level5EnemyLocalPosition = new Vector3(0f, 0.05f, 0f);
+    private static readonly Vector3 Level5EnemyLocalEuler = ReversedOneHandedGripEuler;
     private static readonly Vector3 MediumPlayerLocalPosition = new Vector3(-0.03f, -0.005f, 0f);
     private static readonly Vector3 MediumEnemyLocalPosition = new Vector3(-0.025f, -0.0025f, 0f);
     private static readonly Vector3 LongPlayerLocalPosition = new Vector3(-0.045f, -0.005f, 0f);
@@ -226,7 +233,12 @@ public static class WeaponLoadoutCatalog
                     BaseballBatEnemyLocalEuler,
                     "Weapons/Imported/baseball-bat(level4)/source/baseball_bat_1k");
             case 5:
-                return CreateShortGrip(0.30f,
+                return CreateExactGrip(
+                    0.30f,
+                    DefaultPlayerLocalPosition,
+                    DefaultPlayerLocalEuler,
+                    Level5EnemyLocalPosition,
+                    Level5EnemyLocalEuler,
                     "Weapons/Imported/nunchucks(level5)/Nunchucks");
             case 6:
                 return CreateExactGrip(
