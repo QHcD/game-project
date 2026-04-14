@@ -34,10 +34,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float chaseSpeed       = 5.8f;
     [Tooltip("Manual rotation Slerp rate in Attack state (player body uses 8f — we bump slightly for responsiveness).")]
     public float rotationSpeed    = 12f;
-    [Tooltip("NavMeshAgent acceleration. Player uses MoveTowards(12). Agent PID needs ≈24 to feel equivalent.")]
-    public float agentAcceleration = 24f;
-    [Tooltip("NavMeshAgent angular speed (deg/sec). ~720 matches the player body Slerp pacing.")]
-    public float agentAngularSpeed = 720f;
+    [Tooltip("NavMeshAgent acceleration. Raised to 40 so the agent reaches full speed in ~0.15 s — matches the player's snappy feel.")]
+    public float agentAcceleration = 40f;
+    [Tooltip("NavMeshAgent angular speed (deg/sec). 1080 = full turn in ~0.33 s, matching the player body Slerp.")]
+    public float agentAngularSpeed = 1080f;
 
     [Header("Jump (Obstacle Avoidance)")]
     [Tooltip("Height the enemy jumps when blocked (matches Player formula).")]
@@ -219,10 +219,15 @@ public class EnemyController : MonoBehaviour, IDamageable
             _originalColors[i] = GetMaterialBaseColor(_renderers[i].material);
         }
 
-        // ── Auto-resolve Character layer mask ────────────────────────────────
-        int charLayer = LayerMask.NameToLayer("Character");
-        if (charLayer >= 0)
-            detectionMask = 1 << charLayer;
+        // ── Detection mask ────────────────────────────────────────────────────
+        // Use ALL physics layers so the player is always detectable regardless
+        // of which Unity layer they are assigned to.  The IDamageable check in
+        // FindFfaTarget() already filters out non-damageable objects, so it is
+        // safe to cast against everything.  Restricting to a single named layer
+        // was the primary cause of the "enemy stands still / brain-dead" bug —
+        // if the player is on Default (layer 0) instead of "Character", the
+        // OverlapSphere returned zero hits and the enemy never acquired a target.
+        detectionMask = ~0;
     }
 
     private void Start()
@@ -332,22 +337,45 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             if (_agent.isStopped) _agent.isStopped = false;
 
-            // Keep the tuning live — matches the player's acceleration feel
-            // and guarantees autoBraking stays off (some scripts may toggle it).
-            _agent.speed            = chaseSpeed;
+            // ── Dynamic speed: exceed the player's actual sprint speed ───────
+            // Read the player's current max speed at runtime so a future tweak
+            // to PlayerController.moveSpeed / sprintMultiplier is automatically
+            // reflected here — no manual sync needed.
+            float targetSpeed = chaseSpeed;
+            PlayerController pc = _target != null
+                ? _target.GetComponentInParent<PlayerController>() : null;
+            if (pc != null)
+            {
+                // Player sprint = moveSpeed * sprintMultiplier ≈ 4.8 u/s.
+                // We add a 1.5 u/s margin so the enemy always closes the gap.
+                float playerTopSpeed = pc.moveSpeed * pc.sprintMultiplier;
+                targetSpeed = Mathf.Max(chaseSpeed, playerTopSpeed + 1.5f);
+            }
+
+            _agent.speed            = targetSpeed;
             _agent.acceleration     = agentAcceleration;
             _agent.angularSpeed     = agentAngularSpeed;
             _agent.autoBraking      = false;
             _agent.stoppingDistance = Mathf.Max(0.1f, attackRadius * 0.5f);
 
-            // Only re-path when the target has meaningfully moved. This keeps
-            // the path solver from thrashing every frame (expensive AND jittery).
+            // ── High-frequency destination refresh ───────────────────────────
+            // Old threshold was 0.6 sqrMag (≈ 0.77 m) guarded by !pathPending.
+            // Problem: if a path is always computing (pathPending == true) the
+            // destination was NEVER updated, making the enemy chase a stale
+            // position while the player sprinted away.
+            //
+            // Fix:
+            //   • Threshold → 0.04 sqrMag (≈ 0.2 m) so fast players are tracked
+            //     almost immediately.
+            //   • pathPending guard removed: re-issuing SetDestination while a
+            //     path is computing is safe on Unity 6 and overwrites the pending
+            //     request with the fresher target position.
             bool needsPath =
                 !_agent.hasPath ||
                 _agent.pathStatus == NavMeshPathStatus.PathInvalid ||
-                (_agent.destination - _target.position).sqrMagnitude > 0.6f;
+                (_agent.destination - _target.position).sqrMagnitude > 0.04f;
 
-            if (needsPath && !_agent.pathPending)
+            if (needsPath)
                 _agent.SetDestination(_target.position);
         }
 
