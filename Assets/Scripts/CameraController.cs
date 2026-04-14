@@ -72,7 +72,11 @@ public class CameraController : MonoBehaviour
     public LayerMask collisionMask = ~0;
 
     [Tooltip("How quickly the camera eases back to full distance after clearing a wall.")]
-    public float recoverySpeed = 6f;
+    public float recoverySpeed = 8f;
+
+    [Tooltip("How quickly the camera is pulled toward the player when a wall is detected. " +
+             "Higher = less clip risk; lower = smoother. 20 is a good balance.")]
+    public float pullInSpeed = 20f;
 
     // ── Private ──────────────────────────────────────────────────────────────
     private float     _currentDistance;
@@ -97,6 +101,24 @@ public class CameraController : MonoBehaviour
             defaultFieldOfView = cam.fieldOfView;
 
         _currentDistance = GetCurrentOffset().magnitude;
+
+        // ── Exclude the player's own colliders from wall-collision checks ────
+        // Without this, the SphereCast can hit the player mesh itself and
+        // cause the camera to zoom in erratically whenever the player turns.
+        // We strip out whatever layer the player root is on, plus the common
+        // named layers "Player" and "Character", from collisionMask.
+        if (target != null)
+            collisionMask &= ~(1 << target.gameObject.layer);
+
+        int namedPlayer    = LayerMask.NameToLayer("Player");
+        int namedCharacter = LayerMask.NameToLayer("Character");
+        if (namedPlayer    >= 0) collisionMask &= ~(1 << namedPlayer);
+        if (namedCharacter >= 0) collisionMask &= ~(1 << namedCharacter);
+
+        // Also exclude the UI and TransparentFX layers that should never block a camera.
+        collisionMask &= ~(1 << LayerMask.NameToLayer("UI"));
+        collisionMask &= ~(1 << LayerMask.NameToLayer("TransparentFX"));
+        collisionMask &= ~(1 << LayerMask.NameToLayer("Ignore Raycast"));
     }
 
     private void LateUpdate()
@@ -167,12 +189,16 @@ public class CameraController : MonoBehaviour
             targetDist = Mathf.Max(hit.distance - wallPadding, minDistance);
         }
 
-        // Snap inward instantly, ease outward slowly to avoid pop
-        if (targetDist < _currentDistance)
-            _currentDistance = targetDist;
-        else
-            _currentDistance = Mathf.Lerp(_currentDistance, targetDist,
-                                           recoverySpeed * Time.deltaTime);
+        // ── Smooth in both directions — no more instant snap ─────────────────
+        // Old code snapped the camera inward instantly (= jerky zoom).
+        // New behaviour:
+        //   • Wall detected   → lerp at pullInSpeed (fast, ~20 f/s) so the
+        //     camera closes the gap before clipping but the motion is smooth.
+        //   • Wall cleared    → lerp at recoverySpeed (slow, ~8 f/s) so the
+        //     camera eases back out without a visible pop.
+        float blendSpeed = targetDist < _currentDistance ? pullInSpeed : recoverySpeed;
+        _currentDistance = Mathf.Lerp(_currentDistance, targetDist,
+                                       blendSpeed * Time.deltaTime);
 
         // Rebuild position along the same orbit direction at the clamped distance
         Vector3 offsetDir = (orbitRot * currentOffset).normalized;
