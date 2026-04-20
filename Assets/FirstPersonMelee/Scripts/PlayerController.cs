@@ -1619,28 +1619,24 @@ public class PlayerController : MonoBehaviour
         if (prefab == null)
         {
             Debug.LogWarning($"[PlayerController] All weapon sources exhausted for level {level}, using primitive.");
-            Transform fallbackBone = FindPlayerHandBone(body) ?? body.transform;
+            Transform fallbackBone = ResolveHandBone(body);
             Transform fallbackSocket = GetOrCreateWeaponSocket(fallbackBone);
             equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackSocket, loadout);
             return;
         }
 
-        // ── 2. Find right-hand bone ─────────────────────────────────────────
-        bool isSaw = level == 12
-            && prefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0;
-        Transform handBone = isSaw
-            ? FindPlayerChainsawAttachBone(body)
-            : FindPlayerHandBone(body);
-        if (handBone == null)
-        {
-            Debug.LogWarning("[PlayerController] Right hand bone not found, attaching to body root.");
-            handBone = body.transform;
-        }
-        Transform weaponSocket = isSaw
-            ? GetOrCreateChainsawSocket(handBone)
-            : GetOrCreateWeaponSocket(handBone);
+        // ── 2. Bone verification — mirrors EnemyController exactly ──────────
+        // Priority 1: known rig bone names
+        // Priority 2: Humanoid avatar API (the #1 floating-weapon fix)
+        Transform handBone = ResolveHandBone(body);
+        Debug.Log($"[PlayerController] Hand bone resolved: '{handBone.name}' (level={level})");
 
-        // ── 3. Instantiate (unparented to get clean world-space bounds) ─────
+        // ── 3. Scale-normalising socket — same as enemy ─────────────────────
+        // The socket counter-scales the hand bone's imported lossy scale so the
+        // weapon sees a clean (≈1,1,1) parent space, preventing near-zero scale.
+        Transform weaponSocket = GetOrCreateWeaponSocket(handBone);
+
+        // ── 4. Instantiate unparented to measure clean world-space bounds ────
         GameObject weapon = Instantiate(prefab);
         weapon.name = "WeaponModel";
         weapon.SetActive(true);
@@ -1649,59 +1645,57 @@ public class PlayerController : MonoBehaviour
         foreach (Transform t in weapon.GetComponentsInChildren<Transform>(true))
             t.gameObject.SetActive(true);
 
-        // NOTE: StripWeaponArmature removed — it was destroying mesh nodes
-        // inside weapons whose hierarchy uses "Armature" as the mesh parent.
-        // Embedded animators are disabled in step 7 instead, which is safe.
-
-        // ── 4. Measure bounds at unit scale ─────────────────────────────────
+        // ── 5. Measure bounds at unit scale ─────────────────────────────────
         weapon.transform.localScale = Vector3.one;
         float weaponExtent = GetMaxRendererExtent(weapon);
         if (weaponExtent < 0.001f) weaponExtent = 1f;
 
-        // ── 5. Parent to hand, reset local transform ────────────────────────
+        // ── 6. Parent to socket — MIRROR ENEMY LOGIC ────────────────────────
         weapon.transform.SetParent(weaponSocket, worldPositionStays: false);
         weapon.transform.localPosition = Vector3.zero;
         weapon.transform.localRotation = Quaternion.identity;
-        Transform runtimeGripParent = WeaponLoadoutCatalog.GetOrCreateRuntimeGripAnchor(level, prefab, weaponSocket);
-        if (runtimeGripParent != weaponSocket)
-        {
-            weapon.transform.SetParent(runtimeGripParent, worldPositionStays: false);
-            weapon.transform.localPosition = Vector3.zero;
-            weapon.transform.localRotation = Quaternion.identity;
-        }
+        weapon.transform.localScale    = Vector3.one;
 
-        // ── 6. Compute localScale so weapon reaches desired WORLD size ──────
-        float desiredWorldSize = finalTargetSize;
-        float uniformScale = desiredWorldSize / weaponExtent;
-        Vector3 parentLossy = weapon.transform.parent != null ? weapon.transform.parent.lossyScale : weaponSocket.lossyScale;
+        // ── 7. Scale to target world size ────────────────────────────────────
+        float uniformScale = finalTargetSize / weaponExtent;
+        Vector3 parentLossy = weaponSocket.lossyScale;
         weapon.transform.localScale = new Vector3(
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.z), 0.0001f));
-        if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, prefab, weapon.transform))
-            ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
-        WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
 
-        // Saw (level 12): the FBX pivot sits at the blade center, so the
-        // grip-pose algorithm always lands mid-blade. Override the transform
-        // directly so the palm closes around the top-handle loop instead.
-        // Rotation (8,0,-90): blade → socket +Y (up/forward), handle → socket -Y.
-        // Position y=-0.25 shifts the weapon root DOWN so the top handle, which
-        // sits 0.25 m above the blade center, descends into the palm.
-        // Tune y / z in play mode until the Wrist.R bone sits inside the D-grip.
-        if (isSaw)
+        // ── 8. Grip overrides — hardcoded per level, applied this frame ──────
+        switch (level)
         {
-            weapon.transform.localRotation = Quaternion.Euler(8f, 0f, -90f);
-            weapon.transform.localPosition = new Vector3(0f, -0.25f, -0.05f);
+            case 12: // SAW — rear handle in palm, blade forward
+                weapon.transform.localPosition = new Vector3(0f, -0.2f, 0.05f);
+                weapon.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+                break;
+            case 13: // SICKLE — slid along handle so palm grips the middle, not the butt end
+                // Z pulled negative to shift the weapon backward relative to the palm,
+                // moving the grip point from the end of the wooden handle to its middle.
+                weapon.transform.localPosition = new Vector3(-0.082f, 0.026f, -0.05f);
+                weapon.transform.localRotation = Quaternion.Euler(12f, 180f, 102f);
+                break;
+            // Level 14 (morgenstern) also falls through here, but the player's
+            // runtime grip helper now applies both a bounds-derived handle grip
+            // and a Level-14-specific combat basis derived from the model's
+            // dominant shaft axis instead of any generic one-handed preset.
+            default:
+                if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, prefab, weapon.transform))
+                    ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
+                break;
         }
 
+        WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
+
         Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
-                  $"targetSize={desiredWorldSize} extent={weaponExtent} " +
+                  $"targetSize={finalTargetSize} extent={weaponExtent} " +
                   $"localPosition={weapon.transform.localPosition} " +
                   $"localEuler={weapon.transform.localEulerAngles} " +
                   $"localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
 
-        // ── 7. Disable physics, embedded animators, colliders ───────────────
+        // ── 9. Disable physics, embedded animators, colliders ────────────────
         foreach (Animator weaponAnimator in weapon.GetComponentsInChildren<Animator>(true))
             weaponAnimator.enabled = false;
 
@@ -1716,7 +1710,7 @@ public class PlayerController : MonoBehaviour
         foreach (Collider col in weapon.GetComponentsInChildren<Collider>(true))
             col.enabled = false;
 
-        // ── 8. Wire WeaponBase ──────────────────────────────────────────────
+        // ── 10. Wire WeaponBase ──────────────────────────────────────────────
         WeaponBase wb = weapon.GetComponent<WeaponBase>();
         if (wb == null) wb = weapon.AddComponent<WeaponBase>();
         wb.weaponName  = equippedWeaponName;
@@ -1724,23 +1718,64 @@ public class PlayerController : MonoBehaviour
         wb.attackRange = attackDistance;
         wb.isRanged    = false;
 
-        // ── 9. Wire WeaponHitbox ────────────────────────────────────────────
+        // ── 11. Wire WeaponHitbox ────────────────────────────────────────────
         WeaponHitbox hitbox = weapon.GetComponent<WeaponHitbox>();
         if (hitbox == null) hitbox = weapon.AddComponent<WeaponHitbox>();
         hitbox.damage = attackDamage;
 
-        // ── 10. Visibility fix (URP) ────────────────────────────────────────
+        // ── 12. Visibility fix (URP) ─────────────────────────────────────────
         if (weapon.GetComponent<WeaponVisibilityFix>() == null)
             weapon.AddComponent<WeaponVisibilityFix>();
 
-        // ── 11. Refresh melee animation event sink cache ────────────────────
+        // ── 13. Refresh melee animation event sink cache ─────────────────────
         if (thirdPersonBody != null)
         {
             MeleeAnimationEventSink sink = thirdPersonBody.GetComponentInChildren<MeleeAnimationEventSink>(true);
             if (sink != null) sink.ClearCache();
         }
 
+        weapon.SetActive(true);
         equippedWeaponObject = weapon;
+    }
+
+    // Resolves the player right-hand bone using explicit names first, then the
+    // Humanoid avatar API as the guaranteed fallback (fixes floating weapons).
+    private static Transform ResolveHandBone(GameObject body)
+    {
+        if (body == null) return null;
+
+        // Explicit bone name search — same priority list as FindPlayerHandBone
+        string[] names = {
+            "RightHand", "Wrist.R", "Hand_R",
+            "tag_accessory_right", "j_wrist_ri", "weapon_bone_R",
+            "bip_hand_R", "tag_weapon_right",
+            "mixamorig:RightHand",
+            "hand_R", "hand_r", "Wrist_R", "wrist_R",
+        };
+        foreach (string n in names)
+        {
+            Transform found = FindBoneExact(body.transform, n);
+            if (found != null)
+            {
+                Debug.Log($"[PlayerController] ResolveHandBone: found '{found.name}' by name");
+                return found;
+            }
+        }
+
+        // Humanoid avatar API fallback — most reliable for any standard rig
+        Animator anim = body.GetComponentInChildren<Animator>(true);
+        if (anim != null && anim.isHuman)
+        {
+            Transform bone = anim.GetBoneTransform(HumanBodyBones.RightHand);
+            if (bone != null)
+            {
+                Debug.Log($"[PlayerController] ResolveHandBone: found '{bone.name}' via HumanBodyBones");
+                return bone;
+            }
+        }
+
+        Debug.LogWarning("[PlayerController] ResolveHandBone: no hand bone found, falling back to body root.");
+        return body.transform;
     }
 
     private static Transform GetOrCreateWeaponSocket(Transform handBone)

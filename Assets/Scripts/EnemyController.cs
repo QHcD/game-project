@@ -1323,6 +1323,12 @@ public class EnemyController : MonoBehaviour, IDamageable
             equippedWeaponObject.transform.localPosition = new Vector3(0f, -0.25f, -0.05f);
         }
 
+        if (level == 14
+            && weaponPrefab.name.IndexOf("morgenstern", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            ApplyMorgensternEnemyGripPose(equippedWeaponObject.transform);
+        }
+
         Debug.Log($"[EnemyController] '{name}' lvl={level} weapon → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
                   $"localPosition={equippedWeaponObject.transform.localPosition} " +
@@ -1390,6 +1396,149 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         equippedWeaponObject.transform.localRotation = Quaternion.Euler(weaponGripLocalEulerAngles);
         equippedWeaponObject.transform.localPosition = weaponGripLocalPosition;
+    }
+
+    private static readonly Vector3 MorgensternEnemyGripBasePosition = new Vector3(-0.025f, -0.0025f, 0f);
+    private const float MorgensternEnemyHandleGripInsetNormalized = 0.82f;
+    private const bool MorgensternEnemyHandleAtDominantMax = true;
+
+    private static void ApplyMorgensternEnemyGripPose(Transform weaponRoot)
+    {
+        if (weaponRoot == null)
+            return;
+
+        if (!TryGetCombinedLocalBounds(weaponRoot, out Bounds localBounds))
+        {
+            weaponRoot.localRotation = Quaternion.Euler(0f, 0f, 90f);
+            weaponRoot.localPosition = MorgensternEnemyGripBasePosition;
+            return;
+        }
+
+        weaponRoot.localRotation = GetMorgensternEnemyLocalRotation(localBounds);
+        Vector3 gripPoint = GetMorgensternEnemyGripPoint(localBounds);
+        Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
+        weaponRoot.localPosition = MorgensternEnemyGripBasePosition - (weaponRoot.localRotation * scaledGripPoint);
+    }
+
+    private static Quaternion GetMorgensternEnemyLocalRotation(Bounds localBounds)
+    {
+        int dominantAxis = GetDominantBoundsAxis(localBounds);
+
+        switch (dominantAxis)
+        {
+            case 0:
+                return Quaternion.Euler(0f, MorgensternEnemyHandleAtDominantMax ? 180f : 0f, 0f);
+            case 1:
+                return Quaternion.Euler(0f, 0f, MorgensternEnemyHandleAtDominantMax ? 90f : -90f);
+            default:
+                return Quaternion.Euler(0f, MorgensternEnemyHandleAtDominantMax ? -90f : 90f, 0f);
+        }
+    }
+
+    private static Vector3 GetMorgensternEnemyGripPoint(Bounds localBounds)
+    {
+        int dominantAxis = GetDominantBoundsAxis(localBounds);
+        float min = localBounds.min[dominantAxis];
+        float max = localBounds.max[dominantAxis];
+        float gripNormalized = MorgensternEnemyHandleAtDominantMax
+            ? MorgensternEnemyHandleGripInsetNormalized
+            : 1f - MorgensternEnemyHandleGripInsetNormalized;
+
+        Vector3 gripPoint = localBounds.center;
+        gripPoint[dominantAxis] = Mathf.Lerp(min, max, gripNormalized);
+        return gripPoint;
+    }
+
+    private static int GetDominantBoundsAxis(Bounds localBounds)
+    {
+        int dominantAxis = 0;
+        float dominantSize = localBounds.size.x;
+        if (localBounds.size.y > dominantSize)
+        {
+            dominantAxis = 1;
+            dominantSize = localBounds.size.y;
+        }
+        if (localBounds.size.z > dominantSize)
+            dominantAxis = 2;
+
+        return dominantAxis;
+    }
+
+    private static bool TryGetCombinedLocalBounds(Transform root, out Bounds combinedBounds)
+    {
+        combinedBounds = new Bounds();
+        if (root == null)
+            return false;
+
+        bool hasBounds = false;
+        Matrix4x4 rootWorldToLocal = root.worldToLocalMatrix;
+
+        MeshFilter[] meshFilters = root.GetComponentsInChildren<MeshFilter>(true);
+        for (int i = 0; i < meshFilters.Length; i++)
+        {
+            MeshFilter meshFilter = meshFilters[i];
+            if (meshFilter == null || meshFilter.sharedMesh == null)
+                continue;
+
+            EncapsulateTransformedBounds(
+                ref combinedBounds,
+                ref hasBounds,
+                meshFilter.sharedMesh.bounds,
+                rootWorldToLocal * meshFilter.transform.localToWorldMatrix);
+        }
+
+        SkinnedMeshRenderer[] skinnedMeshes = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+        for (int i = 0; i < skinnedMeshes.Length; i++)
+        {
+            SkinnedMeshRenderer skinnedMesh = skinnedMeshes[i];
+            if (skinnedMesh == null)
+                continue;
+
+            Bounds sourceBounds = skinnedMesh.localBounds;
+            if (sourceBounds.size.sqrMagnitude <= 0f && skinnedMesh.sharedMesh != null)
+                sourceBounds = skinnedMesh.sharedMesh.bounds;
+            if (sourceBounds.size.sqrMagnitude <= 0f)
+                continue;
+
+            EncapsulateTransformedBounds(
+                ref combinedBounds,
+                ref hasBounds,
+                sourceBounds,
+                rootWorldToLocal * skinnedMesh.transform.localToWorldMatrix);
+        }
+
+        return hasBounds;
+    }
+
+    private static void EncapsulateTransformedBounds(
+        ref Bounds combinedBounds,
+        ref bool hasBounds,
+        Bounds sourceBounds,
+        Matrix4x4 sourceToRootMatrix)
+    {
+        Vector3 center = sourceBounds.center;
+        Vector3 extents = sourceBounds.extents;
+
+        for (int x = -1; x <= 1; x += 2)
+        {
+            for (int y = -1; y <= 1; y += 2)
+            {
+                for (int z = -1; z <= 1; z += 2)
+                {
+                    Vector3 corner = center + Vector3.Scale(extents, new Vector3(x, y, z));
+                    Vector3 transformedCorner = sourceToRootMatrix.MultiplyPoint3x4(corner);
+                    if (!hasBounds)
+                    {
+                        combinedBounds = new Bounds(transformedCorner, Vector3.zero);
+                        hasBounds = true;
+                    }
+                    else
+                    {
+                        combinedBounds.Encapsulate(transformedCorner);
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>
