@@ -155,25 +155,41 @@ public static class WeaponLoadoutCatalog
     // player wrist basis, so pole levels need a pre-grip socket flip on the
     // enemy side instead of more per-weapon position nudges.
     private static readonly Vector3 PoleEnemySocketLocalEuler = new Vector3(0f, 180f, 0f);
-    // Level 12 saw: the imported mesh keeps the blade on negative X and the
-    // actual hand grip on the positive-X handle shell. With the project-wide
-    // Z=90 one-handed convention, that handle pocket maps to large +X / -Y
-    // socket offsets, so a generic short-grip preset lands the palm on the
-    // blade body instead of the usable handle.
+    // Level 12 saw: mesh long axis is X (blade at -X = -270 units, handle at +X = +194.6).
+    // Mesh height axis is Y (bottom/chain = -56.5, TOP handle = +62.4).
+    //
+    // ROTATION: Use ReversedOneHandedGripEuler = (0,180,90).
+    //   Under Unity ZXY order: Ry(180)*Rz(90) maps
+    //     mesh +X (handle)  → socket +Y (behind palm / grip side)      ✓
+    //     mesh -X (blade)   → socket -Y (forward / striking direction)  ✓
+    //     mesh +Y (TOP)     → socket +X (upward)                        ✓
+    //     mesh -Y (chain)   → socket -X (downward)                      ✓
+    //   Previous (0,0,90) had +Y→socket -X = TOP pointing DOWN = saw inverted.
+    //
+    // BOUNDS after (0,180,90): root local axes swap relative to mesh:
+    //   root X = mesh Y  (height: min=-56.5 bottom, max=+62.4 top-handle)
+    //   root Y = mesh X  (length: min=-270.0 blade, max=+194.6 handle)
+    //   root Z = -mesh Z (depth)
+    //
+    // GRIP POINT targets the TOP HANDLE pocket:
+    //   XNorm=0.90 → root X = mesh Y ≈ +50.5  (near top of saw body)
+    //   YNorm=0.84 → root Y = mesh X ≈ +120.3 (middle of handle body, grip section)
+    //   ZNorm=0.50 → root Z = depth center
     private static readonly Vector3 SawPlayerLocalPosition = new Vector3(0.246f, -0.270f, 0.002f);
-    private static readonly Vector3 SawPlayerLocalEuler = new Vector3(0f, 0f, 90f);
-    private static readonly Vector3 SawEnemyLocalPosition = new Vector3(0.244f, -0.264f, 0.002f);
-    private static readonly Vector3 SawEnemyLocalEuler = new Vector3(0f, 0f, 90f);
-    private static readonly Vector3 SawRuntimeMeshLocalEuler = OneHandedGripEuler;
+    private static readonly Vector3 SawPlayerLocalEuler    = ReversedOneHandedGripEuler;
+    private static readonly Vector3 SawEnemyLocalPosition  = new Vector3(0.244f, -0.264f, 0.002f);
+    private static readonly Vector3 SawEnemyLocalEuler     = ReversedOneHandedGripEuler;
+    private static readonly Vector3 SawRuntimeMeshLocalEuler = ReversedOneHandedGripEuler;
     // The socket-side helper only neutralizes the hand socket. The actual
     // source-of-truth grip lives on the weapon as a handle anchor derived
     // from the saw mesh bounds so both player and enemy grab the real rear
     // handle opening instead of the blade body.
     private const string SawRuntimeSocketAnchorName = "Level12SawSocketAnchor";
     private const string SawRuntimeHandleAnchorName = "Level12SawHandleAnchor";
-    private static readonly Vector3 SawRuntimeFallbackGripPoint = new Vector3(0.332f, 0.124f, 0.002f);
-    private const float SawHandleGripXNormalized = 0.835f;
-    private const float SawHandleGripYNormalized = 0.295f;
+    // Fallback in root-local pre-scale coords (root X=mesh Y≈50, root Y=mesh X≈120).
+    private static readonly Vector3 SawRuntimeFallbackGripPoint = new Vector3(50f, 120f, 1.5f);
+    private const float SawHandleGripXNormalized = 0.90f;
+    private const float SawHandleGripYNormalized = 0.84f;
     private const float SawHandleGripZNormalized = 0.50f;
     // Level 13 sickle: the imported FBX pivot sits too close to the blade mass
     // for the generic short-grip preset, so the player grabs through the mesh
