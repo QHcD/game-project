@@ -26,6 +26,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float attackDamage     = 10f;
     public float attackCooldown   = 1.4f;
     public int   maxHealth        = 60;
+    [Tooltip("Hits with damage at or above this value trigger death-by-ragdoll even if health remains.")]
+    public int   ragdollForceThreshold = 50;
 
     [Header("Movement — mirrors Player feel")]
     [Tooltip("Base walking speed (matches PlayerController.moveSpeed = 3.5).")]
@@ -125,6 +127,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float        _attackTimer;
     private Transform    _target;
     private bool         _lastHitByPlayer;
+    private RagdollController _ragdoll;
+    private Vector3      _lastHitDirection;
 
     // Flinch
     private float _flinchTimer;
@@ -251,6 +255,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             else
                 _agent.Warp(transform.position);
         }
+
+        _ragdoll = GetComponent<RagdollController>();
 
         // Start the coroutine-based target scanner
         _scanCoroutine = StartCoroutine(TargetScanLoop());
@@ -573,7 +579,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         SetAnimatorTrigger(HashHit);
         PlayHitSound();
 
-        if (_currentHealth <= 0) Die();
+        if (_currentHealth <= 0 || amount >= ragdollForceThreshold) Die();
     }
 
     // ── IDamageable ─────────────────────────────────────────────────────────
@@ -605,6 +611,10 @@ public class EnemyController : MonoBehaviour, IDamageable
                 _targetLockTimer = targetLockDuration;
             }
         }
+
+        // Store hit direction for ragdoll impulse (attacker → enemy)
+        if (attackerRoot != null)
+            _lastHitDirection = (transform.position - attackerRoot.transform.position).normalized;
 
         bool fromPlayer = attackerRoot != null
                        && attackerRoot.GetComponentInParent<PlayerHealth>() != null;
@@ -666,13 +676,19 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// <summary>
     /// Converts the enemy to a full ragdoll: disables the Animator and lets
     /// Rigidbody physics take over every bone.
+    /// Delegates to RagdollController when present; falls back to inline logic.
     /// </summary>
     private void ActivateRagdoll()
     {
-        // Disable Animator now that the death clip has played
+        if (_ragdoll != null)
+        {
+            _ragdoll.EnableRagdoll(_lastHitDirection);
+            return;
+        }
+
+        // ── Fallback: no RagdollController attached ───────────────────────────
         if (_anim != null) _anim.enabled = false;
 
-        // Activate root rigidbody
         if (_rb == null) _rb = gameObject.AddComponent<Rigidbody>();
         _rb.mass           = 50f;
         _rb.linearDamping  = 0.5f;
@@ -680,19 +696,16 @@ public class EnemyController : MonoBehaviour, IDamageable
         _rb.isKinematic    = false;
         _rb.useGravity     = true;
 
-        // Small random pop + tumble for visual variety
         Vector3 popForce = Vector3.up * deathPopForce + Random.insideUnitSphere * 1.5f;
         _rb.AddForce(popForce, ForceMode.VelocityChange);
         _rb.AddTorque(Random.insideUnitSphere * 3f, ForceMode.VelocityChange);
 
-        // If model has pre-configured bone Rigidbodies, wake them all up
         foreach (Rigidbody rb in GetComponentsInChildren<Rigidbody>(true))
         {
             rb.isKinematic = false;
             rb.useGravity  = true;
         }
 
-        // Freeze the ragdoll after a few seconds so it stops sliding
         Invoke(nameof(FreezeRagdoll), 3f);
     }
 
