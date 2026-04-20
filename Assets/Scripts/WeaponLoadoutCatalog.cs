@@ -215,6 +215,13 @@ public static class WeaponLoadoutCatalog
     private const float SickleHandleGripXNormalized = 0.68f;
     private const float SickleHandleGripYNormalized = 0.31f;
     private const float SickleHandleGripZNormalized = 0.50f;
+    // Level 14 morgenstern: the imported pivot sits at the spiked head, so the
+    // grip needs two pieces of compensation:
+    // 1) move the hand to the far handle end instead of the pivot/head, and
+    // 2) rotate the model based on its actual dominant shaft axis so the head
+    //    points onto the player's forward strike axis instead of hanging to the side.
+    private static readonly Vector3 MorgensternPlayerLocalPosition = MediumPlayerLocalPosition;
+    private const float MorgensternHandleGripInsetNormalized = 0.82f;
     // ── Level 9 axe (single source of truth) ──
     // Empirically verified on the real Crosby body (bip_hand_R) with the
     // runtime 0.70m autoscale applied. The axe FBX has an extremely
@@ -387,6 +394,10 @@ public static class WeaponLoadoutCatalog
                     DefaultEnemyLocalEuler,
                     "Weapons/Imported/sickle(level13)/source/Sickle");
             case 14:
+                // Morgenstern grip is forced by hardcoded post-grip overrides in
+                // PlayerController.AttachWeaponToHand and EnemyController.AttachWeaponToHand.
+                // Catalog values below are placeholders only — the controller switch
+                // overrides them immediately so the head ends up forward, handle in palm.
                 return CreateMediumGrip(0.50f,
                     "Weapons/Imported/medieval(level14)/source/Medieval_morgenstern_low2 scene");
             case 15:
@@ -536,7 +547,79 @@ public static class WeaponLoadoutCatalog
             return true;
         }
 
+        if (clampedLevel == 14
+            && sourcePrefab != null
+            && sourcePrefab.name.IndexOf("morgenstern", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            if (TryGetCombinedLocalBounds(weaponRoot, out Bounds localBounds))
+            {
+                weaponRoot.localRotation = GetMorgensternPlayerLocalRotation(localBounds);
+                Vector3 gripPoint = GetPivotOpposedGripPoint(localBounds, MorgensternHandleGripInsetNormalized);
+                Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
+                weaponRoot.localPosition = MorgensternPlayerLocalPosition - (weaponRoot.localRotation * scaledGripPoint);
+                return true;
+            }
+
+            weaponRoot.localRotation = Quaternion.Euler(0f, 0f, 180f);
+            weaponRoot.localPosition = MorgensternPlayerLocalPosition;
+            return true;
+        }
+
         return ApplyRuntimeGripPose(level, sourcePrefab, weaponRoot);
+    }
+
+    private static Vector3 GetPivotOpposedGripPoint(Bounds localBounds, float insetNormalized)
+    {
+        int dominantAxis = GetDominantBoundsAxis(localBounds);
+        bool handleExtendsTowardMax = DoesHandleExtendTowardMax(localBounds, dominantAxis);
+        float min = localBounds.min[dominantAxis];
+        float max = localBounds.max[dominantAxis];
+        float gripNormalized = handleExtendsTowardMax
+            ? insetNormalized
+            : 1f - insetNormalized;
+
+        Vector3 gripPoint = localBounds.center;
+        gripPoint[dominantAxis] = Mathf.Lerp(min, max, gripNormalized);
+        return gripPoint;
+    }
+
+    private static Quaternion GetMorgensternPlayerLocalRotation(Bounds localBounds)
+    {
+        int dominantAxis = GetDominantBoundsAxis(localBounds);
+        bool handleExtendsTowardMax = DoesHandleExtendTowardMax(localBounds, dominantAxis);
+
+        switch (dominantAxis)
+        {
+            case 0:
+                // X-axis shaft: rotate so the head points down socket -Y.
+                return Quaternion.Euler(0f, 0f, handleExtendsTowardMax ? 90f : -90f);
+            case 1:
+                // Y-axis shaft: only flip end-for-end when the head lives at +Y.
+                return Quaternion.Euler(0f, 0f, handleExtendsTowardMax ? 0f : 180f);
+            default:
+                // Z-axis shaft: tilt the shaft forward into the player's strike axis.
+                return Quaternion.Euler(handleExtendsTowardMax ? -90f : 90f, 0f, 0f);
+        }
+    }
+
+    private static int GetDominantBoundsAxis(Bounds localBounds)
+    {
+        int dominantAxis = 0;
+        float dominantSize = localBounds.size.x;
+        if (localBounds.size.y > dominantSize)
+        {
+            dominantAxis = 1;
+            dominantSize = localBounds.size.y;
+        }
+        if (localBounds.size.z > dominantSize)
+            dominantAxis = 2;
+
+        return dominantAxis;
+    }
+
+    private static bool DoesHandleExtendTowardMax(Bounds localBounds, int dominantAxis)
+    {
+        return Mathf.Abs(localBounds.max[dominantAxis]) >= Mathf.Abs(localBounds.min[dominantAxis]);
     }
 
     private static Transform GetOrCreateSawRuntimeHandleAnchor(Transform weaponRoot)
