@@ -158,25 +158,36 @@ public static class WeaponLoadoutCatalog
     // Level 12 saw: mesh long axis is X (blade at -X = -270 units, handle at +X = +194.6).
     // Mesh height axis is Y (bottom/chain = -56.5, TOP handle = +62.4).
     //
-    // ROTATION: Use ReversedOneHandedGripEuler = (0,180,90).
-    //   Under Unity ZXY order: Ry(180)*Rz(90) maps
-    //     mesh +X (handle)  → socket +Y (behind palm / grip side)      ✓
-    //     mesh -X (blade)   → socket -Y (forward / striking direction)  ✓
-    //     mesh +Y (TOP)     → socket +X (upward)                        ✓
-    //     mesh -Y (chain)   → socket -X (downward)                      ✓
-    //   Previous (0,0,90) had +Y→socket -X = TOP pointing DOWN = saw inverted.
+    // ROTATION: Player chainsaw uses a dedicated rear-handle grip basis.
+    // The earlier end-for-end flip `(0,180,90)` aligned the mesh bounds but
+    // still left the Ronin player holding the saw from the wrong side. The
+    // corrected player basis keeps the rear handle in the palm and sends the
+    // bar/blade outward away from the body.
     //
-    // BOUNDS after (0,180,90): root local axes swap relative to mesh:
+    // BOUNDS after (0,0,90): root local axes swap relative to mesh:
     //   root X = mesh Y  (height: min=-56.5 bottom, max=+62.4 top-handle)
     //   root Y = mesh X  (length: min=-270.0 blade, max=+194.6 handle)
     //   root Z = -mesh Z (depth)
     //
-    // GRIP POINT targets the TOP HANDLE pocket:
-    //   XNorm=0.90 → root X = mesh Y ≈ +50.5  (near top of saw body)
-    //   YNorm=0.84 → root Y = mesh X ≈ +120.3 (middle of handle body, grip section)
-    //   ZNorm=0.50 → root Z = depth center
-    private static readonly Vector3 SawPlayerLocalPosition = new Vector3(0.246f, -0.270f, 0.002f);
-    private static readonly Vector3 SawPlayerLocalEuler    = ReversedOneHandedGripEuler;
+    // GRIP POINT targets the rear handle pocket:
+    //   XNorm=0.90 → mesh X ≈ +148  (inside handle section, ~25% from tip)
+    //   YNorm=0.84 → mesh Y ≈ +43   (near top of saw body / grip loop)
+    //   ZNorm=0.50 → depth center
+    //
+    // ROTATION (8, 0, -90) — ZXY order:
+    //   Rz(-90): mesh +X (handle) → socket -Y (backward/grip ✓)
+    //            mesh -X (blade)  → socket +Y (forward/attack ✓)
+    //            mesh +Y (top)    → socket +X (side, same as old rotation)
+    //   Rx(8):   slight natural wrist tilt
+    //   Ry(0):   no end-for-end flip needed (Ry(180) in old value was keeping
+    //            handle forward — the opposite of what the grip requires)
+    private static readonly Vector3 SawPlayerLocalPosition = new Vector3(-0.06f, 0.20f, 0.002f);
+    private static readonly Vector3 SawPlayerLocalEuler    = new Vector3(8f, 0f, -90f);
+    // After the rear-handle grip point is aligned to the palm, the player only
+    // needs a small visibility/combat nudge instead of the legacy full-pivot
+    // offset. This keeps the saw out of the torso while preserving a believable
+    // one-hand rear-grip hold.
+    private static readonly Vector3 SawPlayerRuntimeHandleOffset = new Vector3(0f, 0f, 0f);
     private static readonly Vector3 SawEnemyLocalPosition  = new Vector3(0.244f, -0.264f, 0.002f);
     private static readonly Vector3 SawEnemyLocalEuler     = ReversedOneHandedGripEuler;
     private static readonly Vector3 SawRuntimeMeshLocalEuler = ReversedOneHandedGripEuler;
@@ -188,6 +199,9 @@ public static class WeaponLoadoutCatalog
     private const string SawRuntimeHandleAnchorName = "Level12SawHandleAnchor";
     // Fallback in root-local pre-scale coords (root X=mesh Y≈50, root Y=mesh X≈120).
     private static readonly Vector3 SawRuntimeFallbackGripPoint = new Vector3(50f, 120f, 1.5f);
+    private const float SawPlayerHandleGripXNormalized = 0.90f;
+    private const float SawPlayerHandleGripYNormalized = 0.84f;
+    private const float SawPlayerHandleGripZNormalized = 0.50f;
     private const float SawHandleGripXNormalized = 0.90f;
     private const float SawHandleGripYNormalized = 0.84f;
     private const float SawHandleGripZNormalized = 0.50f;
@@ -481,6 +495,26 @@ public static class WeaponLoadoutCatalog
             return false;
 
         int clampedLevel = Mathf.Clamp(level, 1, 16);
+        if (clampedLevel == 12
+            && sourcePrefab != null
+            && sourcePrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            weaponRoot.localRotation = Quaternion.Euler(SawPlayerLocalEuler);
+
+            Vector3 gripPoint = TryGetSawPlayerGripPoint(weaponRoot, out Vector3 computedGripPoint)
+                ? computedGripPoint
+                : SawRuntimeFallbackGripPoint;
+
+            Transform handleAnchor = GetOrCreateSawRuntimeHandleAnchor(weaponRoot);
+            handleAnchor.localPosition = gripPoint;
+            handleAnchor.localRotation = Quaternion.identity;
+            handleAnchor.localScale = Vector3.one;
+
+            Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
+            weaponRoot.localPosition = SawPlayerRuntimeHandleOffset - (weaponRoot.localRotation * scaledGripPoint);
+            return true;
+        }
+
         if (clampedLevel == 13
             && sourcePrefab != null
             && sourcePrefab.name.IndexOf("sickle", System.StringComparison.OrdinalIgnoreCase) >= 0)
@@ -529,6 +563,23 @@ public static class WeaponLoadoutCatalog
             Mathf.Lerp(localBounds.min.x, localBounds.max.x, SawHandleGripXNormalized),
             Mathf.Lerp(localBounds.min.y, localBounds.max.y, SawHandleGripYNormalized),
             Mathf.Lerp(localBounds.min.z, localBounds.max.z, SawHandleGripZNormalized));
+        return true;
+    }
+
+    private static bool TryGetSawPlayerGripPoint(Transform weaponRoot, out Vector3 gripPoint)
+    {
+        gripPoint = SawRuntimeFallbackGripPoint;
+
+        if (weaponRoot == null)
+            return false;
+
+        if (!TryGetCombinedLocalBounds(weaponRoot, out Bounds localBounds))
+            return false;
+
+        gripPoint = new Vector3(
+            Mathf.Lerp(localBounds.min.x, localBounds.max.x, SawPlayerHandleGripXNormalized),
+            Mathf.Lerp(localBounds.min.y, localBounds.max.y, SawPlayerHandleGripYNormalized),
+            Mathf.Lerp(localBounds.min.z, localBounds.max.z, SawPlayerHandleGripZNormalized));
         return true;
     }
 

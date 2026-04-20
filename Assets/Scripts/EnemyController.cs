@@ -1312,6 +1312,17 @@ public class EnemyController : MonoBehaviour, IDamageable
             ApplyWeaponGripPose();
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, weaponPrefab, equippedWeaponObject);
 
+        // Saw (level 12): same top-handle correction as the player.
+        // Crosby's hand basis differs from the Ronin wrist, so the enemy uses
+        // the same rotation/position starting point — tune independently if the
+        // enemy rig needs a different y offset.
+        if (level == 12
+            && weaponPrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            equippedWeaponObject.transform.localRotation = Quaternion.Euler(8f, 0f, -90f);
+            equippedWeaponObject.transform.localPosition = new Vector3(0f, -0.25f, -0.05f);
+        }
+
         Debug.Log($"[EnemyController] '{name}' lvl={level} weapon → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
                   $"localPosition={equippedWeaponObject.transform.localPosition} " +
