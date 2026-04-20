@@ -205,16 +205,11 @@ public static class WeaponLoadoutCatalog
     private const float SawHandleGripXNormalized = 0.90f;
     private const float SawHandleGripYNormalized = 0.84f;
     private const float SawHandleGripZNormalized = 0.50f;
-    // Level 13 sickle: the imported FBX pivot sits too close to the blade mass
-    // for the generic short-grip preset, so the player grabs through the mesh
-    // and the weapon reads as tiny/hidden on frame one. Use a player-only
-    // handle anchor derived from the sickle bounds and keep the usual one-hand
-    // silhouette instead of altering the shared scale pipeline.
-    private static readonly Vector3 SicklePlayerLocalPosition = new Vector3(-0.082f, 0.026f, 0.028f);
-    private static readonly Vector3 SicklePlayerLocalEuler = new Vector3(12f, 180f, 102f);
-    private const float SickleHandleGripXNormalized = 0.68f;
-    private const float SickleHandleGripYNormalized = 0.31f;
-    private const float SickleHandleGripZNormalized = 0.50f;
+    // Level 13 sickle: once the player uses the real hand/wrist bone instead
+    // of the accessory tag socket, the sickle matches the enemy's forward
+    // one-handed basis with only a small player-side inward grip offset.
+    private static readonly Vector3 SicklePlayerLocalPosition = new Vector3(-0.015f, -0.005f, 0f);
+    private static readonly Vector3 SicklePlayerLocalEuler = new Vector3(0f, 0f, 90f);
     // Level 14 morgenstern: the imported pivot sits at the spiked head, so the
     // grip needs two pieces of compensation:
     // 1) move the hand to the far handle end instead of the pivot/head, and
@@ -526,27 +521,6 @@ public static class WeaponLoadoutCatalog
             return true;
         }
 
-        if (clampedLevel == 13
-            && sourcePrefab != null
-            && sourcePrefab.name.IndexOf("sickle", System.StringComparison.OrdinalIgnoreCase) >= 0)
-        {
-            weaponRoot.localRotation = Quaternion.Euler(SicklePlayerLocalEuler);
-
-            if (TryGetCombinedLocalBounds(weaponRoot, out Bounds localBounds))
-            {
-                Vector3 gripPoint = new Vector3(
-                    Mathf.Lerp(localBounds.min.x, localBounds.max.x, SickleHandleGripXNormalized),
-                    Mathf.Lerp(localBounds.min.y, localBounds.max.y, SickleHandleGripYNormalized),
-                    Mathf.Lerp(localBounds.min.z, localBounds.max.z, SickleHandleGripZNormalized));
-                Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
-                weaponRoot.localPosition = SicklePlayerLocalPosition - (weaponRoot.localRotation * scaledGripPoint);
-                return true;
-            }
-
-            weaponRoot.localPosition = SicklePlayerLocalPosition;
-            return true;
-        }
-
         if (clampedLevel == 14
             && sourcePrefab != null
             && sourcePrefab.name.IndexOf("morgenstern", System.StringComparison.OrdinalIgnoreCase) >= 0)
@@ -665,6 +639,7 @@ public static class WeaponLoadoutCatalog
             Mathf.Lerp(localBounds.min.z, localBounds.max.z, SawPlayerHandleGripZNormalized));
         return true;
     }
+
 
     private static bool TryGetCombinedLocalBounds(Transform root, out Bounds combinedBounds)
     {
