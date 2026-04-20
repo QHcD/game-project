@@ -14,6 +14,9 @@ using UnityEngine.InputSystem;
 public class PlayerController : MonoBehaviour
 {
     private const string WeaponSocketName = "__PlayerWeaponSocket";
+    private const string ChainsawSocketName = "__PlayerChainsawSocket";
+    private static readonly Vector3 ChainsawSocketLocalPosition = Vector3.zero;
+    private static readonly Vector3 ChainsawSocketLocalEuler = new Vector3(0f, 0f, 0f);
 
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
@@ -1574,6 +1577,27 @@ public class PlayerController : MonoBehaviour
         return null;
     }
 
+    private static Transform FindPlayerChainsawAttachBone(GameObject body)
+    {
+        if (body == null) return null;
+
+        // Level 12 should attach to the animated wrist itself, not to any
+        // firearm/body carry tags, so the rear handle stays in the palm.
+        Transform accessoryBone = FindBoneExact(body.transform, "tag_accessory_right");
+        if (accessoryBone != null)
+            return accessoryBone;
+
+        Transform wristBone = FindBoneExact(body.transform, "j_wrist_ri");
+        if (wristBone != null)
+            return wristBone;
+
+        Animator anim = body.GetComponentInChildren<Animator>(true);
+        if (anim != null && anim.isHuman)
+            return anim.GetBoneTransform(HumanBodyBones.RightHand);
+
+        return FindPlayerHandBone(body);
+    }
+
     private void AttachWeaponToHand(GameObject body, int weaponLevel = -1)
     {
         if (body == null) return;
@@ -1602,13 +1626,19 @@ public class PlayerController : MonoBehaviour
         }
 
         // ── 2. Find right-hand bone ─────────────────────────────────────────
-        Transform handBone = FindPlayerHandBone(body);
+        bool isSaw = level == 12
+            && prefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0;
+        Transform handBone = isSaw
+            ? FindPlayerChainsawAttachBone(body)
+            : FindPlayerHandBone(body);
         if (handBone == null)
         {
             Debug.LogWarning("[PlayerController] Right hand bone not found, attaching to body root.");
             handBone = body.transform;
         }
-        Transform weaponSocket = GetOrCreateWeaponSocket(handBone);
+        Transform weaponSocket = isSaw
+            ? GetOrCreateChainsawSocket(handBone)
+            : GetOrCreateWeaponSocket(handBone);
 
         // ── 3. Instantiate (unparented to get clean world-space bounds) ─────
         GameObject weapon = Instantiate(prefab);
@@ -1651,6 +1681,19 @@ public class PlayerController : MonoBehaviour
         if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, prefab, weapon.transform))
             ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
+
+        // Saw (level 12): the FBX pivot sits at the blade center, so the
+        // grip-pose algorithm always lands mid-blade. Override the transform
+        // directly so the palm closes around the top-handle loop instead.
+        // Rotation (8,0,-90): blade → socket +Y (up/forward), handle → socket -Y.
+        // Position y=-0.25 shifts the weapon root DOWN so the top handle, which
+        // sits 0.25 m above the blade center, descends into the palm.
+        // Tune y / z in play mode until the Wrist.R bone sits inside the D-grip.
+        if (isSaw)
+        {
+            weapon.transform.localRotation = Quaternion.Euler(8f, 0f, -90f);
+            weapon.transform.localPosition = new Vector3(0f, -0.25f, -0.05f);
+        }
 
         Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
@@ -1712,6 +1755,28 @@ public class PlayerController : MonoBehaviour
 
         socket.localPosition = Vector3.zero;
         socket.localRotation = Quaternion.identity;
+
+        Vector3 handLossy = handBone.lossyScale;
+        socket.localScale = new Vector3(
+            1f / Mathf.Max(Mathf.Abs(handLossy.x), 0.0001f),
+            1f / Mathf.Max(Mathf.Abs(handLossy.y), 0.0001f),
+            1f / Mathf.Max(Mathf.Abs(handLossy.z), 0.0001f));
+
+        return socket;
+    }
+
+    private static Transform GetOrCreateChainsawSocket(Transform handBone)
+    {
+        Transform socket = handBone.Find(ChainsawSocketName);
+        if (socket == null)
+        {
+            GameObject socketObject = new GameObject(ChainsawSocketName);
+            socket = socketObject.transform;
+            socket.SetParent(handBone, worldPositionStays: false);
+        }
+
+        socket.localPosition = ChainsawSocketLocalPosition;
+        socket.localRotation = Quaternion.Euler(ChainsawSocketLocalEuler);
 
         Vector3 handLossy = handBone.lossyScale;
         socket.localScale = new Vector3(
