@@ -1619,7 +1619,7 @@ public class PlayerController : MonoBehaviour
         if (prefab == null)
         {
             Debug.LogWarning($"[PlayerController] All weapon sources exhausted for level {level}, using primitive.");
-            Transform fallbackBone = ResolveHandBone(body);
+            Transform fallbackBone = ResolveHandBone(body, level);
             Transform fallbackSocket = GetOrCreateWeaponSocket(fallbackBone);
             equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackSocket, loadout);
             return;
@@ -1628,7 +1628,7 @@ public class PlayerController : MonoBehaviour
         // ── 2. Bone verification — mirrors EnemyController exactly ──────────
         // Priority 1: known rig bone names
         // Priority 2: Humanoid avatar API (the #1 floating-weapon fix)
-        Transform handBone = ResolveHandBone(body);
+        Transform handBone = ResolveHandBone(body, level);
         Debug.Log($"[PlayerController] Hand bone resolved: '{handBone.name}' (level={level})");
 
         // ── 3. Scale-normalising socket — same as enemy ─────────────────────
@@ -1670,12 +1670,6 @@ public class PlayerController : MonoBehaviour
             case 12: // SAW — rear handle in palm, blade forward
                 weapon.transform.localPosition = new Vector3(0f, -0.2f, 0.05f);
                 weapon.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
-                break;
-            case 13: // SICKLE — slid along handle so palm grips the middle, not the butt end
-                // Z pulled negative to shift the weapon backward relative to the palm,
-                // moving the grip point from the end of the wooden handle to its middle.
-                weapon.transform.localPosition = new Vector3(-0.082f, 0.026f, -0.05f);
-                weapon.transform.localRotation = Quaternion.Euler(12f, 180f, 102f);
                 break;
             // Level 14 (morgenstern) also falls through here, but the player's
             // runtime grip helper now applies both a bounds-derived handle grip
@@ -1740,9 +1734,47 @@ public class PlayerController : MonoBehaviour
 
     // Resolves the player right-hand bone using explicit names first, then the
     // Humanoid avatar API as the guaranteed fallback (fixes floating weapons).
-    private static Transform ResolveHandBone(GameObject body)
+    private static Transform ResolveHandBone(GameObject body, int weaponLevel = -1)
     {
         if (body == null) return null;
+
+        if (weaponLevel == 13)
+        {
+            string[] meleeNames =
+            {
+                "j_wrist_ri",
+                "weapon_bone_R",
+                "bip_hand_R",
+                "RightHand",
+                "Hand_R",
+                "hand_R",
+                "hand_r",
+                "Wrist_R",
+                "wrist_R",
+                "tag_accessory_right",
+            };
+
+            foreach (string n in meleeNames)
+            {
+                Transform found = FindBoneExact(body.transform, n);
+                if (found != null)
+                {
+                    Debug.Log($"[PlayerController] ResolveHandBone: found '{found.name}' by Level 13 melee priority");
+                    return found;
+                }
+            }
+
+            Animator meleeAnim = body.GetComponentInChildren<Animator>(true);
+            if (meleeAnim != null && meleeAnim.isHuman)
+            {
+                Transform meleeBone = meleeAnim.GetBoneTransform(HumanBodyBones.RightHand);
+                if (meleeBone != null)
+                {
+                    Debug.Log($"[PlayerController] ResolveHandBone: found '{meleeBone.name}' via HumanBodyBones for Level 13");
+                    return meleeBone;
+                }
+            }
+        }
 
         // Explicit bone name search — same priority list as FindPlayerHandBone
         string[] names = {
