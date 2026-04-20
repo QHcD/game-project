@@ -1,7 +1,7 @@
 {
   "dependencies": {
     "com.gamelovers.mcp-unity": {
-      "version": "https://github.com/CoderGamester/mcp-unity.git",
+      "version": "https://github.com/CoderGamester/mcp-unity.git#main",
       "depth": 0,
       "source": "git",
       "dependencies": {

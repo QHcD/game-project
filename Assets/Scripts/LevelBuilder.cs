@@ -528,13 +528,9 @@ public class LevelBuilder : MonoBehaviour
         if (handBone != null)
             controller.weaponAttachPoint = handBone;
 
-        controller.weaponGripLocalPosition = loadout.EnemyLocalPosition;
-        controller.weaponGripLocalEulerAngles = loadout.EnemyLocalEuler;
-        controller.stabilizeWeaponSocketAgainstHandPose = level == 9;
-        controller.weaponSocketLocalEulerAngles = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
-
-        // Single source of truth for enemy weapon socketing/stabilization.
-        controller.AttachWeaponToHand(weaponPrefab, targetSize);
+        // Grip pose, socket euler, and stabilisation are now resolved inside
+        // AttachWeaponToHand from the catalog — no pre-fill required here.
+        controller.AttachWeaponToHand(weaponPrefab, targetSize, level);
 
         if (controller.equippedWeaponObject != null)
             SetLayerRecursive(controller.equippedWeaponObject, enemy.layer);
