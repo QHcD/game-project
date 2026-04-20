@@ -99,14 +99,53 @@ public static class WeaponLoadoutCatalog
     // hand basis is normalized on the socket side. Without that normalization,
     // Crosby's hand drives the tool forward/backward regardless of root grip.
     private static readonly Vector3 WrenchEnemyLocalEuler = WrenchPlayerLocalEuler;
-    private static readonly Vector3 CrowbarPlayerLocalPosition = new Vector3(-0.135f, -0.006f, 0.006f);
-    private static readonly Vector3 CrowbarPlayerLocalEuler = new Vector3(0f, 180f, 104f);
-    private static readonly Vector3 CrowbarEnemyLocalPosition = new Vector3(-0.115f, -0.0035f, 0.006f);
-    private static readonly Vector3 CrowbarEnemyLocalEuler = new Vector3(0f, 180f, 104f);
-    private static readonly Vector3 HammerPlayerLocalPosition = new Vector3(-0.156f, -0.0085f, -0.03f);
-    private static readonly Vector3 HammerPlayerLocalEuler = new Vector3(8f, 0f, 90f);
-    private static readonly Vector3 HammerEnemyLocalPosition = new Vector3(-0.156f, -0.007f, -0.04f);
-    private static readonly Vector3 HammerEnemyLocalEuler = new Vector3(8f, 0f, 90f);
+    // Level 7 crowbar: FBX long axis is local X (after the baked 270° X root rotation).
+    // Handle/straight end at -X (~-0.282m at 0.55m autoscale); hook at +X (~+0.267m).
+    //
+    // PLAYER (Ronin / tag_accessory_right): Ry(180) flips the crowbar end-for-end so
+    // hook → socket -X (Ronin forward/striking direction). Position -0.220 places the
+    // hand at mid-handle, ~0.063m from the butt. Prior values (pos=-0.135, Z=104)
+    // left the grip 0.29m from the socket (visually floating).
+    //
+    // ENEMY (Crosby / bip_hand_R): The Crosby hand basis is end-for-end inverted
+    // relative to Ronin — the same pattern seen on katana, bat, shield, and level-15
+    // weapons (all need a Y=180 enemy correction vs player). With identity rotation
+    // the crowbar +X (hook) maps directly to Crosby socket +X (forward/striking
+    // direction), and the grip offset flips sign: +0.219 in X places the hand at
+    // mid-handle. No socket normalisation needed for the crowbar (unlike the wrench).
+    private static readonly Vector3 CrowbarPlayerLocalPosition = new Vector3(-0.220f, -0.005f, 0.002f);
+    private static readonly Vector3 CrowbarPlayerLocalEuler    = new Vector3(0f, 180f, 0f);
+    private static readonly Vector3 CrowbarEnemyLocalPosition  = new Vector3(0.219f, -0.003f, 0.002f);
+    private static readonly Vector3 CrowbarEnemyLocalEuler     = new Vector3(0f, 0f, 0f);
+    // Level 8 hammer: FBX long axis is Z in prefab root space (SMR child baked
+    // rotation (270,90,0) maps SMR local +Z → world +Z at unit scale).
+    // Head bulk at Z=4.95–5.42 raw; handle butt is the root pivot at Z=0.
+    // At 0.85m autoscale (≈0.157): handle=0.776m, head=0.074m.
+    //
+    // AXIS DERIVATION (from verified axe reference, level 9):
+    //   The axe uses euler (0,180,90) → Ry(180)*Rx(0)*Rz(90).
+    //   Its head (at axe −X) maps to socket −Y (the forward/striking axis),
+    //   confirmed by "head extends outward away from the body" in the axe comment.
+    //   For the hammer, the head is at weapon +Z. We need R*(0,0,1) = (0,−1,0):
+    //     Rz(90)*(0,0,1) = (0,0,1)   [Z unchanged by any Rz]
+    //     Rx(90)*(0,0,1) = (0,−1,0)  [maps +Z → −Y regardless of Ry/Rz]
+    //   So euler (90,0,90) maps hammer head (+Z) → socket −Y = forward. ✓
+    //
+    // POSITION DERIVATION:
+    //   With euler (90,0,90), weapon +Z (handle direction) maps to socket −Y.
+    //   The handle runs from the butt (weapon root, Z=0) in the socket −Y direction.
+    //   Grip at weapon Z_grip (scaled) lands at socket Y = Y_pos − Z_grip.
+    //   For grip at socket origin: Y_pos = Z_grip.
+    //   Bottom-of-handle grip (ref: Husky sledgehammer photo):
+    //   Butt ~4cm behind palm → Y_pos=0.04 → grip at weapon Z=0.04 lands at palm.
+    //   Head at socket Y = 0.04−0.85 = −0.81m (81cm forward). Full reach. ✓
+    //
+    // ENEMY: shares socket normalisation euler with wrench so after normalisation
+    // the Crosby socket −Y is also the striking direction; same weapon euler applies.
+    private static readonly Vector3 HammerPlayerLocalPosition = new Vector3(0.0f, 0.040f, 0.0f);
+    private static readonly Vector3 HammerPlayerLocalEuler    = new Vector3(90f,  0f,   90f);
+    private static readonly Vector3 HammerEnemyLocalPosition  = new Vector3(0.0f, 0.220f, 0.0f);
+    private static readonly Vector3 HammerEnemyLocalEuler     = new Vector3(90f,  0f,   90f);
     // Crosby's raw hand basis needs a socket-side normalization for tool-style
     // one-handed grips so the authored player-like root pose doesn't end up
     // pointing forward/backward on the enemy.
@@ -266,10 +305,12 @@ public static class WeaponLoadoutCatalog
                     WrenchEnemyLocalEuler,
                     "Weapons/Imported/Wrench(level6)/source/PipeWrenchUnreal");
             case 7:
-                return CreatePlayerMatchedGrip(
+                return CreateExactGrip(
                     0.55f,
                     CrowbarPlayerLocalPosition,
                     CrowbarPlayerLocalEuler,
+                    CrowbarEnemyLocalPosition,
+                    CrowbarEnemyLocalEuler,
                     "Weapons/Imported/crowbar(level7)/source/CrowbarV2");
             case 8:
                 return CreateExactGrip(

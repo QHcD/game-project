@@ -1225,17 +1225,30 @@ public class EnemyController : MonoBehaviour, IDamageable
     //  transform or distort its final world size.
     // ════════════════════════════════════════════════════════════════════════
 
-    public void AttachWeaponToHand(GameObject weaponPrefab, float targetSize = 0.5f)
+    public void AttachWeaponToHand(GameObject weaponPrefab, float targetSize = 0.5f, int level = -1)
     {
         if (equippedWeaponObject != null)
         {
             Destroy(equippedWeaponObject);
             equippedWeaponObject = null;
         }
-        _activeWeaponSocket = null;
+        _activeWeaponSocket   = null;
         _activeWeaponHandBone = null;
 
         if (weaponPrefab == null) return;
+
+        // ── Resolve level and pull ALL grip data from the catalog. ───────────
+        // This makes AttachWeaponToHand the single source of truth for enemy
+        // weapon socketing — LevelBuilder no longer needs to pre-fill inspector
+        // fields for grip pose, socket euler, or stabilization.
+        if (level < 0)
+            level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+
+        WeaponLoadout loadout            = WeaponLoadoutCatalog.Get(level);
+        weaponGripLocalPosition          = loadout.EnemyLocalPosition;
+        weaponGripLocalEulerAngles       = loadout.EnemyLocalEuler;
+        weaponSocketLocalEulerAngles     = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
+        stabilizeWeaponSocketAgainstHandPose = (level == 9);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
         Transform handBone = weaponAttachPoint;
@@ -1271,15 +1284,13 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (stabilizeWeaponSocketAgainstHandPose)
             socketRotation = Quaternion.Inverse(handBone.localRotation) * socketRotation;
         weaponSocket.localRotation = socketRotation;
-        _activeWeaponSocket = weaponSocket;
+        _activeWeaponSocket   = weaponSocket;
         _activeWeaponHandBone = handBone;
         equippedWeaponObject.transform.SetParent(weaponSocket, worldPositionStays: false);
         equippedWeaponObject.transform.localPosition = Vector3.zero;
         equippedWeaponObject.transform.localRotation = Quaternion.identity;
         Transform runtimeGripParent = WeaponLoadoutCatalog.GetOrCreateRuntimeGripAnchor(
-            GameManager.Instance != null ? GameManager.Instance.currentLevel : 1,
-            weaponPrefab,
-            weaponSocket);
+            level, weaponPrefab, weaponSocket);
         if (runtimeGripParent != weaponSocket)
         {
             equippedWeaponObject.transform.SetParent(runtimeGripParent, worldPositionStays: false);
@@ -1288,22 +1299,20 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         // ── 5. Compute localScale from the ACTUAL inherited world size ─────
-        // This is more robust than dividing by handBone.lossyScale directly,
-        // because many imported enemy rigs bake compensation scales into
-        // intermediate bones. Measuring post-parenting keeps the world size
-        // stable without collapsing the weapon root transform.
         float desiredWorldSize = Mathf.Max(0.01f, targetSize);
         equippedWeaponObject.transform.localScale = Vector3.one;
         float inheritedExtent = GetMaxRendererExtent(equippedWeaponObject);
         if (inheritedExtent < 0.001f) inheritedExtent = weaponExtent;
         float uniformScale = desiredWorldSize / inheritedExtent;
         equippedWeaponObject.transform.localScale = Vector3.one * uniformScale;
-        int currentLevel = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
-        if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(currentLevel, weaponPrefab, equippedWeaponObject.transform))
-            ApplyWeaponGripPose();
-        WeaponLoadoutCatalog.ApplyRuntimeOverrides(currentLevel, weaponPrefab, equippedWeaponObject);
 
-        Debug.Log($"[EnemyController] '{name}' weapon → hand '{handBone.name}' " +
+        // ── 6. Apply grip pose — catalog EnemyLocalPosition/Euler is the only
+        // source of truth; inspector fields were already overwritten above. ──
+        if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(level, weaponPrefab, equippedWeaponObject.transform))
+            ApplyWeaponGripPose();
+        WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, weaponPrefab, equippedWeaponObject);
+
+        Debug.Log($"[EnemyController] '{name}' lvl={level} weapon → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
                   $"localPosition={equippedWeaponObject.transform.localPosition} " +
                   $"localEuler={equippedWeaponObject.transform.localEulerAngles} " +
