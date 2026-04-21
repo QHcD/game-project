@@ -223,23 +223,25 @@ public class RuntimeMenuBuilder : MonoBehaviour
         MakeText(panelObj.transform, "SELECT LEVEL", 64, new Color(0.94f, 0.94f, 1f, 1f),
             new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
 
-        MakeText(panelObj.transform, "MAP CHOICE", 30, new Color(0.94f, 0.94f, 1f, 0.90f),
-            new Vector2(0.72f, 0.72f), new Vector2(0.95f, 0.82f), false);
+        // Map choice removed — level select shows levels only.
 
         GameObject gridObj = new GameObject("Grid");
         gridObj.transform.SetParent(panelObj.transform, false);
         RectTransform gridRT = gridObj.AddComponent<RectTransform>();
-        gridRT.anchorMin = new Vector2(0.05f, 0.22f);
-        gridRT.anchorMax = new Vector2(0.66f, 0.82f);
-        gridRT.offsetMin = gridRT.offsetMax = Vector2.zero;
+        // Centered 4×4 grid
+        gridRT.anchorMin = new Vector2(0.5f, 0.5f);
+        gridRT.anchorMax = new Vector2(0.5f, 0.5f);
+        gridRT.pivot = new Vector2(0.5f, 0.5f);
+        gridRT.sizeDelta = new Vector2(760f, 520f);
+        gridRT.anchoredPosition = new Vector2(0f, -68f);
 
         GridLayoutGroup grid = gridObj.AddComponent<GridLayoutGroup>();
-        grid.cellSize = new Vector2(140f, 108f);
-        grid.spacing = new Vector2(16f, 16f);
-        grid.padding = new RectOffset(6, 6, 6, 6);
+        grid.cellSize = new Vector2(150f, 115f);
+        grid.spacing = new Vector2(18f, 18f);
+        grid.padding = new RectOffset(10, 10, 10, 10);
         grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
-        grid.constraintCount = 5;
-        grid.childAlignment = TextAnchor.UpperCenter;
+        grid.constraintCount = 4;
+        grid.childAlignment = TextAnchor.MiddleCenter;
 
         int unlockedLevels = GameManager.Instance != null ? GameManager.Instance.GetUnlockedLevelCount() : 1;
         for (int i = 1; i <= GameManager.TotalLevels; i++)
@@ -251,77 +253,10 @@ public class RuntimeMenuBuilder : MonoBehaviour
                 () => GameManager.Instance?.StartRun(level));
         }
 
-        GameObject mapLayoutObj = new GameObject("MapLayout");
-        mapLayoutObj.transform.SetParent(panelObj.transform, false);
-        RectTransform mapLayoutRect = mapLayoutObj.AddComponent<RectTransform>();
-        mapLayoutRect.anchorMin = new Vector2(0.72f, 0.22f);
-        mapLayoutRect.anchorMax = new Vector2(0.95f, 0.77f);
-        mapLayoutRect.offsetMin = mapLayoutRect.offsetMax = Vector2.zero;
+        // Map layout removed.
 
-        string[] mapNames = { "BLACKSITE\nFACILITY", "CYBERRUINS\nNEON", "CONTAINER\nPORT YARD" };
-
-        float[] btnMinY = { 0.72f, 0.42f, 0.12f };
-        float[] btnMaxY = { 0.88f, 0.58f, 0.28f };
-
-        Image[] mapImages = new Image[3];
-        TextMeshProUGUI[] mapLabels = new TextMeshProUGUI[3];
-        MenuButtonHoverEffect[] mapHovers = new MenuButtonHoverEffect[3];
-
-        int selectedMapIndex = PlayerPrefs.GetInt("SelectedMap", 0);
-
-        for (int m = 0; m < mapNames.Length; m++)
-        {
-            int currentIndex = m;
-
-            GameObject mapBtn = new GameObject("MapBtn_" + m);
-            mapBtn.transform.SetParent(mapLayoutObj.transform, false);
-
-            mapImages[m] = mapBtn.AddComponent<Image>();
-            mapImages[m].color = m == selectedMapIndex
-                ? new Color(0.90f, 0.40f, 0.90f, 1f)
-                : Color.white; // تم تغيير الخلفية إلى الأبيض كما طلبت
-
-            Button mapBtnComp = mapBtn.AddComponent<Button>();
-            mapBtnComp.targetGraphic = mapImages[m];
-
-            RectTransform mapBtnRect = mapBtn.GetComponent<RectTransform>();
-            mapBtnRect.anchorMin = new Vector2(0.00f, btnMinY[m]);
-            mapBtnRect.anchorMax = new Vector2(1.00f, btnMaxY[m]);
-            mapBtnRect.offsetMin = mapBtnRect.offsetMax = Vector2.zero;
-
-            Color txtColor = m == selectedMapIndex
-                ? new Color(0.15f, 0.08f, 0.24f, 1f)
-                : new Color(0.15f, 0.12f, 0.22f, 1f); // خط داكن ليكون واضح على الأبيض
-
-            mapLabels[m] = CreateCenteredLabel(mapBtn.transform, mapNames[m], 21, txtColor, true);
-
-            mapHovers[m] = mapBtn.AddComponent<MenuButtonHoverEffect>();
-            mapHovers[m].label = mapLabels[m];
-            mapHovers[m].background = mapImages[m];
-            mapHovers[m].normalTextColor = mapLabels[m].color;
-            mapHovers[m].hoverTextColor = new Color(0.15f, 0.08f, 0.24f, 1f);
-            mapHovers[m].normalBackgroundColor = mapImages[m].color;
-            mapHovers[m].hoverBackgroundColor = new Color(1f, 0.80f, 1f, 1f);
-
-            mapBtnComp.onClick.AddListener(() =>
-            {
-                PlayerPrefs.SetInt("SelectedMap", currentIndex);
-                PlayerPrefs.Save();
-
-                for (int i = 0; i < mapNames.Length; i++)
-                {
-                    bool isSelected = (i == currentIndex);
-                    mapImages[i].color = isSelected ? new Color(0.90f, 0.40f, 0.90f, 1f) : Color.white;
-                    mapLabels[i].color = isSelected ? new Color(0.15f, 0.08f, 0.24f, 1f) : new Color(0.15f, 0.12f, 0.22f, 1f);
-
-                    mapHovers[i].normalBackgroundColor = mapImages[i].color;
-                    mapHovers[i].normalTextColor = mapLabels[i].color;
-                }
-            });
-        }
-
-        // تم إضافة <b> حول كلمة RETURN لتكون عريضة (Bold) إجبارياً
-        MakePanelButton(panelObj.transform, "<b>RETURN</b>",
+        // RETURN text color should be dark like other buttons.
+        MakePanelButton(panelObj.transform, "RETURN",
             new Vector2(0.40f, 0.03f), new Vector2(0.60f, 0.13f),
             () =>
             {
@@ -445,16 +380,16 @@ public class RuntimeMenuBuilder : MonoBehaviour
         outline.effectColor = new Color(0.20f, 0.24f, 0.38f, 0.30f);
         outline.effectDistance = new Vector2(2f, -2f);
 
-        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 26,
-            new Color(0.08f, 0.08f, 0.12f, 1f), true);
+        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 28,
+            new Color(0.05f, 0.08f, 0.32f, 1f), true);
         labelText.fontStyle = FontStyles.Bold;
-        labelText.fontSize = 30f;
-        labelText.color = new Color(0.08f, 0.08f, 0.12f, 1f);
+        labelText.fontSize = 31f;
+        labelText.color = new Color(0.05f, 0.08f, 0.32f, 1f);
 
         AttachHoverEffect(obj, labelText, img,
             Color.white,
             new Color(0.98f, 0.98f, 1f, 1f),
-            new Color(0.08f, 0.08f, 0.12f, 1f));
+            new Color(0.05f, 0.08f, 0.32f, 1f));
     }
 
     TextMeshProUGUI CreateCenteredLabel(Transform parent, string text,

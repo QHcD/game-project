@@ -19,6 +19,10 @@ using System.Collections.Generic;
 [RequireComponent(typeof(NavMeshAgent))]
 public class EnemyController : MonoBehaviour, IDamageable
 {
+    private const string PrefKeySicklePos = "Grip.Player.L13.Sickle.Pos";
+    private const string PrefKeySickleEuler = "Grip.Player.L13.Sickle.Euler";
+    private const string PrefKeySawPos = "Grip.Player.L12.Saw.Pos";
+    private const string PrefKeySawEuler = "Grip.Player.L12.Saw.Euler";
     // ── Tuning ──────────────────────────────────────────────────────────────
     [Header("Combat")]
     public float detectionRadius  = 18f;
@@ -66,6 +70,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     public Vector3 weaponSocketLocalEulerAngles = Vector3.zero;
     [Tooltip("When enabled, continuously removes the animated hand bone basis so the weapon can keep a player-matched pose on Crosby.")]
     public bool stabilizeWeaponSocketAgainstHandPose = false;
+    [Header("Runtime Grip Persistence")]
+    [Tooltip("When enabled, enemy sickle/saw grip uses the latest saved runtime tune values.")]
+    public bool useSavedRuntimeGripValues = true;
 
     [HideInInspector] public GameObject equippedWeaponObject;
 
@@ -254,6 +261,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // if the player is on Default (layer 0) instead of "Character", the
         // OverlapSphere returned zero hits and the enemy never acquired a target.
         detectionMask = ~0;
+        LoadSavedRuntimeGripValues();
     }
 
     private void Start()
@@ -1541,6 +1549,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         weaponGripLocalEulerAngles       = loadout.EnemyLocalEuler;
         weaponSocketLocalEulerAngles     = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
         stabilizeWeaponSocketAgainstHandPose = (level == 9);
+        ApplySavedRuntimeGripValuesForLevel(level);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
         Transform handBone = weaponAttachPoint;
@@ -1604,6 +1613,22 @@ public class EnemyController : MonoBehaviour, IDamageable
             ApplyWeaponGripPose();
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, weaponPrefab, equippedWeaponObject);
 
+        // Level-specific grip fixes by weapon name (player/AI rigs differ).
+        if (weaponPrefab != null)
+        {
+            string wn = weaponPrefab.name.ToLowerInvariant();
+            if (wn.Contains("sickle"))
+            {
+                equippedWeaponObject.transform.localRotation = Quaternion.Euler(weaponGripLocalEulerAngles);
+                equippedWeaponObject.transform.localPosition = weaponGripLocalPosition;
+            }
+            else if (wn.Contains("saw"))
+            {
+                equippedWeaponObject.transform.localRotation = Quaternion.Euler(weaponGripLocalEulerAngles);
+                equippedWeaponObject.transform.localPosition = weaponGripLocalPosition;
+            }
+        }
+
         // Saw (level 12): same top-handle correction as the player.
         // Crosby's hand basis differs from the Ronin wrist, so the enemy uses
         // the same rotation/position starting point — tune independently if the
@@ -1611,8 +1636,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (level == 12
             && weaponPrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            equippedWeaponObject.transform.localRotation = Quaternion.Euler(8f, 0f, -90f);
-            equippedWeaponObject.transform.localPosition = new Vector3(0f, -0.25f, -0.05f);
+            if (!useSavedRuntimeGripValues)
+            {
+                equippedWeaponObject.transform.localRotation = Quaternion.Euler(8f, 0f, -90f);
+                equippedWeaponObject.transform.localPosition = new Vector3(0f, -0.25f, -0.05f);
+            }
         }
 
         if (level == 14
@@ -2007,6 +2035,47 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (tex != null) return tex;
         }
         return null;
+    }
+
+    private void LoadSavedRuntimeGripValues()
+    {
+        if (!useSavedRuntimeGripValues)
+            return;
+
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        ApplySavedRuntimeGripValuesForLevel(level);
+    }
+
+    private void ApplySavedRuntimeGripValuesForLevel(int level)
+    {
+        if (!useSavedRuntimeGripValues)
+            return;
+
+        if (level == 13)
+        {
+            weaponGripLocalPosition = LoadVector3Pref(PrefKeySicklePos, weaponGripLocalPosition);
+            weaponGripLocalEulerAngles = LoadVector3Pref(PrefKeySickleEuler, weaponGripLocalEulerAngles);
+        }
+        else if (level == 12)
+        {
+            weaponGripLocalPosition = LoadVector3Pref(PrefKeySawPos, weaponGripLocalPosition);
+            weaponGripLocalEulerAngles = LoadVector3Pref(PrefKeySawEuler, weaponGripLocalEulerAngles);
+        }
+    }
+
+    private static Vector3 LoadVector3Pref(string key, Vector3 fallback)
+    {
+        if (!PlayerPrefs.HasKey(key + ".x")
+            || !PlayerPrefs.HasKey(key + ".y")
+            || !PlayerPrefs.HasKey(key + ".z"))
+        {
+            return fallback;
+        }
+
+        return new Vector3(
+            PlayerPrefs.GetFloat(key + ".x", fallback.x),
+            PlayerPrefs.GetFloat(key + ".y", fallback.y),
+            PlayerPrefs.GetFloat(key + ".z", fallback.z));
     }
 
     private void OnDrawGizmosSelected()
