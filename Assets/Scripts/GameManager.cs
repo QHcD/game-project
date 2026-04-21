@@ -142,6 +142,34 @@ public class GameManager : MonoBehaviour
         }
     }
 
+    private void OnEnable()
+    {
+        SceneManager.sceneLoaded += OnSceneLoaded;
+    }
+
+    private void OnDisable()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+    }
+
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        if (!scene.name.Equals("GameScene"))
+            return;
+
+        StartCoroutine(RefreshEnemyCountNextFrame());
+    }
+
+    private IEnumerator RefreshEnemyCountNextFrame()
+    {
+        // Let LevelBuilder finish spawning for this frame first.
+        yield return null;
+
+        EnemyController[] enemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        if (enemies != null && enemies.Length > 0 && totalEnemiesSpawned <= 0)
+            InitializeEnemyCount(enemies.Length);
+    }
+
     // ── Settings setters ─────────────────────────────────────────────────────
     public void SetDifficulty(string diff)
     {

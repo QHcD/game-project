@@ -6,7 +6,7 @@ using System.Collections.Generic;
 
 /// <summary>
 /// Enemy AI with NavMeshAgent pathfinding, jump-over-obstacles, natural animations,
-/// death animation before ragdoll, and proper weapon support.
+/// immediate ragdoll death, and proper weapon support.
 ///
 /// Fix list (2026):
 ///   1. Jump — uses Mathf.Sqrt(jumpHeight * -2f * gravity) matching the Player formula.
@@ -72,6 +72,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Header("FFA Target Detection")]
     [Tooltip("Layer mask for valid targets (set to 'Character' layer).")]
     public LayerMask detectionMask = ~0;
+    [Tooltip("Extended emergency scan radius so enemies stay aggressive and do not idle.")]
+    public float aggressiveScanRadius = 65f;
 
     [Tooltip("Seconds between target scans (coroutine-based for performance).")]
     public float detectionInterval = 0.2f;
@@ -109,10 +111,24 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float corpseLifetime    = 15f;
     [Tooltip("Upward force added when ragdolling.")]
     public float deathPopForce     = 2f;
+    [Tooltip("How long ragdoll remains before this enemy object is destroyed.")]
+    public float ragdollVisibleDuration = 5f;
+
+    [Header("Patrol")]
+    [Tooltip("When no target is found, enemy roams inside this radius.")]
+    public float patrolRadius = 12f;
+    [Tooltip("How often to pick a new random patrol point.")]
+    public float patrolRetargetInterval = 2.25f;
+
+    [Header("OffMesh Link Jump")]
+    [Tooltip("Duration used to traverse jump links manually.")]
+    public float offMeshJumpDuration = 0.45f;
+    [Tooltip("Extra arc height while crossing OffMeshLinks.")]
+    public float offMeshJumpHeight = 1.2f;
 
     // ── State ────────────────────────────────────────────────────────────────
   // ── State ────────────────────────────────────────────────────────────────
-    private enum State { Idle, Chase, Attack, Flinch, Jumping, Dead }
+    private enum State { Idle, Patrol, Chase, Attack, Flinch, Jumping, Dead }
     private State _state = State.Idle;
 
     private NavMeshAgent _agent;
@@ -129,6 +145,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool         _lastHitByPlayer;
     private RagdollController _ragdoll;
     private Vector3      _lastHitDirection;
+    private Rigidbody[]  _ragdollBodies;
+    private CapsuleCollider _mainCapsuleCollider;
 
     // Flinch
     private float _flinchTimer;
@@ -156,6 +174,11 @@ public class EnemyController : MonoBehaviour, IDamageable
     private HashSet<int> _animParameterHashes;
     private Transform _activeWeaponSocket;
     private Transform _activeWeaponHandBone;
+    private GameObject _equippedWeaponPrefab;
+    private int _equippedWeaponLevel = -1;
+    private bool _weaponAttachInProgress;
+    private float _patrolTimer;
+    private bool _isTraversingOffMeshLink;
 
     // Position-delta velocity (same technique the PlayerController uses)
     private Vector3 _lastFramePosition;
@@ -165,7 +188,6 @@ public class EnemyController : MonoBehaviour, IDamageable
     private static readonly int HashVelX      = Animator.StringToHash("VelocityX");
     private static readonly int HashVelZ      = Animator.StringToHash("VelocityZ");
     private static readonly int HashAttack    = Animator.StringToHash("Attack");
-    private static readonly int HashDead      = Animator.StringToHash("Dead");
     private static readonly int HashHit       = Animator.StringToHash("Hit");
     private static readonly int HashGrounded  = Animator.StringToHash("IsGrounded");
     private const string WeaponSocketName     = "__EnemyWeaponSocket";
@@ -236,6 +258,8 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        detectionInterval = Mathf.Max(0.1f, detectionInterval);
+
         // LevelBuilder assigns maxHealth/chaseSpeed after AddComponent(), so
         // re-apply runtime state here once the spawner has finished tuning us.
         _currentHealth = maxHealth;
@@ -257,9 +281,35 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         _ragdoll = GetComponent<RagdollController>();
+        _mainCapsuleCollider = GetComponent<CapsuleCollider>();
+
+        // Cache all bone rigidbodies once and keep ragdoll disabled by default.
+        _ragdollBodies = GetComponentsInChildren<Rigidbody>(true);
+        for (int i = 0; i < _ragdollBodies.Length; i++)
+        {
+            Rigidbody boneBody = _ragdollBodies[i];
+            if (boneBody == null || boneBody == _rb)
+                continue;
+
+            boneBody.isKinematic = true;
+            boneBody.useGravity = false;
+            boneBody.detectCollisions = true;
+        }
 
         // Start the coroutine-based target scanner
-        _scanCoroutine = StartCoroutine(TargetScanLoop());
+        if (isActiveAndEnabled)
+            _scanCoroutine = StartCoroutine(TargetScanLoop());
+
+        _patrolTimer = Random.Range(0f, patrolRetargetInterval);
+    }
+
+    private void OnDisable()
+    {
+        if (_scanCoroutine != null)
+        {
+            StopCoroutine(_scanCoroutine);
+            _scanCoroutine = null;
+        }
     }
 
     private void Update()
@@ -278,6 +328,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         switch (_state)
         {
             case State.Idle:    UpdateIdle();    break;
+            case State.Patrol:  UpdatePatrol();  break;
             case State.Chase:   UpdateChase();   break;
             case State.Attack:  UpdateAttack();  break;
             case State.Flinch:  UpdateFlinch();  break;
@@ -316,15 +367,46 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Immediately react to any valid target (no wait for scan tick).
         if (IsTargetValid(_target))
             TransitionTo(State.Chase);
+        else
+            TransitionTo(State.Patrol);
+    }
+
+    private void UpdatePatrol()
+    {
+        if (_agent == null || !_agent.enabled)
+            return;
+
+        if (IsTargetValid(_target))
+        {
+            TransitionTo(State.Chase);
+            return;
+        }
+
+        _agent.isStopped = false;
+        _agent.speed = moveSpeed;
+
+        if (_isTraversingOffMeshLink || _agent.isOnOffMeshLink)
+            return;
+
+        _patrolTimer -= Time.deltaTime;
+        bool needsDestination = !_agent.hasPath || _agent.remainingDistance <= _agent.stoppingDistance + 0.35f;
+        if (_patrolTimer <= 0f || needsDestination)
+        {
+            _patrolTimer = patrolRetargetInterval;
+            SetRandomPatrolDestination();
+        }
     }
 
     private void UpdateChase()
     {
+        if (HandleOffMeshLinkTraversal())
+            return;
+
         // ── Validation ───────────────────────────────────────────────────────
         if (!IsTargetValid(_target))
         {
             _target = null;
-            TransitionTo(State.Idle);
+            TransitionTo(State.Patrol);
             return;
         }
 
@@ -382,7 +464,11 @@ public class EnemyController : MonoBehaviour, IDamageable
                 (_agent.destination - _target.position).sqrMagnitude > 0.04f;
 
             if (needsPath)
-                _agent.SetDestination(_target.position);
+            {
+                bool setDirect = _agent.SetDestination(_target.position);
+                if (!setDirect || _agent.pathStatus == NavMeshPathStatus.PathInvalid)
+                    TrySetDestinationNearTarget();
+            }
         }
 
         CheckAndJumpIfStuck();
@@ -390,10 +476,13 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void UpdateAttack()
     {
+        if (HandleOffMeshLinkTraversal())
+            return;
+
         if (!IsTargetValid(_target))
         {
             _target = null;
-            TransitionTo(State.Idle);
+            TransitionTo(State.Patrol);
             return;
         }
 
@@ -439,7 +528,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         if (_flinchTimer <= 0f)
-            TransitionTo(IsTargetValid(_target) ? State.Chase : State.Idle);
+            TransitionTo(IsTargetValid(_target) ? State.Chase : State.Patrol);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -579,7 +668,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         SetAnimatorTrigger(HashHit);
         PlayHitSound();
 
-        if (_currentHealth <= 0 || amount >= ragdollForceThreshold) Die();
+        if (_currentHealth <= 0) Die();
     }
 
     // ── IDamageable ─────────────────────────────────────────────────────────
@@ -623,14 +712,15 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     // ════════════════════════════════════════════════════════════════════════
     //  DEATH — Issue #4
-    //  Plays the "Dead" animation for deathAnimDuration seconds, THEN
-    //  switches to ragdoll physics so the body falls naturally.
+    //  Switches to ragdoll physics immediately so the body falls naturally.
     //  The corpse persists for corpseLifetime seconds before Destroy().
     // ════════════════════════════════════════════════════════════════════════
 
     private void Die()
     {
         _state = State.Dead;
+        CancelInvoke(nameof(EnableRagdoll));
+        CancelInvoke(nameof(FreezeRagdoll));
 
         // Stop target scan coroutine — no point scanning when dead
         if (_scanCoroutine != null)
@@ -644,8 +734,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             GameManager.Instance.EnemyKilled(_lastHitByPlayer);
 
         // Stop all navigation immediately
-        if (_agent != null) _agent.enabled = false;
         if (_rb != null)    _rb.isKinematic = true;
+        if (_controller != null) _controller.enabled = false;
 
         // Disable main collider so living enemies don't trip over the corpse
         Collider mainCol = GetComponent<Collider>();
@@ -658,19 +748,11 @@ public class EnemyController : MonoBehaviour, IDamageable
             else PlayProceduralSound(200f, 0.4f);
         }
 
-        // ── Phase 1: Death animation (animator stays ON) ──────────────────────
-        if (_anim != null)
-        {
-            _anim.applyRootMotion = false; // prevent the anim sliding the corpse
-            SetAnimatorTrigger(HashDead);
-        }
-
-        // ── Phase 2: Ragdoll fires after the animation plays (Issue #4 fix) ──
-        Invoke(nameof(ActivateRagdoll), deathAnimDuration);
+        EnableRagdoll();
 
         // ── Corpse cleanup ────────────────────────────────────────────────────
-        if (corpseLifetime > 0f)
-            Destroy(gameObject, deathAnimDuration + corpseLifetime);
+        if (ragdollVisibleDuration > 0f)
+            Destroy(gameObject, ragdollVisibleDuration);
     }
 
     /// <summary>
@@ -678,35 +760,123 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// Rigidbody physics take over every bone.
     /// Delegates to RagdollController when present; falls back to inline logic.
     /// </summary>
-    private void ActivateRagdoll()
+    private void EnableRagdoll()
     {
-        if (_ragdoll != null)
-        {
-            _ragdoll.EnableRagdoll(_lastHitDirection);
-            return;
-        }
-
-        // ── Fallback: no RagdollController attached ───────────────────────────
         if (_anim != null) _anim.enabled = false;
+        if (_agent != null) _agent.enabled = false;
+        if (_controller != null) _controller.enabled = false;
 
-        if (_rb == null) _rb = gameObject.AddComponent<Rigidbody>();
-        _rb.mass           = 50f;
-        _rb.linearDamping  = 0.5f;
-        _rb.angularDamping = 2f;
-        _rb.isKinematic    = false;
-        _rb.useGravity     = true;
+        int defaultLayer = LayerMask.NameToLayer("Default");
+        int environmentLayer = LayerMask.NameToLayer("Environment");
+        if (defaultLayer >= 0)
+            Physics.IgnoreLayerCollision(gameObject.layer, defaultLayer, false);
+        if (environmentLayer >= 0)
+            Physics.IgnoreLayerCollision(gameObject.layer, environmentLayer, false);
 
-        Vector3 popForce = Vector3.up * deathPopForce + Random.insideUnitSphere * 1.5f;
-        _rb.AddForce(popForce, ForceMode.VelocityChange);
-        _rb.AddTorque(Random.insideUnitSphere * 3f, ForceMode.VelocityChange);
+        if (_ragdoll == null)
+            _ragdoll = GetComponent<RagdollController>();
 
-        foreach (Rigidbody rb in GetComponentsInChildren<Rigidbody>(true))
+        if (_ragdollBodies == null || _ragdollBodies.Length == 0)
+            _ragdollBodies = GetComponentsInChildren<Rigidbody>(true);
+
+        var boneBodies = new List<Rigidbody>();
+        for (int i = 0; i < _ragdollBodies.Length; i++)
         {
-            rb.isKinematic = false;
-            rb.useGravity  = true;
+            Rigidbody rb = _ragdollBodies[i];
+            if (rb == null || rb.gameObject == gameObject)
+                continue;
+            boneBodies.Add(rb);
         }
 
-        Invoke(nameof(FreezeRagdoll), 3f);
+        Vector3 hitDir = _lastHitDirection.sqrMagnitude > 0.001f
+            ? _lastHitDirection.normalized
+            : -transform.forward;
+
+        // 1) Attempt full bone ragdoll first.
+        if (_ragdoll != null || boneBodies.Count > 0)
+        {
+            if (_mainCapsuleCollider != null)
+                _mainCapsuleCollider.enabled = false;
+
+            Collider rootCol = GetComponent<Collider>();
+            if (rootCol != null && rootCol != _mainCapsuleCollider)
+                rootCol.enabled = false;
+
+            if (_ragdoll != null)
+            {
+                _ragdoll.EnableRagdoll(hitDir);
+                return;
+            }
+
+            Rigidbody impulseTarget = null;
+            for (int i = 0; i < boneBodies.Count; i++)
+            {
+                Rigidbody boneRb = boneBodies[i];
+                boneRb.gameObject.SetActive(true);
+                boneRb.isKinematic = false;
+                boneRb.useGravity = true;
+                boneRb.detectCollisions = true;
+                boneRb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+                boneRb.interpolation = RigidbodyInterpolation.Interpolate;
+                if (impulseTarget == null)
+                    impulseTarget = boneRb;
+            }
+
+            Collider[] allCols = GetComponentsInChildren<Collider>(true);
+            PhysicsMaterial highFriction = new PhysicsMaterial("EnemyRagdollFriction")
+            {
+                dynamicFriction = 1f,
+                staticFriction = 1f,
+                bounciness = 0f,
+                frictionCombine = PhysicsMaterialCombine.Maximum,
+                bounceCombine = PhysicsMaterialCombine.Minimum
+            };
+            for (int i = 0; i < allCols.Length; i++)
+            {
+                Collider c = allCols[i];
+                if (c == null) continue;
+                if (c.gameObject == gameObject) continue;
+                c.enabled = true;
+                c.material = highFriction;
+            }
+
+            if (impulseTarget != null)
+            {
+                Vector3 ragdollImpulse = hitDir * deathPopForce + Vector3.up * (deathPopForce * 0.75f);
+                impulseTarget.AddForce(ragdollImpulse, ForceMode.VelocityChange);
+                impulseTarget.AddTorque(Random.insideUnitSphere * 3f, ForceMode.VelocityChange);
+                Invoke(nameof(FreezeRagdoll), 3f);
+                return;
+            }
+        }
+
+        // 2) Bulletproof fallback: make the ROOT body physically topple.
+        if (_mainCapsuleCollider == null)
+            _mainCapsuleCollider = GetComponent<CapsuleCollider>();
+        if (_mainCapsuleCollider == null)
+            _mainCapsuleCollider = gameObject.AddComponent<CapsuleCollider>();
+        _mainCapsuleCollider.enabled = true; // critical: keep root collider active
+
+        if (_rb == null)
+            _rb = GetComponent<Rigidbody>();
+        if (_rb == null)
+            _rb = gameObject.AddComponent<Rigidbody>();
+
+        _rb.isKinematic = false;
+        _rb.useGravity = true;
+        _rb.constraints = RigidbodyConstraints.None;
+        _rb.detectCollisions = true;
+        _rb.mass = Mathf.Max(20f, _rb.mass);
+        _rb.linearDamping = 0.15f;
+        _rb.angularDamping = 0.05f;
+
+        Vector3 launch = (-transform.forward * (deathPopForce * 1.25f)) + (Vector3.up * (deathPopForce * 1.5f));
+        _rb.AddForce(launch, ForceMode.VelocityChange);
+
+        Vector3 tumbleAxis = Vector3.Cross(Vector3.up, hitDir);
+        if (tumbleAxis.sqrMagnitude < 0.001f)
+            tumbleAxis = transform.right;
+        _rb.AddTorque((tumbleAxis.normalized * deathPopForce * 6f) + Random.insideUnitSphere * 2f, ForceMode.VelocityChange);
     }
 
     private void FreezeRagdoll()
@@ -1022,6 +1192,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         _agent.autoRepath            = true;
         _agent.updatePosition        = true;
         _agent.updateRotation        = true;
+        _agent.autoTraverseOffMeshLink = false;
     }
 
     private void TransitionTo(State newState)
@@ -1033,6 +1204,12 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         switch (newState)
         {
+            case State.Patrol:
+                _agent.isStopped = false;
+                _agent.speed = moveSpeed;
+                SetRandomPatrolDestination();
+                break;
+
             case State.Chase:
                 // Re-engage the agent and immediately seed a destination so
                 // there is never a frame where the agent reports no path.
@@ -1149,9 +1326,22 @@ public class EnemyController : MonoBehaviour, IDamageable
         float scanRadius = currentValid ? detectionRadius * 1.5f : detectionRadius;
         Transform candidate = FindFfaTarget(scanRadius);
 
+        // Emergency wide scan so enemies do not stand idle when combat drifts far away.
+        if (candidate == null)
+            candidate = FindFfaTarget(Mathf.Max(scanRadius, aggressiveScanRadius));
+
+        // Final fallback: force focus on player if present/alive.
+        if (candidate == null)
+            candidate = FindPlayerTarget();
+
         if (candidate == null)
         {
-            if (!currentValid) _target = null;
+            if (!currentValid)
+            {
+                _target = null;
+                if (_state != State.Dead && _state != State.Flinch && _state != State.Jumping)
+                    TransitionTo(State.Patrol);
+            }
             return;
         }
 
@@ -1165,6 +1355,69 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _target          = candidate;
         _targetLockTimer = targetLockDuration;
+        if (_state == State.Idle || _state == State.Patrol)
+            TransitionTo(State.Chase);
+    }
+
+    private void SetRandomPatrolDestination()
+    {
+        if (_agent == null || !_agent.enabled)
+            return;
+
+        Vector3 random = transform.position + Random.insideUnitSphere * patrolRadius;
+        random.y = transform.position.y;
+
+        if (NavMesh.SamplePosition(random, out NavMeshHit hit, patrolRadius, NavMesh.AllAreas))
+            _agent.SetDestination(hit.position);
+    }
+
+    private bool HandleOffMeshLinkTraversal()
+    {
+        if (_agent == null || !_agent.enabled || _isTraversingOffMeshLink)
+            return false;
+
+        if (!_agent.isOnOffMeshLink)
+            return false;
+
+        StartCoroutine(TraverseOffMeshLink());
+        return true;
+    }
+
+    private IEnumerator TraverseOffMeshLink()
+    {
+        _isTraversingOffMeshLink = true;
+        if (_agent == null || !_agent.enabled)
+        {
+            _isTraversingOffMeshLink = false;
+            yield break;
+        }
+
+        OffMeshLinkData data = _agent.currentOffMeshLinkData;
+        Vector3 startPos = transform.position;
+        Vector3 endPos = data.endPos + Vector3.up * _agent.baseOffset;
+        float duration = Mathf.Max(0.1f, offMeshJumpDuration);
+        float t = 0f;
+
+        SetAnimatorBool(HashGrounded, false);
+        _agent.isStopped = true;
+        _agent.updatePosition = false;
+
+        while (t < 1f)
+        {
+            t += Time.deltaTime / duration;
+            float arc = Mathf.Sin(Mathf.Clamp01(t) * Mathf.PI) * offMeshJumpHeight;
+            Vector3 pos = Vector3.Lerp(startPos, endPos, Mathf.Clamp01(t));
+            pos.y += arc;
+            transform.position = pos;
+            yield return null;
+        }
+
+        transform.position = endPos;
+        _agent.updatePosition = true;
+        _agent.CompleteOffMeshLink();
+        _agent.isStopped = false;
+        SetAnimatorBool(HashGrounded, true);
+        _isTraversingOffMeshLink = false;
     }
 
     /// <summary>
@@ -1195,8 +1448,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             Transform t  = dmg.transform;
             float     d2 = (t.position - transform.position).sqrMagnitude;
 
-            // Penalise targets we can't see so visible threats win ties.
-            if (!HasLineOfSight(t)) d2 *= 2.25f;
+            // Keep LoS preference but make it weak so AI remains aggressive.
+            if (!HasLineOfSight(t)) d2 *= 1.15f;
 
             if (d2 < bestScore)
             {
@@ -1206,6 +1459,29 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         return best;
+    }
+
+    private Transform FindPlayerTarget()
+    {
+        PlayerHealth player = Object.FindFirstObjectByType<PlayerHealth>();
+        if (player == null)
+            return null;
+
+        IDamageable dmg = player.GetComponent<IDamageable>();
+        if (dmg == null || !dmg.IsAlive)
+            return null;
+
+        return player.transform;
+    }
+
+    private void TrySetDestinationNearTarget()
+    {
+        if (_agent == null || !_agent.enabled || _target == null)
+            return;
+
+        Vector3 targetPos = _target.position;
+        if (NavMesh.SamplePosition(targetPos, out NavMeshHit hit, 4.5f, NavMesh.AllAreas))
+            _agent.SetDestination(hit.position);
     }
 
     private Transform FindNearestLivingEnemy()
@@ -1240,6 +1516,14 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void AttachWeaponToHand(GameObject weaponPrefab, float targetSize = 0.5f, int level = -1)
     {
+        if (_weaponAttachInProgress) return;
+        if (weaponPrefab == null) return;
+        if (level < 0)
+            level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        if (equippedWeaponObject != null && _equippedWeaponPrefab == weaponPrefab && _equippedWeaponLevel == level)
+            return;
+
+        _weaponAttachInProgress = true;
         if (equippedWeaponObject != null)
         {
             Destroy(equippedWeaponObject);
@@ -1248,15 +1532,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         _activeWeaponSocket   = null;
         _activeWeaponHandBone = null;
 
-        if (weaponPrefab == null) return;
-
         // ── Resolve level and pull ALL grip data from the catalog. ───────────
         // This makes AttachWeaponToHand the single source of truth for enemy
         // weapon socketing — LevelBuilder no longer needs to pre-fill inspector
         // fields for grip pose, socket euler, or stabilization.
-        if (level < 0)
-            level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
-
         WeaponLoadout loadout            = WeaponLoadoutCatalog.Get(level);
         weaponGripLocalPosition          = loadout.EnemyLocalPosition;
         weaponGripLocalEulerAngles       = loadout.EnemyLocalEuler;
@@ -1379,6 +1658,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         // ── 9. Visibility fix (URP) ─────────────────────────────────────────
         if (equippedWeaponObject.GetComponent<WeaponVisibilityFix>() == null)
             equippedWeaponObject.AddComponent<WeaponVisibilityFix>();
+
+        _equippedWeaponPrefab = weaponPrefab;
+        _equippedWeaponLevel = level;
+        _weaponAttachInProgress = false;
     }
 
     private static Transform GetOrCreateWeaponSocket(Transform handBone)

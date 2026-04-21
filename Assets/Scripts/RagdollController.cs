@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
@@ -18,6 +19,12 @@ public class RagdollController : MonoBehaviour
     public float upwardModifier = 0.5f;
     [Tooltip("Seconds after which ragdoll bones are frozen in place.")]
     public float freezeDelay = 3f;
+    [Tooltip("How long the ragdoll must stay near-still before freezing.")]
+    public float settleDuration = 1.25f;
+    [Tooltip("Velocity threshold used to detect settled ragdolls.")]
+    public float settleVelocityThreshold = 0.08f;
+    [Tooltip("Safety timeout if ragdoll never settles.")]
+    public float maxFreezeWait = 12f;
 
     private Rigidbody[]  _boneRigidbodies;
     private Collider[]   _boneColliders;
@@ -25,6 +32,8 @@ public class RagdollController : MonoBehaviour
     private Collider     _rootCollider;
     private Animator     _animator;
     private NavMeshAgent _agent;
+    private Coroutine    _freezeCoroutine;
+    private PhysicsMaterial _ragdollFrictionMaterial;
 
     private void Awake()
     {
@@ -45,23 +54,36 @@ public class RagdollController : MonoBehaviour
     {
         if (_animator != null) _animator.enabled = false;
         if (_agent != null)    _agent.enabled    = false;
+        if (_freezeCoroutine != null)
+        {
+            StopCoroutine(_freezeCoroutine);
+            _freezeCoroutine = null;
+        }
 
         // Root Rigidbody stays kinematic — bone Rigidbodies drive the ragdoll.
         // Root Collider is disabled so it doesn't fight the bone colliders.
         if (_rootCollider != null) _rootCollider.enabled = false;
+        EnsureGroundCollisionLayers();
+        EnsureRagdollFrictionMaterial();
 
         foreach (Rigidbody rb in _boneRigidbodies)
         {
             rb.isKinematic = false;
             rb.useGravity  = true;
+            rb.detectCollisions = true;
+            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
         }
         foreach (Collider col in _boneColliders)
+        {
             col.enabled = true;
+            col.material = _ragdollFrictionMaterial;
+        }
 
         float force = forceMagnitude > 0f ? forceMagnitude : explosionForce;
         ApplyHipImpulse(hitDirection, force);
 
-        Invoke(nameof(FreezeRagdoll), freezeDelay);
+        _freezeCoroutine = StartCoroutine(FreezeWhenSettled());
     }
 
     /// <summary>
@@ -69,6 +91,12 @@ public class RagdollController : MonoBehaviour
     /// </summary>
     public void DisableRagdoll()
     {
+        if (_freezeCoroutine != null)
+        {
+            StopCoroutine(_freezeCoroutine);
+            _freezeCoroutine = null;
+        }
+
         if (_animator != null) _animator.enabled = true;
         if (_agent != null && _agent.isActiveAndEnabled) _agent.enabled = true;
 
@@ -78,6 +106,7 @@ public class RagdollController : MonoBehaviour
         {
             rb.isKinematic = true;
             rb.useGravity  = false;
+            rb.collisionDetectionMode = CollisionDetectionMode.Discrete;
         }
         foreach (Collider col in _boneColliders)
             col.enabled = false;
@@ -121,6 +150,79 @@ public class RagdollController : MonoBehaviour
     private void FreezeRagdoll()
     {
         foreach (Rigidbody rb in _boneRigidbodies)
+        {
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
             rb.isKinematic = true;
+        }
+    }
+
+    private IEnumerator FreezeWhenSettled()
+    {
+        if (freezeDelay > 0f)
+            yield return new WaitForSeconds(freezeDelay);
+
+        float settledFor = 0f;
+        float waited = 0f;
+
+        while (waited < maxFreezeWait)
+        {
+            bool settled = true;
+
+            for (int i = 0; i < _boneRigidbodies.Length; i++)
+            {
+                Rigidbody rb = _boneRigidbodies[i];
+                if (rb == null || rb.isKinematic)
+                    continue;
+
+                if (rb.linearVelocity.sqrMagnitude > settleVelocityThreshold * settleVelocityThreshold ||
+                    rb.angularVelocity.sqrMagnitude > settleVelocityThreshold * settleVelocityThreshold)
+                {
+                    settled = false;
+                    break;
+                }
+            }
+
+            if (settled)
+                settledFor += Time.deltaTime;
+            else
+                settledFor = 0f;
+
+            if (settledFor >= settleDuration)
+                break;
+
+            waited += Time.deltaTime;
+            yield return null;
+        }
+
+        FreezeRagdoll();
+        _freezeCoroutine = null;
+    }
+
+    private void EnsureGroundCollisionLayers()
+    {
+        int enemyLayer = gameObject.layer;
+        int defaultLayer = LayerMask.NameToLayer("Default");
+        int environmentLayer = LayerMask.NameToLayer("Environment");
+
+        if (defaultLayer >= 0)
+            Physics.IgnoreLayerCollision(enemyLayer, defaultLayer, false);
+        if (environmentLayer >= 0)
+            Physics.IgnoreLayerCollision(enemyLayer, environmentLayer, false);
+    }
+
+    private void EnsureRagdollFrictionMaterial()
+    {
+        if (_ragdollFrictionMaterial != null)
+            return;
+
+        _ragdollFrictionMaterial = new PhysicsMaterial("RagdollHighFriction")
+        {
+            dynamicFriction = 1f,
+            staticFriction = 1f,
+            bounciness = 0f,
+            frictionCombine = PhysicsMaterialCombine.Maximum,
+            bounceCombine = PhysicsMaterialCombine.Minimum
+        };
     }
 }

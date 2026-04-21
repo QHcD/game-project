@@ -10,7 +10,9 @@ public class LevelBuilder : MonoBehaviour
     private const string ArenaRootName      = "UrbanArenaRoot";
     private const string EnemyRootName      = "EnemiesRoot";
     private const string MinimapCameraName  = "MinimapCamera";
+    private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
+    private bool _navMeshReady;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void Bootstrap()
@@ -100,7 +102,9 @@ public class LevelBuilder : MonoBehaviour
             EnsureGameManager();
             Debug.Log("[LevelBuilder] Step 1: GameManager ensured");
 
-            GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
+            GameManager manager = GameManager.Instance;
+            if (manager != null)
+                manager.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
 
             Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
             Transform arenaRoot    = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
@@ -112,11 +116,14 @@ public class LevelBuilder : MonoBehaviour
             GameObject plane = GameObject.Find("Plane");
             if (plane != null)
             {
+                plane.SetActive(true);
                 plane.transform.position   = Vector3.zero;
                 plane.transform.localScale = new Vector3(6f, 1f, 6f);
+                ForceGroundVisible(plane);
             }
 
             BuildArena(arenaRoot);
+            EnsureSceneGroundVisible(arenaRoot);
             Debug.Log("[LevelBuilder] Step 3: Arena built");
 
             // Spawn environmental props BEFORE NavMesh so they become walkable surfaces
@@ -128,14 +135,15 @@ public class LevelBuilder : MonoBehaviour
             EnsureMinimapCamera();
             Debug.Log("[LevelBuilder] Step 5: Minimap camera");
 
-            NavMeshSurface navMeshSurface = EnsureNavMeshSurface();
-            if (navMeshSurface != null)
-                navMeshSurface.BuildNavMesh();
-            Debug.Log("[LevelBuilder] Step 6: NavMesh built");
+            _navMeshReady = TryBuildNavMesh();
+            Debug.Log(_navMeshReady
+                ? "[LevelBuilder] Step 6: NavMesh built"
+                : "[LevelBuilder] Step 6: NavMesh skipped; using fallback spawn");
 
             ConfigurePlayer();
             Debug.Log("[LevelBuilder] Step 7: Player configured");
 
+            TryInitializeOptionalAISystems();
             SpawnEnemies(enemyRoot);
             Debug.Log("[LevelBuilder] Step 8: Enemies spawned: " +
                 (GameManager.Instance != null ? GameManager.Instance.enemiesRemaining.ToString() : "?"));
@@ -172,25 +180,23 @@ public class LevelBuilder : MonoBehaviour
             ? GameManager.Instance.GetSelectedMap()
             : GameManager.ArenaMap.Map1;
 
-        // Always create invisible physics bounds (floor + walls) for NavMesh & collision
+        // Always create physics bounds for NavMesh and collision. The floor is visible.
         CreatePhysicsBounds(arenaRoot);
 
         // Load the FBX map as visual layer
         LoadFbxMap(arenaRoot, map);
     }
 
-    /// <summary>Creates invisible floor + walls. These drive the NavMesh and keep
-    /// characters inside the arena, but are not rendered.</summary>
+    /// <summary>Creates a visible floor and invisible walls for the arena.</summary>
     private void CreatePhysicsBounds(Transform parent)
     {
         // Floor — wide and flat for NavMesh baking
         GameObject floor = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        floor.name = "PhysicsFloor";
+        floor.name = "Ground_PhysicsFloor";
         floor.transform.SetParent(parent, false);
-        floor.transform.localPosition = new Vector3(0f, -0.26f, 0f);
-        floor.transform.localScale    = new Vector3(44f, 0.5f, 44f);
-        Renderer floorRend = floor.GetComponent<Renderer>();
-        if (floorRend != null) floorRend.enabled = false; // invisible
+        floor.transform.localPosition = new Vector3(0f, -0.05f, 0f);
+        floor.transform.localScale    = new Vector3(44f, 0.1f, 44f);
+        ForceGroundVisible(floor);
 
         // Walls
         string[] wallNames = { "PhysicsWall_N", "PhysicsWall_S", "PhysicsWall_E", "PhysicsWall_W" };
@@ -212,6 +218,106 @@ public class LevelBuilder : MonoBehaviour
             Renderer wr = wall.GetComponent<Renderer>();
             if (wr != null) wr.enabled = false; // invisible
         }
+    }
+
+    private static void EnsureSceneGroundVisible(Transform fallbackParent)
+    {
+        bool foundVisibleGround = false;
+
+        string[] knownGroundNames =
+        {
+            "Plane", "Ground", "ground", "PhysicsFloor",
+            "Ground_PhysicsFloor", "ArenaFloor", "VisibleGround_Fallback"
+        };
+
+        for (int i = 0; i < knownGroundNames.Length; i++)
+        {
+            GameObject ground = GameObject.Find(knownGroundNames[i]);
+            if (ground != null)
+                foundVisibleGround |= ForceGroundVisible(ground);
+        }
+
+        if (fallbackParent != null)
+        {
+            Renderer[] renderers = fallbackParent.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                Renderer rend = renderers[i];
+                if (rend == null || !LooksLikeGround(rend.gameObject.name))
+                    continue;
+
+                foundVisibleGround |= ForceGroundVisible(rend.gameObject);
+            }
+        }
+
+        if (foundVisibleGround || fallbackParent == null)
+            return;
+
+        GameObject fallbackGround = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        fallbackGround.name = "VisibleGround_Fallback";
+        fallbackGround.transform.SetParent(fallbackParent, false);
+        fallbackGround.transform.localPosition = new Vector3(0f, -0.05f, 0f);
+        fallbackGround.transform.localScale = new Vector3(44f, 0.1f, 44f);
+        ForceGroundVisible(fallbackGround);
+        Debug.LogWarning("[LevelBuilder] No visible ground found; created VisibleGround_Fallback.");
+    }
+
+    private static bool ForceGroundVisible(GameObject groundObject)
+    {
+        if (groundObject == null)
+            return false;
+
+        groundObject.SetActive(true);
+
+        bool hasRenderer = false;
+        Renderer[] renderers = groundObject.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer rend = renderers[i];
+            if (rend == null)
+                continue;
+
+            rend.enabled = true;
+            ApplyGroundMaterial(rend);
+            hasRenderer = true;
+        }
+
+        return hasRenderer;
+    }
+
+    private static bool LooksLikeGround(string objectName)
+    {
+        if (string.IsNullOrEmpty(objectName))
+            return false;
+
+        string lower = objectName.ToLowerInvariant();
+        if (lower.Contains("wall"))
+            return false;
+
+        return lower.Contains("ground")
+            || lower.Contains("floor")
+            || lower.Contains("plane");
+    }
+
+    private static void ApplyGroundMaterial(Renderer rend)
+    {
+        if (rend == null)
+            return;
+
+        Shader litShader = Shader.Find("Universal Render Pipeline/Lit")
+                        ?? Shader.Find("Standard");
+        if (litShader == null)
+            return;
+
+        Material mat = new Material(litShader);
+        Color groundColor = new Color(0.42f, 0.44f, 0.39f, 1f);
+        mat.color = groundColor;
+        if (mat.HasProperty("_BaseColor"))
+            mat.SetColor("_BaseColor", groundColor);
+
+        rend.material = mat;
+        rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+        rend.receiveShadows = true;
     }
 
     /// <summary>Loads the FBX map from Resources and places it as visual geometry.</summary>
@@ -708,7 +814,11 @@ public class LevelBuilder : MonoBehaviour
                 playerController = playerObject.GetComponent<PlayerController>();
             }
         }
-        if (playerController == null) return;
+        if (playerController == null)
+        {
+            Debug.LogError("[LevelBuilder] PlayerController missing. Cannot start playable scene.");
+            return;
+        }
 
         if (!playerController.gameObject.CompareTag("Player"))
             playerController.gameObject.tag = "Player";
@@ -723,7 +833,9 @@ public class LevelBuilder : MonoBehaviour
         // ── Find safe spawn on OPEN ground (not inside buildings) ──────────
         // Try many candidate positions spread across the arena. For each one,
         // check NavMesh AND verify there's open sky above (no roof/wall).
-        Vector3 safeSpawn = FindOpenSpawnPoint(new Vector3(0f, 0.15f, 0f));
+        Vector3 safeSpawn = _navMeshReady
+            ? FindOpenSpawnPoint(SafeFallbackSpawn)
+            : SafeFallbackSpawn;
         Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn}");
 
         playerController.TeleportTo(safeSpawn);
@@ -755,10 +867,13 @@ public class LevelBuilder : MonoBehaviour
                 camCtrl.SnapToTarget();
             }
         }
+        else
+        {
+            Debug.LogWarning("[LevelBuilder] Third-person camera missing after player setup; PlayerController will retry.");
+        }
 
         Debug.Log($"[LevelBuilder] Player configured at {playerController.transform.position}");
     }
-
     private NavMeshSurface EnsureNavMeshSurface()
     {
         NavMeshSurface navMeshSurface = FindFirstObjectByType<NavMeshSurface>();
@@ -774,6 +889,37 @@ public class LevelBuilder : MonoBehaviour
         return navMeshSurface;
     }
 
+    private bool TryBuildNavMesh()
+    {
+        try
+        {
+            NavMeshSurface navMeshSurface = EnsureNavMeshSurface();
+            if (navMeshSurface == null)
+                return false;
+
+            navMeshSurface.BuildNavMesh();
+            return NavMesh.SamplePosition(SafeFallbackSpawn, out _, 6f, NavMesh.AllAreas);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[LevelBuilder] NavMesh build failed; continuing with fallback spawn. {e.GetType().Name}: {e.Message}");
+            return false;
+        }
+    }
+
+    private void TryInitializeOptionalAISystems()
+    {
+        try
+        {
+            // Runtime combat does not depend on editor AI, Sentis, MCP, or npm-backed tooling.
+            // Keep this wrapper as the isolation point so package failures cannot block play.
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[LevelBuilder] Optional AI/Sentis setup skipped. Combat remains enabled. {e.GetType().Name}: {e.Message}");
+        }
+    }
+
     private void EnsureHud()
     {
         HUDManager hud = FindFirstObjectByType<HUDManager>();
@@ -782,8 +928,11 @@ public class LevelBuilder : MonoBehaviour
             GameObject hudObject = new GameObject("HUDManager");
             hud = hudObject.AddComponent<HUDManager>();
         }
-        hud.UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
-        hud.UpdateScore(GameManager.Instance.score);
+        if (hud != null && GameManager.Instance != null)
+        {
+            hud.UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
+            hud.UpdateScore(GameManager.Instance.score);
+        }
     }
 
     private void EnsurePauseMenu()
@@ -969,6 +1118,9 @@ public class LevelBuilder : MonoBehaviour
     /// </summary>
     private static Vector3 FindOpenSpawnPoint(Vector3 fallback)
     {
+        if (!NavMesh.SamplePosition(fallback, out _, 6f, NavMesh.AllAreas))
+            return SafeFallbackSpawn;
+
         // Grid of candidate XZ positions spread across the arena streets
         Vector3[] candidates =
         {
@@ -1009,7 +1161,7 @@ public class LevelBuilder : MonoBehaviour
         if (NavMesh.SamplePosition(Vector3.zero, out lastHit, 5f, NavMesh.AllAreas))
             return lastHit.position + Vector3.up * 0.1f;
 
-        return fallback;
+        return SafeFallbackSpawn;
     }
 
     /// <summary>
