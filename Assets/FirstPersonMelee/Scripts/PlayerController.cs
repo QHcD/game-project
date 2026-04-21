@@ -15,6 +15,7 @@ public class PlayerController : MonoBehaviour
 {
     private const string WeaponSocketName = "__PlayerWeaponSocket";
     private const string ChainsawSocketName = "__PlayerChainsawSocket";
+    private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static readonly Vector3 ChainsawSocketLocalPosition = Vector3.zero;
     private static readonly Vector3 ChainsawSocketLocalEuler = new Vector3(0f, 0f, 0f);
 
@@ -150,7 +151,6 @@ public class PlayerController : MonoBehaviour
     private bool wasMoving;
     private bool jumpRequested;
     private const float InputSmoothing = 10f;
-    private bool zoomHeld;
 
     // Camera
     private float cameraPitch;
@@ -185,6 +185,8 @@ public class PlayerController : MonoBehaviour
     private GameObject thirdPersonBody;
     private Renderer[] firstPersonRenderers;
     [HideInInspector] public GameObject equippedWeaponObject;
+    private int equippedWeaponLevel = -1;
+    private bool weaponAttachInProgress;
 
     private Transform firstPersonWeaponSlot;
     private MeshRenderer firstPersonWeaponMeshRenderer;
@@ -257,10 +259,15 @@ public class PlayerController : MonoBehaviour
 
     private void Start()
     {
+        EnsureCriticalComponents();
+        ResetLevelOneWeaponOffsets();
+
         // ── 1. Snap player above the floor ──
         if (controller != null) controller.enabled = false;
-        Vector3 startPos = transform.position;
-        startPos.y = Mathf.Max(startPos.y, arenaFloorHeight + 1.0f);
+        Vector3 startPos = IsUnsafeSpawn(transform.position)
+            ? SafeFallbackSpawn
+            : transform.position;
+        startPos.y = Mathf.Max(startPos.y, SafeFallbackSpawn.y);
         transform.position = startPos;
         transform.rotation = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
         if (controller != null) controller.enabled = true;
@@ -306,8 +313,57 @@ public class PlayerController : MonoBehaviour
         EquipWeaponForLevel(level);
     }
 
+    private void EnsureCriticalComponents()
+    {
+        if (controller == null)
+            controller = GetComponent<CharacterController>();
+        if (controller == null)
+        {
+            controller = gameObject.AddComponent<CharacterController>();
+            controller.height = 1.8f;
+            controller.radius = 0.4f;
+            controller.center = new Vector3(0f, 0.92f, 0f);
+        }
+
+        if (audioSource == null)
+            audioSource = GetComponent<AudioSource>();
+
+        if (firstPersonCam == null)
+            firstPersonCam = GetComponentInChildren<Camera>(true);
+
+        EnsureThirdPersonCamera();
+        if (runtimeThirdPersonCamera == null)
+            Debug.LogError("[PlayerController] No gameplay camera could be created. Movement is still enabled.");
+    }
+
+    private void ResetLevelOneWeaponOffsets()
+    {
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        if (level != 1)
+            return;
+
+        equippedWeaponName = "Tactical Knife";
+        combatKnifeThirdPersonLocalPos = Vector3.zero;
+        combatKnifeThirdPersonLocalEuler = Vector3.zero;
+        combatKnifeThirdPersonLocalScale = Vector3.one;
+        combatKnifeFirstPersonLocalPos = Vector3.zero;
+        combatKnifeFirstPersonLocalEuler = Vector3.zero;
+        combatKnifeFirstPersonLocalScale = Vector3.one;
+    }
+
+    private static bool IsUnsafeSpawn(Vector3 position)
+    {
+        return float.IsNaN(position.x)
+            || float.IsNaN(position.y)
+            || float.IsNaN(position.z)
+            || position.y < -0.5f;
+    }
+
     private void Update()
     {
+        if (controller == null)
+            return;
+
         isGrounded = controller.isGrounded;
 
         ReadInput();
@@ -337,8 +393,6 @@ public class PlayerController : MonoBehaviour
         moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
         moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, InputSmoothing * Time.deltaTime);
         lookInput = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
-        // Zoom disabled — camera is permanently fixed over-the-shoulder.
-        zoomHeld = false;
     }
 
     private void HandleActionInput()
@@ -463,9 +517,23 @@ public class PlayerController : MonoBehaviour
 
     public void TeleportTo(Vector3 position)
     {
+        if (IsUnsafeSpawn(position))
+            position = SafeFallbackSpawn;
+
         if (controller != null) controller.enabled = false;
         transform.position = position;
         if (controller != null) controller.enabled = true;
+        verticalVelocity = Vector3.zero;
+
+        if (runtimeThirdPersonCamera != null)
+        {
+            CameraController camCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
+            if (camCtrl != null)
+            {
+                camCtrl.target = transform;
+                camCtrl.SnapToTarget();
+            }
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1018,13 +1086,22 @@ public class PlayerController : MonoBehaviour
         if (Vector3.Dot(horizontalVelocity, planar.normalized) > 0f)
             horizontalVelocity = Vector3.zero;
 
-        if (transform.position.y > arenaFloorHeight + 0.6f)
+        float groundedRootY = GetGroundedRootY();
+        if (transform.position.y < groundedRootY - 0.35f || transform.position.y > groundedRootY + 4f)
         {
             if (controller != null) controller.enabled = false;
-            transform.position = new Vector3(transform.position.x, arenaFloorHeight, transform.position.z);
+            transform.position = new Vector3(transform.position.x, groundedRootY, transform.position.z);
             if (controller != null) controller.enabled = true;
             verticalVelocity.y = Mathf.Min(verticalVelocity.y, 0f);
         }
+    }
+
+    private float GetGroundedRootY()
+    {
+        if (controller == null)
+            return arenaFloorHeight + 1f;
+
+        return arenaFloorHeight - controller.center.y + (controller.height * 0.5f);
     }
 
     private void SnapToArenaFloor()
@@ -1131,9 +1208,10 @@ public class PlayerController : MonoBehaviour
 
         CameraController follow = camObj.AddComponent<CameraController>();
         follow.target           = transform;
-        follow.offset           = new Vector3(1.2f, 2.2f, -5.5f);  // Fixed OTS right-shoulder
-        follow.smoothSpeed      = 12f;
+        follow.offset           = new Vector3(0.8f, 2.8f, -7.0f);  // Safe startup view of player + arena
+        follow.smoothSpeed      = 14f;
         follow.lookHeight       = 1.4f;
+        follow.enableCollision  = false;
         follow.defaultFieldOfView = runtimeThirdPersonCamera.fieldOfView;
         follow.lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
 
@@ -1506,7 +1584,8 @@ public class PlayerController : MonoBehaviour
             if (isThirdPersonActive)
                 thirdPersonBody.SetActive(true);
 
-            AttachWeaponToHand(thirdPersonBody, level);
+            if (equippedWeaponObject == null || equippedWeaponLevel != level)
+                AttachWeaponToHand(thirdPersonBody, level);
             SetupWeaponIK();
         }
 
@@ -1601,16 +1680,22 @@ public class PlayerController : MonoBehaviour
     private void AttachWeaponToHand(GameObject body, int weaponLevel = -1)
     {
         if (body == null) return;
-
-        if (equippedWeaponObject != null)
-        {
-            Destroy(equippedWeaponObject);
-            equippedWeaponObject = null;
-        }
+        if (weaponAttachInProgress) return;
 
         int level = weaponLevel >= 1
             ? weaponLevel
             : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
+        if (equippedWeaponObject != null && equippedWeaponLevel == level)
+            return;
+
+        weaponAttachInProgress = true;
+        if (equippedWeaponObject != null)
+        {
+            Destroy(equippedWeaponObject);
+            equippedWeaponObject = null;
+            equippedWeaponLevel = -1;
+        }
+
         WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
 
         // ── 1. Load prefab with guaranteed fallback chain ───────────────────
@@ -1622,6 +1707,8 @@ public class PlayerController : MonoBehaviour
             Transform fallbackBone = ResolveHandBone(body, level);
             Transform fallbackSocket = GetOrCreateWeaponSocket(fallbackBone);
             equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackSocket, loadout);
+            equippedWeaponLevel = level;
+            weaponAttachInProgress = false;
             return;
         }
 
@@ -1670,6 +1757,9 @@ public class PlayerController : MonoBehaviour
             case 12: // SAW — rear handle in palm, blade forward
                 weapon.transform.localPosition = new Vector3(0f, -0.2f, 0.05f);
                 weapon.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+                break;
+            case 1:
+                ApplyWeaponGripPose(weapon.transform, Vector3.zero, Vector3.zero);
                 break;
             // Level 14 (morgenstern) also falls through here, but the player's
             // runtime grip helper now applies both a bounds-derived handle grip
@@ -1730,6 +1820,8 @@ public class PlayerController : MonoBehaviour
 
         weapon.SetActive(true);
         equippedWeaponObject = weapon;
+        equippedWeaponLevel = level;
+        weaponAttachInProgress = false;
     }
 
     // Resolves the player right-hand bone using explicit names first, then the

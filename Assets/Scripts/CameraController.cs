@@ -26,10 +26,6 @@ public class CameraController : MonoBehaviour
     // Vertical pitch (degrees) — set each frame by PlayerController.ApplyLook
     [HideInInspector] public float pitch = 0f;
 
-    [Range(0f, 1f)]
-    [Tooltip("Current zoom blend. 0 = default camera, 1 = fully zoomed.")]
-    [SerializeField] private float zoomBlend;
-
     // ── Look-at height ───────────────────────────────────────────────────────
     [Header("Look-At")]
     [Tooltip("World-space height to add to the player position when no spine bone is found.")]
@@ -55,7 +51,7 @@ public class CameraController : MonoBehaviour
     // ── Wall / Mesh Collision ────────────────────────────────────────────────
     [Header("Wall Collision")]
     [Tooltip("Enable SphereCast collision so the camera never enters walls.")]
-    public bool enableCollision = true;
+    public bool enableCollision = false;
 
     [Tooltip("SphereCast radius. Larger = more conservative pull-in.")]
     [Range(0.05f, 0.5f)]
@@ -80,7 +76,6 @@ public class CameraController : MonoBehaviour
 
     // ── Private ──────────────────────────────────────────────────────────────
     private float     _currentDistance;
-    private float     _zoomTarget;
     private Vector3   _smoothedLookTarget;
     private bool      _lookTargetInitialized;
     private Transform _lookAtBone;
@@ -110,15 +105,13 @@ public class CameraController : MonoBehaviour
         if (target != null)
             collisionMask &= ~(1 << target.gameObject.layer);
 
-        int namedPlayer    = LayerMask.NameToLayer("Player");
-        int namedCharacter = LayerMask.NameToLayer("Character");
-        if (namedPlayer    >= 0) collisionMask &= ~(1 << namedPlayer);
-        if (namedCharacter >= 0) collisionMask &= ~(1 << namedCharacter);
+        ExcludeLayerIfExists("Player");
+        ExcludeLayerIfExists("Character");
 
-        // Also exclude the UI and TransparentFX layers that should never block a camera.
-        collisionMask &= ~(1 << LayerMask.NameToLayer("UI"));
-        collisionMask &= ~(1 << LayerMask.NameToLayer("TransparentFX"));
-        collisionMask &= ~(1 << LayerMask.NameToLayer("Ignore Raycast"));
+        // Also exclude layers that should never block a camera.
+        ExcludeLayerIfExists("UI");
+        ExcludeLayerIfExists("TransparentFX");
+        ExcludeLayerIfExists("Ignore Raycast");
     }
 
     private void LateUpdate()
@@ -135,9 +128,6 @@ public class CameraController : MonoBehaviour
             return;
         }
 
-        // Zoom permanently disabled — always use the default offset.
-        zoomBlend = 0f;
-
         Vector3 lookTarget = GetLookTarget();
         Vector3 currentOffset = GetCurrentOffset();
 
@@ -147,12 +137,15 @@ public class CameraController : MonoBehaviour
         Vector3    desiredPos   = lookTarget + orbitRot * currentOffset;
 
         // ── Resolve wall collision ───────────────────────────────────────────
-        if (enableCollision)
+        if (enableCollision && IsFinite(desiredPos))
             desiredPos = ResolveCollision(desiredPos, orbitRot, lookTarget, currentOffset);
 
         // ── Smooth follow ────────────────────────────────────────────────────
-        transform.position = Vector3.Lerp(transform.position, desiredPos,
-                                          smoothSpeed * Time.deltaTime);
+        if (!IsFinite(transform.position) || Vector3.Distance(transform.position, desiredPos) > 30f)
+            transform.position = desiredPos;
+        else
+            transform.position = Vector3.Lerp(transform.position, desiredPos,
+                                              smoothSpeed * Time.deltaTime);
 
         UpdateFieldOfView();
 
@@ -314,11 +307,17 @@ public class CameraController : MonoBehaviour
     //  PUBLIC UTILS
     // ════════════════════════════════════════════════════════════════════════
 
+    private void ExcludeLayerIfExists(string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0)
+            collisionMask &= ~(1 << layer);
+    }
+
     public void SetZoom(bool isZooming)
     {
         // Zoom permanently disabled — camera stays at fixed OTS position.
         // Method kept for API compatibility.
-        _zoomTarget = 0f;
     }
 
     /// <summary>Instantly snaps the camera to its desired position (call on scene load).</summary>
@@ -346,6 +345,13 @@ public class CameraController : MonoBehaviour
     {
         // Zoom disabled — always use the default OTS offset.
         return offset;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return !float.IsNaN(value.x) && !float.IsInfinity(value.x)
+            && !float.IsNaN(value.y) && !float.IsInfinity(value.y)
+            && !float.IsNaN(value.z) && !float.IsInfinity(value.z);
     }
 
     private void UpdateFieldOfView(bool immediate = false)
