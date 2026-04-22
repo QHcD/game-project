@@ -1548,7 +1548,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         weaponGripLocalPosition          = loadout.EnemyLocalPosition;
         weaponGripLocalEulerAngles       = loadout.EnemyLocalEuler;
         weaponSocketLocalEulerAngles     = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
-        stabilizeWeaponSocketAgainstHandPose = (level == 9);
+        stabilizeWeaponSocketAgainstHandPose = (level == 9 || WeaponLoadoutCatalog.IsChainsawLevel(level, weaponPrefab));
         ApplySavedRuntimeGripValuesForLevel(level);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────

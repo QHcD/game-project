@@ -26,6 +26,8 @@ public class PlayerController : MonoBehaviour
     private static readonly Vector3 DefaultLevel13SickleGripLocalEuler = new Vector3(86f, 5f, 98f);
     private static readonly Vector3 DefaultLevel12SawGripLocalPosition = WeaponLoadoutCatalog.ChainsawPlayerLocalPosition;
     private static readonly Vector3 DefaultLevel12SawGripLocalEuler = WeaponLoadoutCatalog.ChainsawPlayerLocalEuler;
+    private static readonly Vector3 PlayerChainsawGripLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
+    private static readonly Vector3 PlayerChainsawGripLocalEuler = new Vector3(-177.177f, -175.886f, 88.481f);
 
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
@@ -2017,9 +2019,9 @@ public class PlayerController : MonoBehaviour
                 ForceWeaponRenderable(weapon);
                 ApplySickleHandPose(handBone, weapon.transform);
             }
-            else if (WeaponLoadoutCatalog.IsChainsawLevel(level, prefab))
+            else if (ShouldUsePlayerChainsawGrip(level, prefab))
             {
-                WeaponLoadoutCatalog.ApplyChainsawPlayerGripPose(weapon.transform);
+                ApplyPlayerChainsawGrip(weapon.transform);
                 ForceWeaponRenderable(weapon);
             }
             else
@@ -2084,6 +2086,30 @@ public class PlayerController : MonoBehaviour
         equippedWeaponObject = weapon;
         equippedWeaponLevel = level;
         weaponAttachInProgress = false;
+    }
+
+    private static bool ShouldUsePlayerChainsawGrip(int level, GameObject prefab)
+    {
+        if (level != 12)
+            return false;
+
+        if (prefab != null)
+        {
+            string prefabName = prefab.name.ToLowerInvariant();
+            if (prefabName.Contains("chainsaw") || prefabName.Contains("chain") || prefabName.Contains("saw"))
+                return true;
+        }
+
+        return WeaponLoadoutCatalog.IsChainsawLevel(level, prefab);
+    }
+
+    private static void ApplyPlayerChainsawGrip(Transform weaponRoot)
+    {
+        if (weaponRoot == null)
+            return;
+
+        weaponRoot.localPosition = PlayerChainsawGripLocalPosition;
+        weaponRoot.localRotation = Quaternion.Euler(PlayerChainsawGripLocalEuler);
     }
 
     // Resolves the player right-hand bone using explicit names first, then the
@@ -2336,7 +2362,9 @@ public class PlayerController : MonoBehaviour
             weapon.transform.localPosition = Vector3.zero;
             weapon.transform.localRotation = Quaternion.identity;
             ApplyDesiredLossyScale(weapon.transform, desiredLossyScale);
-            if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, levelPrefab, weapon.transform))
+            if (ShouldUsePlayerChainsawGrip(level, levelPrefab))
+                ApplyPlayerChainsawGrip(weapon.transform);
+            else if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, levelPrefab, weapon.transform))
                 ApplyWeaponGripPose(weapon.transform, loadout.PlayerLocalPosition, loadout.PlayerLocalEuler);
             WeaponLoadoutCatalog.ApplyRuntimeOverrides(
                 GameManager.Instance != null ? GameManager.Instance.currentLevel : 1,
