@@ -1609,7 +1609,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         // ── 6. Apply grip pose — catalog EnemyLocalPosition/Euler is the only
         // source of truth; inspector fields were already overwritten above. ──
-        if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(level, weaponPrefab, equippedWeaponObject.transform))
+        if (WeaponLoadoutCatalog.IsChainsawLevel(level, weaponPrefab))
+            WeaponLoadoutCatalog.ApplyChainsawEnemyGripPose(equippedWeaponObject.transform);
+        else if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(level, weaponPrefab, equippedWeaponObject.transform))
             ApplyWeaponGripPose();
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, weaponPrefab, equippedWeaponObject);
 
@@ -1622,26 +1624,10 @@ public class EnemyController : MonoBehaviour, IDamageable
                 equippedWeaponObject.transform.localRotation = Quaternion.Euler(weaponGripLocalEulerAngles);
                 equippedWeaponObject.transform.localPosition = weaponGripLocalPosition;
             }
-            else if (wn.Contains("saw"))
-            {
-                equippedWeaponObject.transform.localRotation = Quaternion.Euler(weaponGripLocalEulerAngles);
-                equippedWeaponObject.transform.localPosition = weaponGripLocalPosition;
-            }
         }
 
-        // Saw (level 12): same top-handle correction as the player.
-        // Crosby's hand basis differs from the Ronin wrist, so the enemy uses
-        // the same rotation/position starting point — tune independently if the
-        // enemy rig needs a different y offset.
-        if (level == 12
-            && weaponPrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0)
-        {
-            if (!useSavedRuntimeGripValues)
-            {
-                equippedWeaponObject.transform.localRotation = Quaternion.Euler(8f, 0f, -90f);
-                equippedWeaponObject.transform.localPosition = new Vector3(0f, -0.25f, -0.05f);
-            }
-        }
+        if (WeaponLoadoutCatalog.IsChainsawLevel(level, weaponPrefab))
+            WeaponLoadoutCatalog.ApplyChainsawEnemyGripPose(equippedWeaponObject.transform);
 
         if (level == 14
             && weaponPrefab.name.IndexOf("morgenstern", System.StringComparison.OrdinalIgnoreCase) >= 0)
@@ -2058,8 +2044,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
         else if (level == 12)
         {
-            weaponGripLocalPosition = LoadVector3Pref(PrefKeySawPos, weaponGripLocalPosition);
-            weaponGripLocalEulerAngles = LoadVector3Pref(PrefKeySawEuler, weaponGripLocalEulerAngles);
+            PlayerPrefs.DeleteKey(PrefKeySawPos + ".x");
+            PlayerPrefs.DeleteKey(PrefKeySawPos + ".y");
+            PlayerPrefs.DeleteKey(PrefKeySawPos + ".z");
+            PlayerPrefs.DeleteKey(PrefKeySawEuler + ".x");
+            PlayerPrefs.DeleteKey(PrefKeySawEuler + ".y");
+            PlayerPrefs.DeleteKey(PrefKeySawEuler + ".z");
         }
     }
 

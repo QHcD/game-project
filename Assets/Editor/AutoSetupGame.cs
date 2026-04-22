@@ -9,7 +9,7 @@ public class AutoSetupGame
         GameObject player = GameObject.Find("Player");
         if (player == null)
         {
-            Debug.LogError("AutoSetup: Could not find GameObject named 'Player'");
+            Debug.LogWarning("AutoSetup skipped: Could not find GameObject named 'Player'");
             return;
         }
 

@@ -71,7 +71,7 @@ public static class EquipmentManager
     {
         if (body == null)
         {
-            Debug.LogError("[EquipmentManager] Equip() called with null body.");
+            Debug.LogWarning("[EquipmentManager] Equip() skipped because body is null.");
             return null;
         }
         if (weaponPrefab == null)

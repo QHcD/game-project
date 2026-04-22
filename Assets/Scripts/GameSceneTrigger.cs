@@ -66,7 +66,7 @@ public class GameSceneTrigger : MonoBehaviour
         }
         else
         {
-            Debug.LogError("[GameSceneTrigger] LevelBuilder.Instance is null! Bootstrap may have failed.");
+            Debug.LogWarning("[GameSceneTrigger] LevelBuilder.Instance is null; scene preview/build will retry from LevelBuilder hooks.");
         }
 
         // Self-destruct after doing our job (whether it worked or not).

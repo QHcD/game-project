@@ -22,6 +22,10 @@ public class PlayerController : MonoBehaviour
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static readonly Vector3 ChainsawSocketLocalPosition = Vector3.zero;
     private static readonly Vector3 ChainsawSocketLocalEuler = new Vector3(0f, 0f, 0f);
+    private static readonly Vector3 DefaultLevel13SickleGripLocalPosition = new Vector3(0.006f, 0.002f, 0.026f);
+    private static readonly Vector3 DefaultLevel13SickleGripLocalEuler = new Vector3(86f, 5f, 98f);
+    private static readonly Vector3 DefaultLevel12SawGripLocalPosition = WeaponLoadoutCatalog.ChainsawPlayerLocalPosition;
+    private static readonly Vector3 DefaultLevel12SawGripLocalEuler = WeaponLoadoutCatalog.ChainsawPlayerLocalEuler;
 
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
@@ -62,9 +66,14 @@ public class PlayerController : MonoBehaviour
     public float proneSpeedMultiplier = 0.45f;
     public float slideSpeedMultiplier = 1.8f;
     public float slideDuration = 0.55f;
+    public float powerSlideBoost = 7.5f;
+    public float powerSlideCooldown = 0.35f;
     public float mantleUpHeight = 1.1f;
     public float mantleForwardDistance = 1.0f;
     public float mantleDuration = 0.25f;
+    public float thrusterJumpHeight = 2.8f;
+    public float thrusterForwardBoost = 5.8f;
+    public float thrusterCooldown = 0.8f;
     public float crouchBodyYOffset = -0.28f;
     public float proneBodyYOffset = -0.62f;
 
@@ -118,13 +127,13 @@ public class PlayerController : MonoBehaviour
 
     [Header("Weapon Grip Fine Tuning (Player)")]
     [Tooltip("Level 13 sickle grip local position (player).")]
-    public Vector3 level13SickleGripLocalPosition = new Vector3(-0.016f, 0.032f, 0.034f);
+    public Vector3 level13SickleGripLocalPosition = DefaultLevel13SickleGripLocalPosition;
     [Tooltip("Level 13 sickle grip local euler (player).")]
-    public Vector3 level13SickleGripLocalEuler = new Vector3(8f, -10f, 104f);
+    public Vector3 level13SickleGripLocalEuler = DefaultLevel13SickleGripLocalEuler;
     [Tooltip("Level 12 saw grip local position (player).")]
-    public Vector3 level12SawGripLocalPosition = new Vector3(0.006f, -0.205f, -0.022f);
+    public Vector3 level12SawGripLocalPosition = DefaultLevel12SawGripLocalPosition;
     [Tooltip("Level 12 saw grip local euler (player).")]
-    public Vector3 level12SawGripLocalEuler = new Vector3(8f, 0f, -90f);
+    public Vector3 level12SawGripLocalEuler = DefaultLevel12SawGripLocalEuler;
 
     [Header("Level 1 — Combat knife (FBX)")]
     [Tooltip("Drag your imported knife prefab/model here, or leave empty to load from Resources.")]
@@ -183,6 +192,8 @@ public class PlayerController : MonoBehaviour
     private bool isSliding;
     private bool isMantling;
     private float slideTimer;
+    private float slideCooldownTimer;
+    private float thrusterCooldownTimer;
     private float targetControllerHeight = 1.8f;
     private Vector3 targetControllerCenter = new Vector3(0f, 0.92f, 0f);
     private Coroutine mantleCoroutine;
@@ -442,7 +453,7 @@ public class PlayerController : MonoBehaviour
         if (Keyboard.current != null)
         {
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
-                jumpRequested = true;
+                TryThrusterJumpOrQueueNormalJump();
 
             if (Keyboard.current.zKey.wasPressedThisFrame)
                 ToggleProne();
@@ -460,7 +471,7 @@ public class PlayerController : MonoBehaviour
         }
 
         if (Gamepad.current != null && Gamepad.current.buttonSouth.wasPressedThisFrame)
-            jumpRequested = true;
+            TryThrusterJumpOrQueueNormalJump();
 
         if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
             Attack();
@@ -740,13 +751,61 @@ public class PlayerController : MonoBehaviour
     {
         if (isMantling || isProne || isSliding) return;
         if (!isGrounded) return;
+        if (slideCooldownTimer > 0f) return;
         if (moveInputSmoothed.sqrMagnitude < 0.1f) return;
 
         isSliding = true;
         slideTimer = slideDuration;
+        slideCooldownTimer = powerSlideCooldown;
         isCrouching = true;
-        float burstSpeed = moveSpeed * (isSprinting ? sprintMultiplier : 1.15f) * slideSpeedMultiplier;
-        horizontalVelocity = transform.forward * burstSpeed;
+        Vector3 inputDir = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
+        Vector3 slideDirection = inputDir.sqrMagnitude > 0.05f
+            ? transform.TransformDirection(inputDir.normalized)
+            : transform.forward;
+        slideDirection.y = 0f;
+        if (slideDirection.sqrMagnitude < 0.001f)
+            slideDirection = transform.forward;
+        horizontalVelocity = slideDirection.normalized * powerSlideBoost;
+    }
+
+    private void TryThrusterJumpOrQueueNormalJump()
+    {
+        if (isProne || isSliding || isMantling)
+            return;
+
+        bool wantsThruster = Keyboard.current != null
+            && Keyboard.current.leftShiftKey.isPressed
+            && moveInputSmoothed.sqrMagnitude > 0.05f;
+
+        if (Gamepad.current != null && Gamepad.current.leftStick.ReadValue().sqrMagnitude > 0.2f)
+            wantsThruster = true;
+
+        if (wantsThruster && TryStartThrusterJump())
+            return;
+
+        jumpRequested = true;
+    }
+
+    private bool TryStartThrusterJump()
+    {
+        if (!isGrounded || thrusterCooldownTimer > 0f)
+            return false;
+
+        Vector3 inputDir = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
+        Vector3 thrustDirection = inputDir.sqrMagnitude > 0.05f
+            ? transform.TransformDirection(inputDir.normalized)
+            : transform.forward;
+        thrustDirection.y = 0f;
+        if (thrustDirection.sqrMagnitude < 0.001f)
+            thrustDirection = transform.forward;
+
+        verticalVelocity.y = Mathf.Sqrt(thrusterJumpHeight * -2f * gravity);
+        horizontalVelocity += thrustDirection.normalized * thrusterForwardBoost;
+        thrusterCooldownTimer = thrusterCooldown;
+        isGrounded = false;
+        jumpRequested = false;
+        isCrouching = false;
+        return true;
     }
 
     private void TryMantle()
@@ -796,11 +855,20 @@ public class PlayerController : MonoBehaviour
 
     private void UpdateTacticalManeuverState()
     {
+        if (slideCooldownTimer > 0f)
+            slideCooldownTimer -= Time.deltaTime;
+
+        if (thrusterCooldownTimer > 0f)
+            thrusterCooldownTimer -= Time.deltaTime;
+
         if (isSliding)
         {
             slideTimer -= Time.deltaTime;
             if (slideTimer <= 0f || !isGrounded)
+            {
                 isSliding = false;
+                isCrouching = false;
+            }
         }
     }
 
@@ -1790,6 +1858,9 @@ public class PlayerController : MonoBehaviour
     // ── Hand bone priority list — melee grip sockets first, firearm tag last ─
     private static readonly string[] PlayerHandBoneNames =
     {
+        "Hand.R",
+        "Wrist.R",
+        "Palm.R",
         "tag_accessory_right",  // Ronin fallback socket on right wrist
         "j_wrist_ri",           // Ronin wrist bone
         "weapon_bone_R",        // Crosby weapon socket
@@ -1941,15 +2012,15 @@ public class PlayerController : MonoBehaviour
             string n = prefab.name.ToLowerInvariant();
             if (n.Contains("sickle"))
             {
-                // Level 13 sickle: hand-fitted pose.
-                weapon.transform.localRotation = Quaternion.Euler(level13SickleGripLocalEuler);
-                weapon.transform.localPosition = level13SickleGripLocalPosition;
+                weapon.transform.localPosition = DefaultLevel13SickleGripLocalPosition;
+                weapon.transform.localRotation = Quaternion.Euler(DefaultLevel13SickleGripLocalEuler);
+                ForceWeaponRenderable(weapon);
+                ApplySickleHandPose(handBone, weapon.transform);
             }
-            else if (n.Contains("saw"))
+            else if (WeaponLoadoutCatalog.IsChainsawLevel(level, prefab))
             {
-                // Level 12 saw: rear-handle grip, blade forward.
-                weapon.transform.localRotation = Quaternion.Euler(level12SawGripLocalEuler);
-                weapon.transform.localPosition = level12SawGripLocalPosition;
+                WeaponLoadoutCatalog.ApplyChainsawPlayerGripPose(weapon.transform);
+                ForceWeaponRenderable(weapon);
             }
             else
             {
@@ -2025,6 +2096,9 @@ public class PlayerController : MonoBehaviour
         {
             string[] meleeNames =
             {
+                "Hand.R",
+                "Wrist.R",
+                "Palm.R",
                 "j_wrist_ri",
                 "weapon_bone_R",
                 "bip_hand_R",
@@ -2061,7 +2135,8 @@ public class PlayerController : MonoBehaviour
 
         // Explicit bone name search — same priority list as FindPlayerHandBone
         string[] names = {
-            "RightHand", "Wrist.R", "Hand_R",
+            "Hand.R", "Wrist.R", "Palm.R",
+            "RightHand", "Hand_R",
             "tag_accessory_right", "j_wrist_ri", "weapon_bone_R",
             "bip_hand_R", "tag_weapon_right",
             "mixamorig:RightHand",
@@ -2142,6 +2217,36 @@ public class PlayerController : MonoBehaviour
         if (weaponRoot == null) return;
         weaponRoot.localPosition = localPosition;
         weaponRoot.localRotation = Quaternion.Euler(localEuler);
+    }
+
+    private static void ForceWeaponRenderable(GameObject weapon)
+    {
+        if (weapon == null) return;
+
+        weapon.SetActive(true);
+        foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
+            child.gameObject.SetActive(true);
+
+        Renderer[] renderers = weapon.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null) continue;
+            renderer.enabled = true;
+            renderer.forceRenderingOff = false;
+        }
+    }
+
+    private static void ApplySickleHandPose(Transform handBone, Transform weaponRoot)
+    {
+        if (handBone == null || weaponRoot == null)
+            return;
+
+        SickleGripPoseDriver driver = handBone.GetComponent<SickleGripPoseDriver>();
+        if (driver == null)
+            driver = handBone.gameObject.AddComponent<SickleGripPoseDriver>();
+
+        driver.Configure(handBone, weaponRoot);
     }
 
     /// <summary>
@@ -2435,10 +2540,22 @@ public class PlayerController : MonoBehaviour
 
     private void LoadSavedGripOverrides()
     {
-        level13SickleGripLocalPosition = LoadVector3Pref(PrefKeySicklePos, level13SickleGripLocalPosition);
-        level13SickleGripLocalEuler = LoadVector3Pref(PrefKeySickleEuler, level13SickleGripLocalEuler);
-        level12SawGripLocalPosition = LoadVector3Pref(PrefKeySawPos, level12SawGripLocalPosition);
-        level12SawGripLocalEuler = LoadVector3Pref(PrefKeySawEuler, level12SawGripLocalEuler);
+        level13SickleGripLocalPosition = DefaultLevel13SickleGripLocalPosition;
+        level13SickleGripLocalEuler = DefaultLevel13SickleGripLocalEuler;
+        PlayerPrefs.DeleteKey(PrefKeySicklePos + ".x");
+        PlayerPrefs.DeleteKey(PrefKeySicklePos + ".y");
+        PlayerPrefs.DeleteKey(PrefKeySicklePos + ".z");
+        PlayerPrefs.DeleteKey(PrefKeySickleEuler + ".x");
+        PlayerPrefs.DeleteKey(PrefKeySickleEuler + ".y");
+        PlayerPrefs.DeleteKey(PrefKeySickleEuler + ".z");
+        level12SawGripLocalPosition = DefaultLevel12SawGripLocalPosition;
+        level12SawGripLocalEuler = DefaultLevel12SawGripLocalEuler;
+        PlayerPrefs.DeleteKey(PrefKeySawPos + ".x");
+        PlayerPrefs.DeleteKey(PrefKeySawPos + ".y");
+        PlayerPrefs.DeleteKey(PrefKeySawPos + ".z");
+        PlayerPrefs.DeleteKey(PrefKeySawEuler + ".x");
+        PlayerPrefs.DeleteKey(PrefKeySawEuler + ".y");
+        PlayerPrefs.DeleteKey(PrefKeySawEuler + ".z");
     }
 
     private void ClearSavedGripOverrides()

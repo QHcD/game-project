@@ -29,7 +29,7 @@ public static class MapBuilderTool
             Scene activeScene = SceneManager.GetActiveScene();
             if (!activeScene.IsValid())
             {
-                Debug.LogError("[MapBuilderTool] No active scene is loaded.");
+                Debug.LogWarning("[MapBuilderTool] No active scene is loaded.");
                 return;
             }
 
@@ -292,7 +292,6 @@ public static class MapBuilderTool
         root.tag = "Untagged";
         GameObjectUtility.SetStaticEditorFlags(root,
             StaticEditorFlags.BatchingStatic |
-            StaticEditorFlags.NavigationStatic |
             StaticEditorFlags.OccluderStatic |
             StaticEditorFlags.OccludeeStatic);
 
