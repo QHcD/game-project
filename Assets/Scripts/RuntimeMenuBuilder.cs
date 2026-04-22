@@ -218,7 +218,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         panelOutline.effectColor = new Color(0.26f, 0.42f, 0.68f, 0.18f);
         panelOutline.effectDistance = new Vector2(2f, -2f);
 
-        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1140f, 760f), new Vector2(0f, -6f));
+        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 760f), new Vector2(0f, -6f));
 
         MakeText(panelObj.transform, "SELECT LEVEL", 64, new Color(0.94f, 0.94f, 1f, 1f),
             new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
@@ -232,13 +232,13 @@ public class RuntimeMenuBuilder : MonoBehaviour
         gridRT.anchorMin = new Vector2(0.5f, 0.5f);
         gridRT.anchorMax = new Vector2(0.5f, 0.5f);
         gridRT.pivot = new Vector2(0.5f, 0.5f);
-        gridRT.sizeDelta = new Vector2(760f, 520f);
-        gridRT.anchoredPosition = new Vector2(0f, -68f);
+        gridRT.sizeDelta = new Vector2(620f, 520f);
+        gridRT.anchoredPosition = new Vector2(0f, -42f);
 
         GridLayoutGroup grid = gridObj.AddComponent<GridLayoutGroup>();
-        grid.cellSize = new Vector2(150f, 115f);
-        grid.spacing = new Vector2(18f, 18f);
-        grid.padding = new RectOffset(10, 10, 10, 10);
+        grid.cellSize = new Vector2(130f, 115f);
+        grid.spacing = new Vector2(14f, 14f);
+        grid.padding = new RectOffset(13, 13, 13, 13);
         grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
         grid.constraintCount = 4;
         grid.childAlignment = TextAnchor.MiddleCenter;
@@ -257,7 +257,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         // RETURN text color should be dark like other buttons.
         MakePanelButton(panelObj.transform, "RETURN",
-            new Vector2(0.40f, 0.03f), new Vector2(0.60f, 0.13f),
+            new Vector2(0.395f, 0.006f), new Vector2(0.605f, 0.085f),
             () =>
             {
                 Destroy(overlayObj);

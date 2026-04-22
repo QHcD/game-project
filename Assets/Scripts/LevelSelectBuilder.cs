@@ -69,7 +69,7 @@ public class LevelSelectBuilder : MonoBehaviour
         panel.transform.SetParent(canvasObj.transform, false);
         panel.color = new Color(0.1f, 0.1f, 0.2f, 0.5f);
         RectTransform panelRect = panel.GetComponent<RectTransform>();
-        panelRect.anchorMin = new Vector2(0.15f, 0.18f);
+        panelRect.anchorMin = new Vector2(0.15f, 0.22f);
         panelRect.anchorMax = new Vector2(0.85f, 0.73f);
         panelRect.offsetMin = panelRect.offsetMax = Vector2.zero;
 
@@ -100,11 +100,11 @@ public class LevelSelectBuilder : MonoBehaviour
         // ── Selection Summary Label ──────────────────────────────────────────
         _selectionLabel = MakeText(canvasObj.transform, "Select a level and map, then press PLAY",
             22, new Color(0.9f, 0.85f, 0.5f, 1f),
-            new Vector2(0.22f, 0.10f), new Vector2(0.78f, 0.17f), false);
+            new Vector2(0.22f, 0.135f), new Vector2(0.78f, 0.19f), false);
 
         // ── PLAY Button (disabled until level is selected) ───────────────────
         _playBtn = MakeButton(canvasObj.transform, "PLAY",
-            new Vector2(0.35f, 0.03f), new Vector2(0.65f, 0.10f),
+            new Vector2(0.35f, 0.045f), new Vector2(0.65f, 0.115f),
             OnPlayClicked,
             new Color(0.2f, 0.75f, 0.2f, 1f));  // green
         _playBtn.interactable = false;
@@ -113,7 +113,7 @@ public class LevelSelectBuilder : MonoBehaviour
 
         // ── Return Button ────────────────────────────────────────────────────
         MakeButton(canvasObj.transform, "RETURN",
-            new Vector2(0.05f, 0.03f), new Vector2(0.22f, 0.10f),
+            new Vector2(0.05f, 0.045f), new Vector2(0.22f, 0.115f),
             () => SceneManager.LoadScene("MainMenu"));
     }
 

@@ -8,6 +8,7 @@ using UnityEngine.AI;
 /// Attach to the same GameObject as EnemyController.
 /// Assign hipBone in the Inspector after running the Unity Ragdoll Wizard.
 /// </summary>
+[ExecuteInEditMode]
 public class RagdollController : MonoBehaviour
 {
     [Header("Ragdoll")]
@@ -34,6 +35,7 @@ public class RagdollController : MonoBehaviour
     private NavMeshAgent _agent;
     private Coroutine    _freezeCoroutine;
     private PhysicsMaterial _ragdollFrictionMaterial;
+    private Transform[] _boneTransforms;
 
     private void Awake()
     {
@@ -43,6 +45,21 @@ public class RagdollController : MonoBehaviour
         _agent         = GetComponent<NavMeshAgent>();
         CacheBoneComponents();
         DisableRagdoll();
+    }
+
+    private void Update()
+    {
+        if (Application.isPlaying)
+            return;
+
+        AlignRagdollToAnimatedPoseForEditor();
+    }
+
+    private void OnDrawGizmos()
+    {
+        EnsureCachedComponents();
+        DrawRagdollSkeletonGizmos();
+        DrawWeaponHitboxPreviewGizmos();
     }
 
     /// <summary>
@@ -119,15 +136,134 @@ public class RagdollController : MonoBehaviour
 
         var boneRbs  = new List<Rigidbody>(allRbs.Length);
         var boneCols = new List<Collider>(allCols.Length);
+        var boneTransforms = new List<Transform>(allRbs.Length);
 
         foreach (Rigidbody rb in allRbs)
-            if (rb.gameObject != gameObject) boneRbs.Add(rb);
+        {
+            if (rb.gameObject == gameObject)
+                continue;
+
+            boneRbs.Add(rb);
+            if (rb.transform != null && !boneTransforms.Contains(rb.transform))
+                boneTransforms.Add(rb.transform);
+        }
 
         foreach (Collider col in allCols)
             if (col.gameObject != gameObject) boneCols.Add(col);
 
         _boneRigidbodies = boneRbs.ToArray();
         _boneColliders   = boneCols.ToArray();
+        _boneTransforms   = boneTransforms.ToArray();
+    }
+
+    private void EnsureCachedComponents()
+    {
+        if (_rootRigidbody == null) _rootRigidbody = GetComponent<Rigidbody>();
+        if (_rootCollider == null) _rootCollider = GetComponent<Collider>();
+        if (_animator == null) _animator = GetComponentInChildren<Animator>();
+        if (_agent == null) _agent = GetComponent<NavMeshAgent>();
+
+        if (_boneRigidbodies == null || _boneColliders == null || _boneTransforms == null)
+            CacheBoneComponents();
+    }
+
+    private void AlignRagdollToAnimatedPoseForEditor()
+    {
+        EnsureCachedComponents();
+
+        if (_boneRigidbodies == null)
+            return;
+
+        for (int i = 0; i < _boneRigidbodies.Length; i++)
+        {
+            Rigidbody rb = _boneRigidbodies[i];
+            if (rb == null)
+                continue;
+
+            rb.isKinematic = true;
+            rb.useGravity = false;
+            rb.detectCollisions = true;
+            rb.position = rb.transform.position;
+            rb.rotation = rb.transform.rotation;
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+
+        if (_boneColliders != null)
+        {
+            for (int i = 0; i < _boneColliders.Length; i++)
+            {
+                Collider col = _boneColliders[i];
+                if (col != null)
+                    col.enabled = true;
+            }
+        }
+
+        Physics.SyncTransforms();
+    }
+
+    private void DrawRagdollSkeletonGizmos()
+    {
+        if (_boneTransforms == null || _boneTransforms.Length == 0)
+            return;
+
+        Gizmos.color = Color.green;
+
+        for (int i = 0; i < _boneTransforms.Length; i++)
+        {
+            Transform bone = _boneTransforms[i];
+            if (bone == null)
+                continue;
+
+            Transform parent = bone.parent;
+            while (parent != null && !IsCachedBoneTransform(parent))
+                parent = parent.parent;
+
+            if (parent != null)
+                Gizmos.DrawLine(parent.position, bone.position);
+
+            Gizmos.DrawWireSphere(bone.position, 0.025f);
+        }
+    }
+
+    private bool IsCachedBoneTransform(Transform transformToFind)
+    {
+        if (transformToFind == null || _boneTransforms == null)
+            return false;
+
+        for (int i = 0; i < _boneTransforms.Length; i++)
+        {
+            if (_boneTransforms[i] == transformToFind)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void DrawWeaponHitboxPreviewGizmos()
+    {
+        WeaponHitbox[] hitboxes = GetComponentsInChildren<WeaponHitbox>(true);
+        if (hitboxes == null || hitboxes.Length == 0)
+            return;
+
+        Gizmos.color = Color.yellow;
+        Matrix4x4 previousMatrix = Gizmos.matrix;
+
+        for (int i = 0; i < hitboxes.Length; i++)
+        {
+            WeaponHitbox hitbox = hitboxes[i];
+            if (hitbox == null)
+                continue;
+
+            BoxCollider box = hitbox.GetComponent<BoxCollider>();
+            if (box == null)
+                continue;
+
+            Gizmos.matrix = box.transform.localToWorldMatrix;
+            Gizmos.DrawWireCube(box.center, box.size);
+        }
+
+        Gizmos.matrix = previousMatrix;
     }
 
     private void ApplyHipImpulse(Vector3 hitDirection, float force)

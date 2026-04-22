@@ -7,7 +7,7 @@ using UnityEngine;
 public class WeaponSystemTester : MonoBehaviour
 {
     [Header("Test Settings")]
-    public bool runTestsOnStart = true;
+    public bool runTestsOnStart = false;
     public bool logResults = true;
     
     void Start()
@@ -38,7 +38,7 @@ public class WeaponSystemTester : MonoBehaviour
         if (player == null)
         {
             if (logResults)
-                Debug.LogError("❌ PlayerController not found in scene!");
+                Debug.LogWarning("PlayerController not found in scene.");
             return;
         }
         
@@ -143,13 +143,13 @@ public class WeaponSystemTester : MonoBehaviour
             else
             {
                 if (logResults)
-                    Debug.LogError("❌ WeaponBase component not found on weapon");
+                    Debug.LogWarning("WeaponBase component not found on weapon.");
             }
         }
         else
         {
             if (logResults)
-                Debug.LogError("❌ Weapon object not found");
+                Debug.LogWarning("Weapon object not found.");
         }
     }
     

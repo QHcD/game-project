@@ -2,7 +2,12 @@ using Unity.AI.Navigation;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.SceneManagement;
+#if UNITY_EDITOR
+using UnityEditor;
+using UnityEditor.SceneManagement;
+#endif
 
+[ExecuteAlways]
 public class LevelBuilder : MonoBehaviour
 {
     private const string RuntimeObjectName  = "__LevelBuilderRuntime";
@@ -13,10 +18,15 @@ public class LevelBuilder : MonoBehaviour
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
     private bool _navMeshReady;
+#if UNITY_EDITOR
+    private static bool _editorPreviewQueued;
+    private static double _lastEditorPreviewTime;
+#endif
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void Bootstrap()
     {
+        if (!Application.isPlaying) return;
         if (instance != null) return;
         GameObject runtimeObject = new GameObject(RuntimeObjectName);
         DontDestroyOnLoad(runtimeObject);
@@ -25,9 +35,15 @@ public class LevelBuilder : MonoBehaviour
 
     private void Awake()
     {
-        if (instance != null && instance != this) { Destroy(gameObject); return; }
+        if (instance != null && instance != this)
+        {
+            DestroyObjectSafe(gameObject);
+            return;
+        }
+
         instance = this;
-        DontDestroyOnLoad(gameObject);
+        if (Application.isPlaying)
+            DontDestroyOnLoad(gameObject);
     }
 
     // Guard: the last frame on which we built, so we never double-build.
@@ -36,13 +52,159 @@ public class LevelBuilder : MonoBehaviour
     // Public accessor so scene-local fallback can reach us.
     public static LevelBuilder Instance => instance;
 
-    private void OnEnable()  { SceneManager.sceneLoaded += OnSceneLoaded; }
-    private void OnDisable() { SceneManager.sceneLoaded -= OnSceneLoaded; }
+    private void OnEnable()
+    {
+        if (Application.isPlaying)
+            SceneManager.sceneLoaded += OnSceneLoaded;
+#if UNITY_EDITOR
+        else
+            QueueEditorPreviewBuild();
+#endif
+    }
+
+    private void OnDisable()
+    {
+        if (Application.isPlaying)
+            SceneManager.sceneLoaded -= OnSceneLoaded;
+    }
 
     private void Start()
     {
+        if (!Application.isPlaying) return;
         HandleScene(SceneManager.GetActiveScene());
     }
+
+#if UNITY_EDITOR
+    [InitializeOnLoadMethod]
+    private static void RegisterEditorPreviewHooks()
+    {
+        EditorApplication.delayCall -= QueueEditorPreviewBuild;
+        EditorApplication.delayCall += QueueEditorPreviewBuild;
+        EditorSceneManager.sceneOpened -= OnEditorSceneOpened;
+        EditorSceneManager.sceneOpened += OnEditorSceneOpened;
+    }
+
+    private static void OnEditorSceneOpened(Scene scene, OpenSceneMode mode)
+    {
+        QueueEditorPreviewBuild();
+    }
+
+    [MenuItem("PRISM/Build Scene Preview (No Play Mode)")]
+    private static void BuildScenePreviewFromMenu()
+    {
+        QueueEditorPreviewBuild(force: true);
+    }
+
+    private static void QueueEditorPreviewBuild()
+    {
+        QueueEditorPreviewBuild(force: false);
+    }
+
+    private static void QueueEditorPreviewBuild(bool force)
+    {
+        if (Application.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode)
+            return;
+
+        if (_editorPreviewQueued && !force)
+            return;
+
+        _editorPreviewQueued = true;
+        EditorApplication.delayCall += () =>
+        {
+            _editorPreviewQueued = false;
+            BuildEditorPreviewIfGameScene(force);
+        };
+    }
+
+    private static void BuildEditorPreviewIfGameScene(bool force)
+    {
+        if (Application.isPlaying || EditorApplication.isCompiling || EditorApplication.isUpdating)
+            return;
+
+        Scene activeScene = SceneManager.GetActiveScene();
+        if (!activeScene.IsValid() || !activeScene.isLoaded || activeScene.name != "GameScene")
+            return;
+
+        LevelBuilder builder = GetOrCreateEditorBuilder();
+        if (builder == null)
+            return;
+
+        builder.BuildEditorScenePreview(force);
+    }
+
+    private static LevelBuilder GetOrCreateEditorBuilder()
+    {
+        LevelBuilder builder = FindFirstObjectByType<LevelBuilder>();
+        if (builder != null)
+            return builder;
+
+        GameObject levelManager = GameObject.Find("LevelManager");
+        if (levelManager == null)
+            levelManager = new GameObject("LevelManager");
+
+        builder = levelManager.GetComponent<LevelBuilder>();
+        if (builder == null)
+            builder = levelManager.AddComponent<LevelBuilder>();
+
+        return builder;
+    }
+
+    public void BuildEditorScenePreview(bool force = false)
+    {
+        if (Application.isPlaying)
+            return;
+
+        double now = EditorApplication.timeSinceStartup;
+        if (!force && now - _lastEditorPreviewTime < 0.5d)
+            return;
+
+        _lastEditorPreviewTime = now;
+
+        if (!force && HasCompleteScenePreview())
+        {
+            EnsurePreviewObjectsVisible();
+            return;
+        }
+
+        Debug.Log("[LevelBuilder] Building edit-mode GameScene preview.");
+        BuildGameScene();
+        EnsurePreviewObjectsVisible();
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+        SceneView.RepaintAll();
+    }
+
+    private static bool HasCompleteScenePreview()
+    {
+        GameObject gameplayRoot = GameObject.Find(GameplayRootName);
+        GameObject arenaRoot = GameObject.Find(ArenaRootName);
+        GameObject enemyRoot = GameObject.Find(EnemyRootName);
+        PlayerController player = FindFirstObjectByType<PlayerController>();
+
+        bool hasArenaVisuals = arenaRoot != null &&
+            arenaRoot.GetComponentsInChildren<Renderer>(true).Length > 0;
+        bool hasEnemies = enemyRoot != null &&
+            enemyRoot.GetComponentsInChildren<EnemyController>(true).Length > 0;
+
+        return gameplayRoot != null && hasArenaVisuals && hasEnemies && player != null;
+    }
+
+    private static void EnsurePreviewObjectsVisible()
+    {
+        SetRootActive(GameplayRootName);
+        SetRootActive(ArenaRootName);
+        SetRootActive(EnemyRootName);
+
+        GameObject arenaRoot = GameObject.Find(ArenaRootName);
+        EnsureSceneGroundVisible(arenaRoot != null ? arenaRoot.transform : null);
+    }
+
+    private static void SetRootActive(string objectName)
+    {
+        GameObject obj = GameObject.Find(objectName);
+        if (obj != null && !obj.activeSelf)
+            obj.SetActive(true);
+    }
+#endif
 
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
@@ -155,7 +317,7 @@ public class LevelBuilder : MonoBehaviour
         catch (System.Exception e)
         {
             string errorMsg = $"[LevelBuilder] BUILD FAILED: {e.GetType().Name}: {e.Message}\n{e.StackTrace}";
-            Debug.LogError(errorMsg);
+            Debug.LogWarning(errorMsg);
             // Also write to file so we can read it even if console logs are unreachable
             try { System.IO.File.WriteAllText(Application.dataPath + "/../build_error.log", errorMsg); }
             catch { }
@@ -345,12 +507,12 @@ public class LevelBuilder : MonoBehaviour
         foreach (Camera embeddedCam in mapInstance.GetComponentsInChildren<Camera>(true))
         {
             Debug.Log($"[LevelBuilder] Removing embedded camera '{embeddedCam.name}' from FBX map.");
-            Object.Destroy(embeddedCam.gameObject);
+            DestroyObjectSafe(embeddedCam.gameObject);
         }
 
         // Also destroy any AudioListener that shipped with the FBX
         foreach (AudioListener al in mapInstance.GetComponentsInChildren<AudioListener>(true))
-            Object.Destroy(al);
+            DestroyObjectSafe(al);
 
         // Auto-scale so the map fills roughly the 44×44 arena
         AutoScaleMap(mapInstance, 40f);
@@ -590,7 +752,10 @@ public class LevelBuilder : MonoBehaviour
             // Find an open-air spawn point (not inside buildings)
             Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i);
             enemyObject.transform.position = openSpawn;
-            agent.Warp(openSpawn);
+            if (_navMeshReady && agent.isOnNavMesh)
+                agent.Warp(openSpawn);
+            else
+                agent.transform.position = openSpawn;
             Debug.Log($"[LevelBuilder] Enemy_{i + 1} spawned at {openSpawn}");
 
             // Attach the same melee weapon the player is using
@@ -798,7 +963,18 @@ public class LevelBuilder : MonoBehaviour
     private static void ClearChildren(Transform root)
     {
         for (int i = root.childCount - 1; i >= 0; i--)
-            Destroy(root.GetChild(i).gameObject);
+            DestroyObjectSafe(root.GetChild(i).gameObject);
+    }
+
+    private static void DestroyObjectSafe(Object obj)
+    {
+        if (obj == null)
+            return;
+
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
     }
 
     private void ConfigurePlayer()
@@ -816,7 +992,7 @@ public class LevelBuilder : MonoBehaviour
         }
         if (playerController == null)
         {
-            Debug.LogError("[LevelBuilder] PlayerController missing. Cannot start playable scene.");
+            Debug.LogWarning("[LevelBuilder] PlayerController missing; scene preview continues without player controller.");
             return;
         }
 

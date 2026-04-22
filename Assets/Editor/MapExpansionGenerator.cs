@@ -36,6 +36,12 @@ public static class MapExpansionGenerator
         GameObject stairsLarge = LoadPrefab("Stairs_650_400_300_Prefab.prefab");
         GameObject tunnel = LoadPrefab("Tunnel_Prefab.prefab");
         GameObject wall = LoadPrefab("Wall_Prefab.prefab");
+        if (largeBox == null || smallBox == null || ramp == null || stairsLarge == null || tunnel == null || wall == null)
+        {
+            Debug.LogWarning("[MapExpansionGenerator] Map expansion skipped because one or more environment prefabs are missing.");
+            Object.DestroyImmediate(container);
+            return;
+        }
 
         var placed = new List<GameObject>();
 
@@ -128,7 +134,8 @@ public static class MapExpansionGenerator
         GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
         if (prefab == null)
         {
-            throw new System.InvalidOperationException($"Missing environment prefab at {path}");
+            Debug.LogWarning($"[MapExpansionGenerator] Missing environment prefab at {path}");
+            return null;
         }
 
         return prefab;
@@ -282,7 +289,7 @@ public static class MapExpansionGenerator
     {
         SetLayerRecursively(root, 0);
         root.tag = "Untagged";
-        GameObjectUtility.SetStaticEditorFlags(root, StaticEditorFlags.BatchingStatic | StaticEditorFlags.NavigationStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.OccludeeStatic);
+        GameObjectUtility.SetStaticEditorFlags(root, StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.OccludeeStatic);
 
         foreach (MeshFilter filter in root.GetComponentsInChildren<MeshFilter>(true))
         {

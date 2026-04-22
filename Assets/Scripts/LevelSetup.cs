@@ -35,7 +35,7 @@ public class LevelSetup : MonoBehaviour
 
         if (player == null)
         {
-            Debug.LogError("[LevelSetup] PlayerController not found. Basic movement cannot start.");
+            Debug.LogWarning("[LevelSetup] PlayerController not found; fallback setup will continue.");
             return;
         }
 
