@@ -155,13 +155,14 @@ public static class WeaponLoadoutCatalog
     // player wrist basis, so pole levels need a pre-grip socket flip on the
     // enemy side instead of more per-weapon position nudges.
     private static readonly Vector3 PoleEnemySocketLocalEuler = new Vector3(0f, 180f, 0f);
-    // Level 12 chainsaw/saw: explicit grip offsets only. The previous runtime
-    // bounds anchor could choose the blade/body instead of the rear handle,
-    // which made the player and enemies hold the saw through their torso.
-    public static readonly Vector3 ChainsawPlayerLocalPosition = new Vector3(0.1f, -0.05f, 0.2f);
-    public static readonly Vector3 ChainsawPlayerLocalEuler = new Vector3(0f, 90f, 0f);
-    public static readonly Vector3 ChainsawEnemyLocalPosition = new Vector3(0.1f, -0.05f, 0.2f);
-    public static readonly Vector3 ChainsawEnemyLocalEuler = new Vector3(0f, 90f, 0f);
+    // Level 12 hand saw: the imported mesh is a one-handed carpentry saw, not
+    // a chainsaw/hammer-style tool. Its handle sits near the +X end and the
+    // blade extends toward -X. Rotate +X behind the palm so -X points forward,
+    // then seat the socket on the handle bounds instead of on the model pivot.
+    public static readonly Vector3 ChainsawPlayerLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
+    public static readonly Vector3 ChainsawPlayerLocalEuler = new Vector3(-177.177f, -175.886f, 88.481f);
+    public static readonly Vector3 ChainsawEnemyLocalPosition = ChainsawPlayerLocalPosition;
+    public static readonly Vector3 ChainsawEnemyLocalEuler = ChainsawPlayerLocalEuler;
     public const float ChainsawTargetSize = 0.78f;
     private static readonly Vector3 SawPlayerLocalPosition = ChainsawPlayerLocalPosition;
     private static readonly Vector3 SawPlayerLocalEuler = ChainsawPlayerLocalEuler;
@@ -175,11 +176,11 @@ public static class WeaponLoadoutCatalog
     // Fallback in root-local pre-scale coords. Negative Y selects the rear
     // handle side; positive Y was selecting the saw head/blade side.
     private static readonly Vector3 SawRuntimeFallbackGripPoint = new Vector3(50f, -120f, 1.5f);
-    private const float SawPlayerHandleGripXNormalized = 0.88f;
-    private const float SawPlayerHandleGripYNormalized = 0.18f;
+    private const float SawPlayerHandleGripXNormalized = 0.90f;
+    private const float SawPlayerHandleGripYNormalized = 0.50f;
     private const float SawPlayerHandleGripZNormalized = 0.50f;
-    private const float SawHandleGripXNormalized = 0.88f;
-    private const float SawHandleGripYNormalized = 0.18f;
+    private const float SawHandleGripXNormalized = SawPlayerHandleGripXNormalized;
+    private const float SawHandleGripYNormalized = SawPlayerHandleGripYNormalized;
     private const float SawHandleGripZNormalized = 0.50f;
     // Level 13 sickle: once the player uses the real hand/wrist bone instead
     // of the accessory tag socket, the sickle matches the enemy's forward
@@ -417,8 +418,8 @@ public static class WeaponLoadoutCatalog
         switch (Mathf.Clamp(level, 1, 16))
         {
             case 12:
-                if (sourcePrefab.name.IndexOf("saw", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                    ApplyBlackSawMaterialOverride(weaponRoot);
+                // Keep the imported saw materials so level 12 reads like the
+                // reference hand saw: metal blade, warm handle, clear teeth.
                 break;
         }
     }
@@ -449,6 +450,31 @@ public static class WeaponLoadoutCatalog
     public static void ApplyChainsawEnemyGripPose(Transform weaponRoot)
     {
         ApplyWeaponTransform(weaponRoot, ChainsawEnemyLocalPosition, ChainsawEnemyLocalEuler);
+    }
+
+    private static void ApplySawBoundsGripPose(Transform weaponRoot, Vector3 palmOffset, bool playerGrip)
+    {
+        if (weaponRoot == null)
+            return;
+
+        weaponRoot.localRotation = Quaternion.Euler(SawRuntimeMeshLocalEuler);
+
+        Vector3 gripPoint;
+        bool hasGripPoint = playerGrip
+            ? TryGetSawPlayerGripPoint(weaponRoot, out gripPoint)
+            : TryGetSawRuntimeGripPoint(weaponRoot, out gripPoint);
+
+        if (!hasGripPoint)
+        {
+            ApplyWeaponTransform(
+                weaponRoot,
+                playerGrip ? ChainsawPlayerLocalPosition : ChainsawEnemyLocalPosition,
+                SawRuntimeMeshLocalEuler);
+            return;
+        }
+
+        Vector3 scaledGripPoint = Vector3.Scale(gripPoint, weaponRoot.localScale);
+        weaponRoot.localPosition = palmOffset - (weaponRoot.localRotation * scaledGripPoint);
     }
 
     private static void ApplyWeaponTransform(Transform weaponRoot, Vector3 localPosition, Vector3 localEuler)

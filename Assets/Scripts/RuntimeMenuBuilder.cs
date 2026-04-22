@@ -1,14 +1,18 @@
-﻿using TMPro;
+using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem.UI;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using UnityEngine.Networking;
 
 public class RuntimeMenuBuilder : MonoBehaviour
 {
     public Sprite backgroundImage;
     public TMP_FontAsset customFont;
+    public AudioClip lobbyMusicClip;
+
+    private AudioSource lobbyAudioSource;
 
     void Start()
     {
@@ -50,6 +54,13 @@ public class RuntimeMenuBuilder : MonoBehaviour
         {
             bg.sprite = backgroundImage;
             bg.color = Color.white;
+        }
+
+        // ─── LOBBY MUSIC ─────────────────────────────────────────────────────
+        bool isMainMenu = (GameManager.Instance == null || GameManager.PendingMenuScreen == GameManager.MenuScreen.MainMenu);
+        if (isMainMenu)
+        {
+            SetupLobbyMusic();
         }
 
         Image overlay = new GameObject("Overlay").AddComponent<Image>();
@@ -457,6 +468,114 @@ public class RuntimeMenuBuilder : MonoBehaviour
 #else
         Application.Quit();
 #endif
+    }
+
+    // ─── LOBBY MUSIC ──────────────────────────────────────────────────────────────
+    void SetupLobbyMusic()
+    {
+        // Stop any existing lobby music
+        StopLobbyMusic();
+
+        // Try Inspector-assigned clip first
+        AudioClip clip = lobbyMusicClip;
+
+        // Fallback: load from Resources
+        if (clip == null)
+            clip = Resources.Load<AudioClip>("MainMenu_LobbyTheme");
+
+        if (clip == null)
+        {
+            // Fallback: load from file via UnityWebRequest
+            string oggInAudio = System.IO.Path.Combine(Application.dataPath, "Audio", "MainMenu_LobbyTheme.ogg");
+            string wavInAudio = System.IO.Path.Combine(Application.dataPath, "Audio", "MainMenu_LobbyTheme.wav");
+
+            string loadPath = null;
+            AudioType loadType = AudioType.OGGVORBIS;
+
+            if (System.IO.File.Exists(oggInAudio))
+            {
+                loadPath = oggInAudio;
+                loadType = AudioType.OGGVORBIS;
+            }
+            else if (System.IO.File.Exists(wavInAudio))
+            {
+                loadPath = wavInAudio;
+                loadType = AudioType.WAV;
+            }
+
+            if (loadPath != null)
+            {
+                StartCoroutine(LoadAndPlayLobbyMusic(loadPath, loadType));
+                return;
+            }
+            else
+            {
+                Debug.LogWarning("[RuntimeMenuBuilder] MainMenu_LobbyTheme audio not found. No lobby music will play.");
+                return;
+            }
+        }
+
+        PlayLobbyClip(clip);
+    }
+
+    System.Collections.IEnumerator LoadAndPlayLobbyMusic(string filePath, AudioType audioType)
+    {
+        string fileUrl = "file:///" + filePath.Replace("\\", "/");
+        using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip(fileUrl, audioType))
+        {
+            yield return www.SendWebRequest();
+
+            if (www.result == UnityWebRequest.Result.Success)
+            {
+                AudioClip clip = DownloadHandlerAudioClip.GetContent(www);
+                if (clip != null)
+                {
+                    clip.name = "MainMenu_LobbyTheme";
+                    PlayLobbyClip(clip);
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[RuntimeMenuBuilder] Failed to load lobby music: " + www.error);
+            }
+        }
+    }
+
+    void PlayLobbyClip(AudioClip clip)
+    {
+        // Create a persistent audio source
+        GameObject musicObj = GameObject.Find("LobbyMusic");
+        if (musicObj == null)
+        {
+            musicObj = new GameObject("LobbyMusic");
+            DontDestroyOnLoad(musicObj);
+        }
+
+        lobbyAudioSource = musicObj.GetComponent<AudioSource>();
+        if (lobbyAudioSource == null)
+            lobbyAudioSource = musicObj.AddComponent<AudioSource>();
+
+        lobbyAudioSource.clip = clip;
+        lobbyAudioSource.loop = true;
+        lobbyAudioSource.volume = 0.5f;
+        lobbyAudioSource.playOnAwake = false;
+
+        if (!lobbyAudioSource.isPlaying)
+            lobbyAudioSource.Play();
+    }
+
+    void StopLobbyMusic()
+    {
+        if (lobbyAudioSource != null && lobbyAudioSource.isPlaying)
+        {
+            lobbyAudioSource.Stop();
+        }
+    }
+
+    void OnDestroy()
+    {
+        // Don't destroy lobby music here — it persists via DontDestroyOnLoad
+        // It will keep playing across menu reloads, stop it only when leaving to gameplay
     }
 
     TMP_FontAsset ResolveMenuFont()
