@@ -212,6 +212,13 @@ public class GameManager : MonoBehaviour
     public int GetContinueLevel()
         => Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
 
+    /// <summary>
+    /// Returns true if the player has never started a run before (no save data exists).
+    /// Used by the main menu to show "START" instead of "CONTINUE".
+    /// </summary>
+    public bool IsNewPlayer()
+        => !PlayerPrefs.HasKey("ContinueLevel") && !PlayerPrefs.HasKey("UnlockedLevels");
+
     // ── Game flow ─────────────────────────────────────────────────────────────
     public void StartRun(int level = 1)
     {

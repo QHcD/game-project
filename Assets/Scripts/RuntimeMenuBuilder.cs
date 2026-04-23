@@ -84,8 +84,11 @@ public class RuntimeMenuBuilder : MonoBehaviour
         MakeText(root, "WEAPON TRIALS", 74, new Color(0.45f, 0.20f, 0.75f, 0.24f),
             new Vector2(0.14f, 0.54f), new Vector2(0.86f, 0.74f), true);
 
-        int continueLevel = GameManager.Instance != null ? GameManager.Instance.GetContinueLevel() : 1;
-        MakeMenuButton(root, "CONTINUE", new Vector2(0.34f, 0.49f), new Vector2(0.66f, 0.56f), () => GameManager.Instance?.StartRun(continueLevel));
+        // Show "START" for brand-new players; "CONTINUE" when save data exists.
+        bool isNew         = GameManager.Instance == null || GameManager.Instance.IsNewPlayer();
+        int  continueLevel = GameManager.Instance != null ? GameManager.Instance.GetContinueLevel() : 1;
+        string startLabel  = isNew ? "START" : "CONTINUE";
+        MakeMenuButton(root, startLabel, new Vector2(0.34f, 0.49f), new Vector2(0.66f, 0.56f), () => GameManager.Instance?.StartRun(continueLevel));
         MakeMenuButton(root, "SELECT LEVEL", new Vector2(0.34f, 0.40f), new Vector2(0.66f, 0.47f), () => ToggleLevelSelect(root));
         MakeMenuButton(root, "OPTIONS", new Vector2(0.34f, 0.31f), new Vector2(0.66f, 0.38f), () => SceneManager.LoadScene("Options"));
         MakeMenuButton(root, "SETTINGS", new Vector2(0.34f, 0.22f), new Vector2(0.66f, 0.29f), () => SceneManager.LoadScene("Settings"));
