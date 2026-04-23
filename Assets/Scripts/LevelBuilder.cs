@@ -285,14 +285,11 @@ public class LevelBuilder : MonoBehaviour
             }
 
             BuildArena(arenaRoot);
-            EnsureSceneGroundVisible(arenaRoot);
+            // EnsureSceneGroundVisible skipped — industrial map has its own ground
             Debug.Log("[LevelBuilder] Step 3: Arena built");
 
-            // Spawn environmental props BEFORE NavMesh so they become walkable surfaces
-            Transform propRoot = GetOrCreateChildRoot(gameplayRoot, "PropsRoot");
-            ClearChildren(propRoot);
-            SpawnEnvironmentProps(propRoot);
-            Debug.Log("[LevelBuilder] Step 4: Props spawned");
+            // Environmental props are provided by the RPG/FPS industrial map prefab — skip procedural spawning.
+            Debug.Log("[LevelBuilder] Step 4: Props skipped (industrial map provides own environment)");
 
             EnsureMinimapCamera();
             Debug.Log("[LevelBuilder] Step 5: Minimap camera");
@@ -342,33 +339,40 @@ public class LevelBuilder : MonoBehaviour
             ? GameManager.Instance.GetSelectedMap()
             : GameManager.ArenaMap.Map1;
 
-        // Always create physics bounds for NavMesh and collision. The floor is visible.
-        CreatePhysicsBounds(arenaRoot);
-
-        // Load the FBX map as visual layer
+        // The industrial map provides its own ground and colliders —
+        // skip procedural physics bounds entirely to avoid the green floor
+        // and cyan wall artefacts that conflict with the map geometry.
+        // LoadFbxMap adds MeshColliders to every mesh for NavMesh + physics.
         LoadFbxMap(arenaRoot, map);
     }
 
-    /// <summary>Creates a visible floor and invisible walls for the arena.</summary>
+    // Arena half-size for the RPG/FPS industrial map (larger than the old 44×44 primitive arenas)
+    private const float ArenaHalfSize = 80f;
+
+    /// <summary>Creates a NavMesh floor and invisible boundary walls sized for the industrial map.</summary>
     private void CreatePhysicsBounds(Transform parent)
     {
-        // Floor — wide and flat for NavMesh baking
+        float full = ArenaHalfSize * 2f;
+
+        // Physics floor — kept invisible; the industrial map provides its own visible ground.
+        // It still gives NavMesh a solid surface to bake on.
         GameObject floor = GameObject.CreatePrimitive(PrimitiveType.Cube);
         floor.name = "Ground_PhysicsFloor";
         floor.transform.SetParent(parent, false);
-        floor.transform.localPosition = new Vector3(0f, -0.05f, 0f);
-        floor.transform.localScale    = new Vector3(44f, 0.1f, 44f);
-        ForceGroundVisible(floor);
+        floor.transform.localPosition = new Vector3(0f, -0.3f, 0f);  // slightly below map ground
+        floor.transform.localScale    = new Vector3(full, 0.1f, full);
+        Renderer floorRend = floor.GetComponent<Renderer>();
+        if (floorRend != null) floorRend.enabled = false;  // invisible — industrial map ground shows instead
 
-        // Walls
+        // Invisible boundary walls — keep players and enemies inside the industrial arena
         string[] wallNames = { "PhysicsWall_N", "PhysicsWall_S", "PhysicsWall_E", "PhysicsWall_W" };
         Vector3[] wallPos  = {
-            new Vector3(0f, 2.4f,  22f), new Vector3(0f, 2.4f, -22f),
-            new Vector3(22f, 2.4f,  0f), new Vector3(-22f, 2.4f, 0f)
+            new Vector3(0f, 5f,  ArenaHalfSize), new Vector3(0f, 5f, -ArenaHalfSize),
+            new Vector3( ArenaHalfSize, 5f, 0f), new Vector3(-ArenaHalfSize, 5f, 0f)
         };
         Vector3[] wallScale = {
-            new Vector3(44f, 4.8f, 1f), new Vector3(44f, 4.8f, 1f),
-            new Vector3(1f, 4.8f, 44f), new Vector3(1f, 4.8f, 44f)
+            new Vector3(full, 10f, 1f), new Vector3(full, 10f, 1f),
+            new Vector3(1f, 10f, full), new Vector3(1f, 10f, full)
         };
         for (int i = 0; i < 4; i++)
         {
@@ -482,17 +486,21 @@ public class LevelBuilder : MonoBehaviour
         rend.receiveShadows = true;
     }
 
-    /// <summary>Loads the FBX map from Resources and places it as visual geometry.</summary>
+    /// <summary>Loads the industrial map prefab from Resources and places it as visual geometry.</summary>
     private void LoadFbxMap(Transform parent, GameManager.ArenaMap map)
     {
-        string resourcePath = map == GameManager.ArenaMap.Map1
-            ? "Maps/Map1/NukeTown"
-            : "Maps/Map2/ccc";
+        // Both map slots now use the RPG/FPS industrial arena.
+        // Run PRISM-7 ▸ Setup Industrial Map once in the editor to generate the prefab.
+        string resourcePath = "Maps/IndustrialMap/IndustrialMap";
 
         GameObject mapPrefab = Resources.Load<GameObject>(resourcePath);
+
+        // If the industrial prefab isn't generated yet, log a clear message.
+        // Run PRISM-7 ▸ Setup Industrial Map (or wait for auto-setup) then re-enter Play.
         if (mapPrefab == null)
         {
-            Debug.LogWarning($"[LevelBuilder] FBX map not found at Resources/{resourcePath}. Using procedural fallback.");
+            Debug.LogWarning("[LevelBuilder] Industrial map prefab not found at Resources/" + resourcePath +
+                ".\nRun  PRISM-7 ▸ Setup Industrial Map  in the Editor (exit Play mode first), then press Play again.");
             CreateProceduralFallback(parent, map);
             return;
         }
@@ -502,25 +510,31 @@ public class LevelBuilder : MonoBehaviour
         mapInstance.transform.localPosition = Vector3.zero;
         mapInstance.transform.localRotation = Quaternion.identity;
 
-        // Destroy any cameras baked into the FBX so they don't compete with
-        // our runtime cameras (RuntimeThirdPersonCamera, MinimapCamera).
+        // ── Activate EVERYTHING in the industrial map ──────────────────────
+        // The prefab may have been captured with some objects inactive.
+        // Force every child object and renderer on so the full map is visible.
+        foreach (Transform t in mapInstance.GetComponentsInChildren<Transform>(true))
+            t.gameObject.SetActive(true);
+
+        foreach (Renderer rend in mapInstance.GetComponentsInChildren<Renderer>(true))
+            rend.enabled = true;
+
+        // ── Remove cameras / audio listeners that compete with ours ────────
         foreach (Camera embeddedCam in mapInstance.GetComponentsInChildren<Camera>(true))
         {
-            Debug.Log($"[LevelBuilder] Removing embedded camera '{embeddedCam.name}' from FBX map.");
+            Debug.Log($"[LevelBuilder] Removing embedded camera '{embeddedCam.name}' from industrial map.");
             DestroyObjectSafe(embeddedCam.gameObject);
         }
-
-        // Also destroy any AudioListener that shipped with the FBX
         foreach (AudioListener al in mapInstance.GetComponentsInChildren<AudioListener>(true))
             DestroyObjectSafe(al);
 
-        // Auto-scale so the map fills roughly the 44×44 arena
-        AutoScaleMap(mapInstance, 40f);
+        // ── The industrial map ships at real-world scale — no scaling needed ─
+        // ── DO NOT replace its materials — it already has correct URP textures ─
+        // The old FBX material-swap logic is intentionally skipped here.
+        // Replacing materials would wipe all industrial textures and make the
+        // map appear as flat grey geometry.
 
-        // Add colliders to every mesh for physics & NavMesh interaction.
-        // MeshCollider requires the mesh to be readable at runtime.
-        // If a mesh isn't readable, fall back to a BoxCollider so NavMesh
-        // baking still works and enemies can still walk on the surface.
+        // ── Add colliders only where none exist (for NavMesh + physics) ────
         foreach (MeshFilter mf in mapInstance.GetComponentsInChildren<MeshFilter>(true))
         {
             if (mf.GetComponent<Collider>() != null) continue;
@@ -534,49 +548,13 @@ public class LevelBuilder : MonoBehaviour
             }
             else
             {
-                // Fallback: bounding-box collider — still gives NavMesh a surface
                 BoxCollider box = mf.gameObject.AddComponent<BoxCollider>();
                 box.center = mf.sharedMesh.bounds.center;
                 box.size   = mf.sharedMesh.bounds.size;
-                Debug.LogWarning($"[LevelBuilder] Mesh '{mf.sharedMesh.name}' is not readable — " +
-                                 "using BoxCollider fallback. Enable Read/Write in the FBX import settings " +
-                                 "for precise collisions (PRISM > Fix All Map Mesh Read-Write).");
             }
         }
 
-        // Fix URP shader incompatibility — imported FBX materials default to the
-        // Standard (Built-in) shader, which URP renders as solid magenta/pink.
-        // Re-assign every material to URP/Lit to restore correct visuals at runtime.
-        Shader urpLit = Shader.Find("Universal Render Pipeline/Lit")
-                     ?? Shader.Find("Lit");
-        if (urpLit != null)
-        {
-            foreach (Renderer rend in mapInstance.GetComponentsInChildren<Renderer>(true))
-            {
-                Material[] mats = rend.materials;
-                for (int m = 0; m < mats.Length; m++)
-                {
-                    if (mats[m] != null && mats[m].shader != urpLit)
-                    {
-                        // Preserve albedo/base colour and main texture if present
-                        Color albedo    = mats[m].HasProperty("_Color")       ? mats[m].GetColor("_Color")     : Color.white;
-                        Texture mainTex = mats[m].HasProperty("_MainTex")     ? mats[m].GetTexture("_MainTex") : null;
-                        mats[m]         = new Material(urpLit);
-                        mats[m].SetColor("_BaseColor", albedo);
-                        if (mainTex != null) mats[m].SetTexture("_BaseMap", mainTex);
-                    }
-                }
-                rend.materials = mats;
-            }
-            Debug.Log("[LevelBuilder] FBX map materials upgraded to URP/Lit.");
-        }
-        else
-        {
-            Debug.LogWarning("[LevelBuilder] URP/Lit shader not found — map may appear magenta. " +
-                             "Ensure Universal Render Pipeline is installed and set as the active pipeline.");
-        }
-
-        Debug.Log($"[LevelBuilder] FBX map loaded: {resourcePath}");
+        Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
     }
 
     /// <summary>Scales the map so its largest horizontal dimension equals targetSize.</summary>
@@ -649,20 +627,21 @@ public class LevelBuilder : MonoBehaviour
         // Try loading the Crosby enemy model
         GameObject enemyPrefab = Resources.Load<GameObject>("Enemy/Crosby");
 
+        // Spawn points spread across the larger industrial arena (80×80 half-size)
         Vector3[] spawnPoints =
         {
-            new Vector3(-15f, 0.01f, -15f),
-            new Vector3(  0f, 0.01f, -15f),
-            new Vector3( 15f, 0.01f, -15f),
-            new Vector3(-15f, 0.01f,   0f),
-            new Vector3( 15f, 0.01f,   0f),
-            new Vector3(-15f, 0.01f,  15f),
-            new Vector3(  0f, 0.01f,  15f),
-            new Vector3( 15f, 0.01f,  15f),
-            new Vector3( -8f, 0.01f,  10f),
-            new Vector3(  8f, 0.01f,  10f),
-            new Vector3( -8f, 0.01f, -10f),
-            new Vector3(  8f, 0.01f, -10f)
+            new Vector3(-30f, 0.01f, -30f),
+            new Vector3(  0f, 0.01f, -30f),
+            new Vector3( 30f, 0.01f, -30f),
+            new Vector3(-30f, 0.01f,   0f),
+            new Vector3( 30f, 0.01f,   0f),
+            new Vector3(-30f, 0.01f,  30f),
+            new Vector3(  0f, 0.01f,  30f),
+            new Vector3( 30f, 0.01f,  30f),
+            new Vector3(-15f, 0.01f,  20f),
+            new Vector3( 15f, 0.01f,  20f),
+            new Vector3(-15f, 0.01f, -20f),
+            new Vector3( 15f, 0.01f, -20f)
         };
 
         for (int i = 0; i < enemyCount; i++)
@@ -1297,30 +1276,30 @@ public class LevelBuilder : MonoBehaviour
         if (!NavMesh.SamplePosition(fallback, out _, 6f, NavMesh.AllAreas))
             return SafeFallbackSpawn;
 
-        // Grid of candidate XZ positions spread across the arena streets
+        // Grid of candidate XZ positions spread across the industrial arena (80×80)
         Vector3[] candidates =
         {
             new Vector3(  0f, 0f,   0f),
-            new Vector3(  0f, 0f,  -8f),
-            new Vector3(  0f, 0f,   8f),
-            new Vector3( -8f, 0f,   0f),
-            new Vector3(  8f, 0f,   0f),
-            new Vector3( -5f, 0f,  -5f),
-            new Vector3(  5f, 0f,  -5f),
-            new Vector3( -5f, 0f,   5f),
-            new Vector3(  5f, 0f,   5f),
-            new Vector3(  0f, 0f, -14f),
-            new Vector3(  0f, 0f,  14f),
-            new Vector3(-12f, 0f,   0f),
-            new Vector3( 12f, 0f,   0f),
+            new Vector3(  0f, 0f, -15f),
+            new Vector3(  0f, 0f,  15f),
+            new Vector3(-15f, 0f,   0f),
+            new Vector3( 15f, 0f,   0f),
             new Vector3(-10f, 0f, -10f),
             new Vector3( 10f, 0f, -10f),
             new Vector3(-10f, 0f,  10f),
             new Vector3( 10f, 0f,  10f),
-            new Vector3(-16f, 0f,   0f),
-            new Vector3( 16f, 0f,   0f),
-            new Vector3(  0f, 0f, -18f),
-            new Vector3(  0f, 0f,  18f),
+            new Vector3(  0f, 0f, -25f),
+            new Vector3(  0f, 0f,  25f),
+            new Vector3(-25f, 0f,   0f),
+            new Vector3( 25f, 0f,   0f),
+            new Vector3(-20f, 0f, -20f),
+            new Vector3( 20f, 0f, -20f),
+            new Vector3(-20f, 0f,  20f),
+            new Vector3( 20f, 0f,  20f),
+            new Vector3(-35f, 0f,   0f),
+            new Vector3( 35f, 0f,   0f),
+            new Vector3(  0f, 0f, -35f),
+            new Vector3(  0f, 0f,  35f),
         };
 
         foreach (Vector3 candidate in candidates)
