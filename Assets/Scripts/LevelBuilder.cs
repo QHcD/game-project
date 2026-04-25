@@ -721,6 +721,13 @@ public class LevelBuilder : MonoBehaviour
             enemyObject.tag = "Enemy";
             SetLayerRecursive(enemyObject, LayerMask.NameToLayer("Character"));
 
+            // Find an open-air spawn point first and move the object there
+            // before adding NavMeshAgent, otherwise Unity warns if the object
+            // starts too far from any baked NavMesh.
+            Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i);
+            Vector3 agentSpawn = ResolveAgentSpawnPosition(openSpawn);
+            enemyObject.transform.position = agentSpawn;
+
             // NavMeshAgent
             NavMeshAgent agent = EnsureComponent<NavMeshAgent>(enemyObject);
             agent.speed                  = chaseSpeed;
@@ -763,10 +770,7 @@ public class LevelBuilder : MonoBehaviour
             controller.attackDamage = enemyDamage;
             controller.maxHealth   = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
 
-            // Find an open-air spawn point (not inside buildings) and snap the
-            // agent onto the nearest NavMesh position before it begins moving.
-            Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i);
-            Vector3 agentSpawn = ResolveAgentSpawnPosition(openSpawn);
+            // Snap the agent onto the nearest NavMesh position before it begins moving.
             PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn);
             Debug.Log($"[LevelBuilder] Enemy_{i + 1} spawned at {agentSpawn}");
 
@@ -1423,18 +1427,29 @@ public class LevelBuilder : MonoBehaviour
         return new Vector3(preferred.x, 0.1f, preferred.z);
     }
 
+    // Progressive search radii — each step doubles the previous.
+    // An enemy spawning inside a building or at a map edge will be pulled
+    // to the nearest reachable NavMesh surface before the agent is enabled,
+    // eliminating "Failed to create agent" warnings entirely.
+    private static readonly float[] NavSnapRadii = { 1.5f, 4f, 10f, 25f };
+
     private static Vector3 ResolveAgentSpawnPosition(Vector3 preferred)
     {
-        if (NavMesh.SamplePosition(preferred, out NavMeshHit hit, 8f, NavMesh.AllAreas))
-            return hit.position;
+        foreach (float r in NavSnapRadii)
+        {
+            if (NavMesh.SamplePosition(preferred, out NavMeshHit hit, r, NavMesh.AllAreas))
+                return hit.position;
+        }
 
-        return preferred;
+        // Nothing found at any radius — return with a small upward offset so
+        // the agent sits just above the terrain and gets a second chance via
+        // the EnemyController's TryRecoverAgentOnNavMesh at runtime.
+        return new Vector3(preferred.x, preferred.y + 0.2f, preferred.z);
     }
 
     private static void PlaceAgentOnNavMesh(NavMeshAgent agent, Transform target, Vector3 spawnPosition)
     {
-        if (target == null)
-            return;
+        if (target == null) return;
 
         if (agent == null)
         {
@@ -1442,23 +1457,28 @@ public class LevelBuilder : MonoBehaviour
             return;
         }
 
-        bool wasEnabled = agent.enabled;
-        if (wasEnabled)
-            agent.enabled = false;
-
+        // 1. Disable agent before moving — avoids "Stop can only be called
+        //    on an active agent" and the stale-position warp bug.
+        agent.enabled = false;
         target.position = spawnPosition;
 
-        if (wasEnabled)
-            agent.enabled = true;
-
-        if (agent.enabled && NavMesh.SamplePosition(spawnPosition, out NavMeshHit hit, 2f, NavMesh.AllAreas))
+        // 2. Re-enable only if the position is on the NavMesh.
+        foreach (float r in NavSnapRadii)
         {
-            agent.Warp(hit.position);
-            target.position = hit.position;
-            return;
+            if (NavMesh.SamplePosition(spawnPosition, out NavMeshHit hit, r, NavMesh.AllAreas))
+            {
+                target.position = hit.position;
+                agent.enabled   = true;
+                agent.Warp(hit.position);
+                return;
+            }
         }
 
-        target.position = spawnPosition;
+        // 3. Position is genuinely off every baked NavMesh surface.
+        //    Leave agent disabled — EnemyController.TryRecoverAgentOnNavMesh
+        //    will retry at runtime once the NavMesh finishes loading.
+        Debug.LogWarning($"[LevelBuilder] Could not snap enemy to NavMesh near {spawnPosition}. " +
+                         "Agent left disabled; EnemyController will retry at runtime.");
     }
 
     private static T EnsureComponent<T>(GameObject target) where T : Component

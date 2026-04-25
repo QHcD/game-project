@@ -285,10 +285,6 @@ public class SettingsBuilder : MonoBehaviour
         TextMeshProUGUI caption = MakeDropdownText(dropdownObj.transform, "Caption", TextAlignmentOptions.Center, new Vector2(16f, 0f), new Vector2(-40f, 0f));
         dropdown.captionText = caption;
 
-        TextMeshProUGUI arrow = MakeDropdownText(dropdownObj.transform, "Arrow", TextAlignmentOptions.Center, new Vector2(320f, 0f), new Vector2(-8f, 0f));
-        arrow.text = "v";
-        arrow.fontSize = 18f;
-
         RectTransform templateRect = CreateDropdownTemplate(dropdownObj.transform, out TextMeshProUGUI itemLabel);
         dropdown.template = templateRect;
         dropdown.itemText = itemLabel;
@@ -355,24 +351,9 @@ public class SettingsBuilder : MonoBehaviour
         Toggle itemToggle = itemObj.AddComponent<Toggle>();
         itemToggle.targetGraphic = itemBg;
 
-        GameObject checkmarkObj = new GameObject("Item Checkmark");
-        checkmarkObj.transform.SetParent(itemObj.transform, false);
-        TextMeshProUGUI checkmark = checkmarkObj.AddComponent<TextMeshProUGUI>();
-        checkmark.text = "v";
-        checkmark.fontSize = 20f;
-        checkmark.color = new Color(0.24f, 0.22f, 0.38f, 1f);
-        checkmark.alignment = TextAlignmentOptions.Center;
-        if (prismFont != null)
-            checkmark.font = prismFont;
-        RectTransform checkRect = checkmark.GetComponent<RectTransform>();
-        checkRect.anchorMin = new Vector2(0f, 0f);
-        checkRect.anchorMax = new Vector2(0f, 1f);
-        checkRect.pivot = new Vector2(0.5f, 0.5f);
-        checkRect.sizeDelta = new Vector2(28f, 0f);
-        checkRect.anchoredPosition = new Vector2(18f, 0f);
-        itemToggle.graphic = checkmark;
+        itemToggle.graphic = null;
 
-        itemLabel = MakeDropdownText(itemObj.transform, "Item Label", TextAlignmentOptions.MidlineLeft, new Vector2(40f, 0f), new Vector2(-12f, 0f));
+        itemLabel = MakeDropdownText(itemObj.transform, "Item Label", TextAlignmentOptions.MidlineLeft, new Vector2(16f, 0f), new Vector2(-12f, 0f));
 
         scrollRect.content = contentRect;
         scrollRect.viewport = viewportRect;
