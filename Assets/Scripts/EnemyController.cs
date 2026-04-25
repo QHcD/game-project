@@ -45,6 +45,14 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("NavMeshAgent angular speed (deg/sec). 1080 = full turn in ~0.33 s, matching the player body Slerp.")]
     public float agentAngularSpeed = 1080f;
 
+    [Header("Flow Field Navigation")]
+    [Tooltip("When enabled, chase movement follows the shared flow-field vectors instead of constantly pathing to target positions.")]
+    public bool useFlowFieldNavigation = true;
+    [Tooltip("Distance ahead (in metres) used as a local steering destination from the current flow vector.")]
+    public float flowFieldLookAhead = 1.35f;
+    [Tooltip("How often to refresh local steering destination from flow field.")]
+    public float flowFieldSteerInterval = 0.12f;
+
     [Header("Jump (Obstacle Avoidance)")]
     [Tooltip("Height the enemy jumps when blocked (matches Player formula).")]
     public float jumpHeight       = 1.8f;
@@ -58,6 +66,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float stuckVelocityThreshold = 0.25f;
 
     [Header("Weapon")]
+    public WeaponGripSystem weaponGripSystem;
     [Tooltip("Drag the enemy's right-hand bone here in the Inspector (optional). " +
              "If null, EquipmentManager auto-detects bip_hand_R / weapon_bone_R.")]
     public Transform weaponAttachPoint;
@@ -110,6 +119,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     public Color hitFlashColor = new Color(1f, 0.3f, 0.3f, 1f);
     public AudioClip hitSound;
     public AudioClip deathSound;
+    [Tooltip("Damage-window start after attack trigger (seconds).")]
+    public float attackHitboxWindup = 0.12f;
+    [Tooltip("How long the weapon hitbox remains active during attack (seconds).")]
+    public float attackHitboxActiveTime = 0.22f;
 
     [Header("Death")]
     [Tooltip("Seconds the death animation plays before ragdoll activates.")]
@@ -149,7 +162,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private CharacterController _controller;
     private float        _attackTimer;
     private Transform    _target;
-    private bool         _lastHitByPlayer;
+    private bool         _playerDamagedThisLife;
+    private bool         _killedByPlayer;
     private RagdollController _ragdoll;
     private Vector3      _lastHitDirection;
     private Rigidbody[]  _ragdollBodies;
@@ -186,6 +200,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool _weaponAttachInProgress;
     private float _patrolTimer;
     private bool _isTraversingOffMeshLink;
+    private float _flowFieldSteerTimer;
+    private Coroutine _attackHitboxRoutine;
+    private WeaponHitbox _equippedWeaponHitbox;
 
     // Position-delta velocity (same technique the PlayerController uses)
     private Vector3 _lastFramePosition;
@@ -285,7 +302,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 5f, NavMesh.AllAreas))
                 _agent.Warp(hit.position);
             else
-                _agent.Warp(transform.position);
+                _agent.enabled = false;
         }
 
         _ragdoll = GetComponent<RagdollController>();
@@ -323,6 +340,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void Update()
     {
         if (_state == State.Dead) return;
+        TryRecoverAgentOnNavMesh();
 
         _attackTimer -= Time.deltaTime;
 
@@ -369,7 +387,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     //
     private void UpdateIdle()
     {
-        if (_agent != null && _agent.enabled)
+        if (IsAgentReady())
             _agent.isStopped = true;
 
         // Immediately react to any valid target (no wait for scan tick).
@@ -381,7 +399,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void UpdatePatrol()
     {
-        if (_agent == null || !_agent.enabled)
+        if (!IsAgentReady())
             return;
 
         if (IsTargetValid(_target))
@@ -429,7 +447,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         // ── Drive the agent directly ────────────────────────────────────────
-        if (_agent != null && _agent.enabled)
+        if (IsAgentReady())
         {
             if (_agent.isStopped) _agent.isStopped = false;
 
@@ -466,16 +484,23 @@ public class EnemyController : MonoBehaviour, IDamageable
             //   • pathPending guard removed: re-issuing SetDestination while a
             //     path is computing is safe on Unity 6 and overwrites the pending
             //     request with the fresher target position.
-            bool needsPath =
-                !_agent.hasPath ||
-                _agent.pathStatus == NavMeshPathStatus.PathInvalid ||
-                (_agent.destination - _target.position).sqrMagnitude > 0.04f;
-
-            if (needsPath)
+            if (useFlowFieldNavigation && FlowFieldManager.Instance != null)
             {
-                bool setDirect = _agent.SetDestination(_target.position);
-                if (!setDirect || _agent.pathStatus == NavMeshPathStatus.PathInvalid)
-                    TrySetDestinationNearTarget();
+                DriveChaseWithFlowField();
+            }
+            else
+            {
+                bool needsPath =
+                    !_agent.hasPath ||
+                    _agent.pathStatus == NavMeshPathStatus.PathInvalid ||
+                    (_agent.destination - _target.position).sqrMagnitude > 0.04f;
+
+                if (needsPath)
+                {
+                    bool setDirect = _agent.SetDestination(_target.position);
+                    if (!setDirect || _agent.pathStatus == NavMeshPathStatus.PathInvalid)
+                        TrySetDestinationNearTarget();
+                }
             }
         }
 
@@ -494,7 +519,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        if (_agent != null && _agent.enabled)
+        if (IsAgentReady())
         {
             _agent.isStopped = true;
             // Zero velocity so the agent stops IMMEDIATELY — no drift-slide
@@ -529,7 +554,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         _flinchTimer -= Time.deltaTime;
 
-        if (_agent != null && _agent.enabled)
+        if (IsAgentReady())
         {
             _agent.isStopped = true;
             _agent.velocity  = Vector3.zero;
@@ -548,7 +573,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void CheckAndJumpIfStuck()
     {
-        if (_agent == null || !_agent.enabled || !_agent.hasPath) return;
+        if (!IsAgentReady() || !_agent.hasPath) return;
 
         float speed = _agent.velocity.magnitude;
         if (speed > stuckVelocityThreshold)
@@ -626,7 +651,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (_agent != null)
             {
                 _agent.enabled = true;
-                _agent.Warp(transform.position);
+                if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 4f, NavMesh.AllAreas))
+                    _agent.Warp(hit.position);
             }
             // NOTE: do NOT re-enable _controller — it would fight the agent
             // (the same hybrid that caused the original sluggish/jitter bug).
@@ -644,7 +670,14 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (_target == null) return;
 
+        if (_attackHitboxRoutine != null)
+            StopCoroutine(_attackHitboxRoutine);
+        _attackHitboxRoutine = StartCoroutine(AttackHitboxWindowRoutine());
+
         // Use IDamageable so we can hit player OR enemy without type-checking
+        if (_equippedWeaponHitbox != null)
+            return; // collider-driven damage path
+
         IDamageable target = _target.GetComponentInParent<IDamageable>();
         if (target != null && target.IsAlive)
         {
@@ -657,10 +690,54 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (actor != null) actor.TakeDamage((int)attackDamage);
     }
 
+    private void DriveChaseWithFlowField()
+    {
+        if (!IsAgentReady())
+            return;
+
+        _flowFieldSteerTimer -= Time.deltaTime;
+        if (_flowFieldSteerTimer > 0f)
+            return;
+
+        _flowFieldSteerTimer = Mathf.Max(0.03f, flowFieldSteerInterval);
+        Vector3 flowDir = FlowFieldManager.Instance.GetFlowDirection(transform.position);
+        if (flowDir.sqrMagnitude < 0.001f)
+        {
+            if (_target != null)
+                _agent.SetDestination(_target.position);
+            return;
+        }
+
+        Vector3 steerTarget = transform.position + flowDir.normalized * Mathf.Max(0.5f, flowFieldLookAhead);
+        if (NavMesh.SamplePosition(steerTarget, out NavMeshHit hit, 1.8f, NavMesh.AllAreas))
+            _agent.SetDestination(hit.position);
+        else
+            _agent.SetDestination(steerTarget);
+    }
+
+    private IEnumerator AttackHitboxWindowRoutine()
+    {
+        if (_equippedWeaponHitbox == null)
+            yield break;
+
+        _equippedWeaponHitbox.DisableHitbox();
+
+        if (attackHitboxWindup > 0f)
+            yield return new WaitForSeconds(attackHitboxWindup);
+
+        _equippedWeaponHitbox.EnableHitbox();
+
+        if (attackHitboxActiveTime > 0f)
+            yield return new WaitForSeconds(attackHitboxActiveTime);
+
+        _equippedWeaponHitbox.DisableHitbox();
+        _attackHitboxRoutine = null;
+    }
+
     public void TakeDamage(int amount, bool byPlayer = false)
     {
         if (_state == State.Dead) return;
-        if (byPlayer) _lastHitByPlayer = true;
+        if (byPlayer) _playerDamagedThisLife = true;
 
         _currentHealth -= amount;
 
@@ -669,14 +746,18 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             _flinchTimer = flinchDuration;
             TransitionTo(State.Flinch);
-            if (_agent != null && _agent.enabled) _agent.ResetPath();
+            if (IsAgentReady()) _agent.ResetPath();
         }
 
         ApplyHitFlash();
         SetAnimatorTrigger(HashHit);
         PlayHitSound();
 
-        if (_currentHealth <= 0) Die();
+        if (_currentHealth <= 0)
+        {
+            _killedByPlayer = byPlayer;
+            Die();
+        }
     }
 
     // ── IDamageable ─────────────────────────────────────────────────────────
@@ -715,7 +796,15 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         bool fromPlayer = attackerRoot != null
                        && attackerRoot.GetComponentInParent<PlayerHealth>() != null;
-        TakeDamage(amount, byPlayer: fromPlayer);
+
+        int appliedDamage = Mathf.Max(1, amount);
+        if (fromPlayer && GameManager.Instance != null)
+        {
+            int hitsToKill = Mathf.Max(1, GameManager.Instance.GetEnemyHitsToKillByPlayer());
+            appliedDamage = Mathf.Max(1, Mathf.CeilToInt((float)maxHealth / hitsToKill));
+        }
+
+        TakeDamage(appliedDamage, byPlayer: fromPlayer);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -729,6 +818,13 @@ public class EnemyController : MonoBehaviour, IDamageable
         _state = State.Dead;
         CancelInvoke(nameof(EnableRagdoll));
         CancelInvoke(nameof(FreezeRagdoll));
+        if (_attackHitboxRoutine != null)
+        {
+            StopCoroutine(_attackHitboxRoutine);
+            _attackHitboxRoutine = null;
+        }
+        if (_equippedWeaponHitbox != null)
+            _equippedWeaponHitbox.DisableHitbox();
 
         // Stop target scan coroutine — no point scanning when dead
         if (_scanCoroutine != null)
@@ -739,7 +835,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         // Notify GameManager FIRST so enemy count updates correctly (Issue #5)
         if (GameManager.Instance != null)
-            GameManager.Instance.EnemyKilled(_lastHitByPlayer);
+            GameManager.Instance.EnemyKilled(
+                byPlayer: _killedByPlayer,
+                assistedByPlayer: !_killedByPlayer && _playerDamagedThisLife);
 
         // Stop all navigation immediately
         if (_rb != null)    _rb.isKinematic = true;
@@ -752,7 +850,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Play death sound
         if (_audio != null)
         {
-            if (deathSound != null) _audio.PlayOneShot(deathSound);
+            if (deathSound != null) _audio.PlayOneShot(deathSound, AudioSettingsRuntime.ScaledSfx(1f));
             else PlayProceduralSound(200f, 0.4f);
         }
 
@@ -1128,7 +1226,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void PlayHitSound()
     {
         if (_audio == null) return;
-        if (hitSound != null) _audio.PlayOneShot(hitSound, 0.7f);
+        if (hitSound != null) _audio.PlayOneShot(hitSound, AudioSettingsRuntime.ScaledSfx(0.7f));
         else PlayProceduralSound(800f, 0.08f);
     }
 
@@ -1146,7 +1244,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             samples[i]     = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.3f;
         }
         clip.SetData(samples, 0);
-        _audio.PlayOneShot(clip, 0.5f);
+        _audio.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(0.5f));
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1208,7 +1306,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         State prevState = _state;
         _state = newState;
 
-        if (_agent == null || !_agent.enabled) return;
+        if (!IsAgentReady()) return;
 
         switch (newState)
         {
@@ -1369,7 +1467,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void SetRandomPatrolDestination()
     {
-        if (_agent == null || !_agent.enabled)
+        if (!IsAgentReady())
             return;
 
         Vector3 random = transform.position + Random.insideUnitSphere * patrolRadius;
@@ -1381,7 +1479,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private bool HandleOffMeshLinkTraversal()
     {
-        if (_agent == null || !_agent.enabled || _isTraversingOffMeshLink)
+        if (!IsAgentReady() || _isTraversingOffMeshLink)
             return false;
 
         if (!_agent.isOnOffMeshLink)
@@ -1394,7 +1492,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private IEnumerator TraverseOffMeshLink()
     {
         _isTraversingOffMeshLink = true;
-        if (_agent == null || !_agent.enabled)
+        if (!IsAgentReady())
         {
             _isTraversingOffMeshLink = false;
             yield break;
@@ -1484,12 +1582,32 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void TrySetDestinationNearTarget()
     {
-        if (_agent == null || !_agent.enabled || _target == null)
+        if (!IsAgentReady() || _target == null)
             return;
 
         Vector3 targetPos = _target.position;
         if (NavMesh.SamplePosition(targetPos, out NavMeshHit hit, 4.5f, NavMesh.AllAreas))
             _agent.SetDestination(hit.position);
+    }
+
+    private bool IsAgentReady()
+    {
+        return _agent != null && _agent.enabled && _agent.isOnNavMesh;
+    }
+
+    private void TryRecoverAgentOnNavMesh()
+    {
+        if (_agent == null)
+            return;
+
+        if (!_agent.enabled)
+            _agent.enabled = true;
+
+        if (_agent.isOnNavMesh)
+            return;
+
+        if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 8f, NavMesh.AllAreas))
+            _agent.Warp(hit.position);
     }
 
     private Transform FindNearestLivingEnemy()
@@ -1537,8 +1655,28 @@ public class EnemyController : MonoBehaviour, IDamageable
             Destroy(equippedWeaponObject);
             equippedWeaponObject = null;
         }
+        _equippedWeaponHitbox = null;
         _activeWeaponSocket   = null;
         _activeWeaponHandBone = null;
+
+        if (weaponGripSystem != null)
+        {
+            equippedWeaponObject = weaponGripSystem.AttachWeapon(
+                characterRoot: gameObject,
+                weaponPrefab: weaponPrefab,
+                isPlayer: false,
+                level: level,
+                damage: Mathf.RoundToInt(attackDamage));
+
+            if (equippedWeaponObject != null)
+            {
+                _equippedWeaponHitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
+                _equippedWeaponPrefab = weaponPrefab;
+                _equippedWeaponLevel = level;
+                _weaponAttachInProgress = false;
+                return;
+            }
+        }
 
         // ── Resolve level and pull ALL grip data from the catalog. ───────────
         // This makes AttachWeaponToHand the single source of truth for enemy
@@ -1668,6 +1806,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
         if (hitbox == null) hitbox = equippedWeaponObject.AddComponent<WeaponHitbox>();
         hitbox.damage = (int)attackDamage;
+        hitbox.DisableHitbox();
+        _equippedWeaponHitbox = hitbox;
 
         // ── 9. Visibility fix (URP) ─────────────────────────────────────────
         if (equippedWeaponObject.GetComponent<WeaponVisibilityFix>() == null)

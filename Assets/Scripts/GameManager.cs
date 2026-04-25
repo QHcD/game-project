@@ -119,9 +119,11 @@ public class GameManager : MonoBehaviour
     /// Gives the player time to watch the final enemy fall. Tweak in Inspector.
     /// </summary>
     [SerializeField] private float victoryDelaySeconds = 2.5f;
+    [SerializeField] private float loadingScreenMinSeconds = 5.5f;
 
     /// <summary>Guards against LevelComplete being triggered more than once per level.</summary>
     private bool _levelCompleteTriggered = false;
+    private Coroutine _sceneLoadRoutine;
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
     void Awake()
@@ -179,8 +181,17 @@ public class GameManager : MonoBehaviour
     // ── Settings setters ─────────────────────────────────────────────────────
     public void SetDifficulty(string diff)
     {
-        difficulty = diff;
-        PlayerPrefs.SetString("Difficulty", diff);
+        string normalized = string.IsNullOrWhiteSpace(diff) ? "Normal" : diff.Trim();
+        if (normalized.Equals("easy", System.StringComparison.OrdinalIgnoreCase))
+            normalized = "Easy";
+        else if (normalized.Equals("hard", System.StringComparison.OrdinalIgnoreCase))
+            normalized = "Hard";
+        else
+            normalized = "Normal";
+
+        difficulty = normalized;
+        PlayerPrefs.SetString("Difficulty", normalized);
+        PlayerPrefs.Save();
     }
 
     public void SetSelectedMap(ArenaMap map)
@@ -226,7 +237,7 @@ public class GameManager : MonoBehaviour
         score = 0;
         SetCurrentLevel(level);
         PendingMenuScreen = MenuScreen.MainMenu;
-        SceneManager.LoadScene("GameScene");
+        BeginSceneLoad("GameScene");
     }
 
     public void ReplayCurrentLevel()
@@ -234,7 +245,7 @@ public class GameManager : MonoBehaviour
         Time.timeScale = 1f;
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
-        SceneManager.LoadScene("GameScene");
+        BeginSceneLoad("GameScene");
     }
 
     public void SetCurrentLevel(int level)
@@ -312,13 +323,35 @@ public class GameManager : MonoBehaviour
     /// (kills >= totalEnemiesSpawned), preventing premature level-complete
     /// if counters were in an uninitialized state.
     /// </summary>
-    public void EnemyKilled(bool byPlayer = false)
+    public int GetPlayerHitsToKill()
+    {
+        switch (difficulty)
+        {
+            case "Easy": return 3;
+            case "Hard": return 7;
+            default:     return 5;
+        }
+    }
+
+    public int GetEnemyHitsToKillByPlayer()
+    {
+        switch (difficulty)
+        {
+            case "Easy": return 3;
+            case "Hard": return 7;
+            default:     return 5;
+        }
+    }
+
+    public void EnemyKilled(bool byPlayer = false, bool assistedByPlayer = false)
     {
         enemiesKilledThisLevel++;
         enemiesRemaining = Mathf.Max(0, enemiesRemaining - 1);
 
         if (byPlayer)
             AddScore(100);
+        else if (assistedByPlayer)
+            AddScore(50);
 
         if (HUDManager.Instance != null)
         {
@@ -328,6 +361,12 @@ public class GameManager : MonoBehaviour
             {
                 HUDManager.Instance.UpdateScore(score);
                 HUDManager.Instance.RegisterKill();
+                HUDManager.Instance.ShowXpPopup(100, "KILL");
+            }
+            else if (assistedByPlayer)
+            {
+                HUDManager.Instance.UpdateScore(score);
+                HUDManager.Instance.ShowXpPopup(50, "ASSIST");
             }
         }
 
@@ -394,7 +433,7 @@ public class GameManager : MonoBehaviour
 
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
-        SceneManager.LoadScene("GameScene");
+        BeginSceneLoad("GameScene");
     }
 
     public void GameOver()
@@ -433,5 +472,57 @@ public class GameManager : MonoBehaviour
         enemiesKilledThisLevel   = 0;
         enemiesRemaining         = 0;
         _levelCompleteTriggered  = false;   // ← allow the next level to trigger
+    }
+
+    private void BeginSceneLoad(string sceneName)
+    {
+        if (!isActiveAndEnabled)
+        {
+            SceneManager.LoadScene(sceneName);
+            return;
+        }
+
+        if (_sceneLoadRoutine != null)
+            StopCoroutine(_sceneLoadRoutine);
+
+        _sceneLoadRoutine = StartCoroutine(LoadSceneWithLoadingScreen(sceneName));
+    }
+
+    private IEnumerator LoadSceneWithLoadingScreen(string sceneName)
+    {
+        LoadingScreenUI loadingUi = LoadingScreenUI.CreateOrGet();
+        loadingUi.SetLabel("LOADING");
+
+        float minDuration = Mathf.Max(0.1f, loadingScreenMinSeconds);
+        float start = Time.unscaledTime;
+
+        AsyncOperation op = SceneManager.LoadSceneAsync(sceneName);
+        if (op == null)
+        {
+            loadingUi.DestroySelf();
+            _sceneLoadRoutine = null;
+            yield break;
+        }
+
+        op.allowSceneActivation = false;
+
+        while (true)
+        {
+            bool minTimeDone = (Time.unscaledTime - start) >= minDuration;
+            bool sceneReady = op.progress >= 0.9f;
+            if (minTimeDone && sceneReady)
+                break;
+            yield return null;
+        }
+
+        op.allowSceneActivation = true;
+        while (!op.isDone)
+            yield return null;
+
+        yield return null; // allow scene first frame to settle
+        if (loadingUi != null)
+            loadingUi.DestroySelf();
+
+        _sceneLoadRoutine = null;
     }
 }
