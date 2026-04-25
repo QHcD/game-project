@@ -198,6 +198,17 @@ public class HUDManager : MonoBehaviour
         }
     }
 
+    public void ShowXpPopup(int xpAmount, string eventLabel = "")
+    {
+        if (killFeedText == null)
+            return;
+
+        string suffix = string.IsNullOrWhiteSpace(eventLabel) ? string.Empty : " " + eventLabel.ToUpperInvariant();
+        killFeedText.text = $"+{Mathf.Max(0, xpAmount)} XP{suffix}";
+        killFeedText.alpha = 1f;
+        killFeedTimer = 1.8f;
+    }
+
     private void TickKillFeed()
     {
         if (killFeedText == null || killFeedTimer <= 0f)

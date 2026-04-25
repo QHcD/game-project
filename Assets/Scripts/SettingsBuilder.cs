@@ -52,7 +52,7 @@ public class SettingsBuilder : MonoBehaviour
 
         ApplyGraphicsQuality();
         Screen.fullScreen = isFullscreen;
-        AudioListener.volume = PlayerPrefs.GetFloat("MasterVol", 0.8f);
+        AudioSettingsRuntime.ApplyListenerVolume();
     }
 
     Vector2Int[] BuildResolutionOptions()
@@ -118,12 +118,12 @@ public class SettingsBuilder : MonoBehaviour
         outline.effectDistance = new Vector2(2f, -2f);
         SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 520f), new Vector2(0f, -10f));
 
-        masterSlider = MakeSliderRow(panel.transform, "MASTER VOLUME:", 150f, "MasterVol", value =>
+        masterSlider = MakeSliderRow(panel.transform, "MASTER VOLUME:", 150f, AudioSettingsRuntime.MasterKey, value =>
         {
-            AudioListener.volume = value;
+            AudioSettingsRuntime.ApplyListenerVolume();
         });
-        musicSlider = MakeSliderRow(panel.transform, "MUSIC VOLUME:", 75f, "MusicVol", null);
-        sfxSlider = MakeSliderRow(panel.transform, "SFX VOLUME:", 0f, "SFXVol", null);
+        musicSlider = MakeSliderRow(panel.transform, "MUSIC VOLUME:", 75f, AudioSettingsRuntime.MusicKey, null);
+        sfxSlider = MakeSliderRow(panel.transform, "SFX VOLUME:", 0f, AudioSettingsRuntime.SfxKey, null);
 
         resolutionDropdown = MakeDropdownRow(panel.transform, "RESOLUTION:", BuildResolutionLabels(), currentResIndex, -80f, OnResolutionChanged);
         graphicsDropdown = MakeDropdownRow(panel.transform, "GRAPHICS:", new List<string>(graphicsOptions), currentGraphicsIndex, -155f, OnGraphicsChanged);
@@ -166,10 +166,10 @@ public class SettingsBuilder : MonoBehaviour
         if (sfxSlider != null)
             sfxSlider.SetValueWithoutNotify(0.8f);
 
-        PlayerPrefs.SetFloat("MasterVol", 0.8f);
-        PlayerPrefs.SetFloat("MusicVol", 0.8f);
-        PlayerPrefs.SetFloat("SFXVol", 0.8f);
-        AudioListener.volume = 0.8f;
+        PlayerPrefs.SetFloat(AudioSettingsRuntime.MasterKey, 0.8f);
+        PlayerPrefs.SetFloat(AudioSettingsRuntime.MusicKey, 0.8f);
+        PlayerPrefs.SetFloat(AudioSettingsRuntime.SfxKey, 0.8f);
+        AudioSettingsRuntime.ApplyListenerVolume();
 
         if (resolutionDropdown != null)
         {

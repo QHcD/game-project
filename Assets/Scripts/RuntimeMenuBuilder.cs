@@ -16,6 +16,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
     void Start()
     {
+        AudioSettingsRuntime.ApplyListenerVolume();
         customFont = ResolveMenuFont();
         EnsureEventSystem();
         BuildCurrentScreen();
@@ -560,7 +561,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         lobbyAudioSource.clip = clip;
         lobbyAudioSource.loop = true;
-        lobbyAudioSource.volume = 0.5f;
+        lobbyAudioSource.volume = AudioSettingsRuntime.ScaledMusic(0.5f);
         lobbyAudioSource.playOnAwake = false;
 
         if (!lobbyAudioSource.isPlaying)

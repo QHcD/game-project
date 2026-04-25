@@ -101,7 +101,16 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
-        // Delegate to the existing float-based TakeDamage
+        bool fromEnemy = attackerRoot != null && attackerRoot.GetComponentInParent<EnemyController>() != null;
+        if (fromEnemy && GameManager.Instance != null)
+        {
+            int hitsToKill = Mathf.Max(1, GameManager.Instance.GetPlayerHitsToKill());
+            float perHitDamage = maxHealth / hitsToKill;
+            TakeDamage(perHitDamage);
+            return;
+        }
+
+        // Delegate to the existing float-based TakeDamage for non-enemy sources.
         TakeDamage((float)amount);
     }
 

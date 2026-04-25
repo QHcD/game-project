@@ -204,6 +204,7 @@ public class PlayerController : MonoBehaviour
 
     // Camera
     private float cameraPitch;
+    private float cameraYaw;
     private Vector3 firstPersonLocalPos;
     private Quaternion firstPersonLocalRot;
     private Camera runtimeThirdPersonCamera;
@@ -324,6 +325,7 @@ public class PlayerController : MonoBehaviour
         startPos.y = Mathf.Max(startPos.y, SafeFallbackSpawn.y);
         transform.position = startPos;
         transform.rotation = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
+        cameraYaw = transform.eulerAngles.y;
         if (controller != null) controller.enabled = true;
         verticalVelocity.y = -2f;
 
@@ -598,6 +600,7 @@ public class PlayerController : MonoBehaviour
         transform.position = position;
         if (controller != null) controller.enabled = true;
         verticalVelocity = Vector3.zero;
+        cameraYaw = transform.eulerAngles.y;
 
         if (runtimeThirdPersonCamera != null)
         {
@@ -627,13 +630,14 @@ public class PlayerController : MonoBehaviour
 
         // First-person camera is permanently disabled — no pitch update needed.
 
-        transform.Rotate(Vector3.up * mouseX);
+        cameraYaw += mouseX;
+        transform.rotation = Quaternion.Euler(0f, cameraYaw, 0f);
 
         if (isThirdPersonActive && runtimeThirdPersonCamera != null)
         {
             CameraController orbitCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
             if (orbitCtrl != null)
-                orbitCtrl.pitch = cameraPitch * 0.45f;
+                orbitCtrl.pitch = cameraPitch;
         }
     }
 
@@ -688,7 +692,7 @@ public class PlayerController : MonoBehaviour
         if (audioSource != null && swordSwing != null)
         {
             audioSource.pitch = Random.Range(0.9f, 1.1f);
-            audioSource.PlayOneShot(swordSwing);
+            audioSource.PlayOneShot(swordSwing, AudioSettingsRuntime.ScaledSfx(1f));
         }
 
         // ── Weapon callback (visuals / VFX only) ─────────────────────────────
@@ -1145,7 +1149,7 @@ public class PlayerController : MonoBehaviour
         if (audioSource != null && hitSound != null)
         {
             audioSource.pitch = 1f;
-            audioSource.PlayOneShot(hitSound);
+            audioSource.PlayOneShot(hitSound, AudioSettingsRuntime.ScaledSfx(1f));
         }
 
         if (hitEffect != null)

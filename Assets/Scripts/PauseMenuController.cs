@@ -15,9 +15,16 @@ public class PauseMenuController : MonoBehaviour
     private bool isPaused;
     private TMP_FontAsset prismFont;
 
-    private readonly float[] volumeLevels = { 0f, 0.25f, 0.5f, 0.75f, 1f };
-    private readonly string[] volumeLabels = { "MUTE", "25%", "50%", "75%", "100%" };
     private readonly string[] graphicsLabels = { "LOW", "MEDIUM", "HIGH" };
+
+    private Slider masterVolumeSlider;
+    private Slider musicVolumeSlider;
+    private Slider sfxVolumeSlider;
+
+    private void Awake()
+    {
+        AudioSettingsRuntime.ApplyListenerVolume();
+    }
 
     private void Update()
     {
@@ -170,11 +177,18 @@ public class PauseMenuController : MonoBehaviour
         CreateLabel(parent, "SETTINGS", 56f, new Color(0.78f, 0.84f, 1f, 1f), new Vector2(0f, 258f), new Vector2(500f, 76f), true);
         CreateLabel(parent, "TUNE DISPLAY AND AUDIO, THEN DROP RIGHT BACK INTO THE MATCH.", 20f, new Color(0.72f, 0.84f, 1f, 0.88f), new Vector2(0f, 208f), new Vector2(690f, 34f), false);
 
-        CreateCycleRow(parent, "MASTER VOL", new Vector2(0f, 92f), GetMasterVolumeLabel, CycleMasterVolume);
-        CreateCycleRow(parent, "GRAPHICS", new Vector2(0f, 4f), GetGraphicsLabel, CycleGraphics);
-        CreateCycleRow(parent, "FULLSCREEN", new Vector2(0f, -84f), GetFullscreenLabel, ToggleFullscreen);
+        masterVolumeSlider = CreateSliderRow(parent, "MASTER VOL", new Vector2(0f, 104f), AudioSettingsRuntime.MasterKey, value =>
+        {
+            AudioSettingsRuntime.ApplyListenerVolume();
+        });
 
-        CreateButton(parent, "RETURN", new Vector2(0f, -238f), () => ShowPanel(mainPanel));
+        musicVolumeSlider = CreateSliderRow(parent, "MUSIC VOL", new Vector2(0f, 24f), AudioSettingsRuntime.MusicKey, null);
+        sfxVolumeSlider = CreateSliderRow(parent, "SFX VOL", new Vector2(0f, -56f), AudioSettingsRuntime.SfxKey, null);
+
+        CreateCycleRow(parent, "GRAPHICS", new Vector2(0f, -136f), GetGraphicsLabel, CycleGraphics);
+        CreateCycleRow(parent, "FULLSCREEN", new Vector2(0f, -214f), GetFullscreenLabel, ToggleFullscreen);
+
+        CreateButton(parent, "RETURN", new Vector2(0f, -292f), () => ShowPanel(mainPanel));
     }
 
     private void CreateCycleRow(Transform parent, string label, Vector2 position, System.Func<string> getValue, UnityEngine.Events.UnityAction onCycle)
@@ -190,6 +204,98 @@ public class PauseMenuController : MonoBehaviour
 
         CreateLabel(row.transform, label, 26f, Color.white, new Vector2(-190f, 0f), new Vector2(320f, 42f), false, TextAlignmentOptions.MidlineRight);
         CreateButton(row.transform, getValue(), new Vector2(148f, 0f), onCycle, new Vector2(320f, 60f), getValue);
+    }
+
+    private Slider CreateSliderRow(
+        Transform parent,
+        string label,
+        Vector2 position,
+        string prefKey,
+        UnityEngine.Events.UnityAction<float> onChanged)
+    {
+        GameObject row = new GameObject("Row_" + label);
+        row.transform.SetParent(parent, false);
+        RectTransform rowRect = row.AddComponent<RectTransform>();
+        rowRect.anchorMin = new Vector2(0.5f, 0.5f);
+        rowRect.anchorMax = new Vector2(0.5f, 0.5f);
+        rowRect.pivot = new Vector2(0.5f, 0.5f);
+        rowRect.sizeDelta = new Vector2(700f, 60f);
+        rowRect.anchoredPosition = position;
+
+        CreateLabel(row.transform, label, 24f, Color.white, new Vector2(-190f, 0f), new Vector2(320f, 42f), false, TextAlignmentOptions.MidlineRight);
+
+        GameObject sliderObj = new GameObject("Slider_" + label);
+        sliderObj.transform.SetParent(row.transform, false);
+        Image sliderBackground = sliderObj.AddComponent<Image>();
+        sliderBackground.color = new Color(0.94f, 0.94f, 0.96f, 1f);
+        RectTransform sliderRect = sliderObj.GetComponent<RectTransform>();
+        sliderRect.anchorMin = new Vector2(0.5f, 0.5f);
+        sliderRect.anchorMax = new Vector2(0.5f, 0.5f);
+        sliderRect.pivot = new Vector2(0.5f, 0.5f);
+        sliderRect.sizeDelta = new Vector2(320f, 18f);
+        sliderRect.anchoredPosition = new Vector2(150f, 0f);
+
+        Slider slider = sliderObj.AddComponent<Slider>();
+        slider.direction = Slider.Direction.LeftToRight;
+        slider.minValue = 0f;
+        slider.maxValue = 1f;
+
+        GameObject fillArea = new GameObject("FillArea");
+        fillArea.transform.SetParent(sliderObj.transform, false);
+        RectTransform fillAreaRect = fillArea.AddComponent<RectTransform>();
+        fillAreaRect.anchorMin = Vector2.zero;
+        fillAreaRect.anchorMax = Vector2.one;
+        fillAreaRect.offsetMin = Vector2.zero;
+        fillAreaRect.offsetMax = new Vector2(-18f, 0f);
+
+        GameObject fill = new GameObject("Fill");
+        fill.transform.SetParent(fillArea.transform, false);
+        Image fillImage = fill.AddComponent<Image>();
+        fillImage.color = new Color(0.58f, 0.32f, 0.94f, 1f);
+        RectTransform fillRect = fill.GetComponent<RectTransform>();
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = Vector2.one;
+        fillRect.offsetMin = Vector2.zero;
+        fillRect.offsetMax = Vector2.zero;
+
+        GameObject handle = new GameObject("Handle");
+        handle.transform.SetParent(sliderObj.transform, false);
+        Image handleImage = handle.AddComponent<Image>();
+        handleImage.color = Color.white;
+        RectTransform handleRect = handle.GetComponent<RectTransform>();
+        handleRect.sizeDelta = new Vector2(18f, 28f);
+
+        slider.fillRect = fillRect;
+        slider.handleRect = handleRect;
+        slider.targetGraphic = handleImage;
+        slider.SetValueWithoutNotify(Mathf.Clamp01(PlayerPrefs.GetFloat(prefKey, 0.8f)));
+        slider.onValueChanged.AddListener(value =>
+        {
+            PlayerPrefs.SetFloat(prefKey, value);
+            PlayerPrefs.Save();
+            onChanged?.Invoke(value);
+        });
+
+        TextMeshProUGUI valueLabel = new GameObject("Val_" + label).AddComponent<TextMeshProUGUI>();
+        valueLabel.transform.SetParent(row.transform, false);
+        valueLabel.fontSize = 20f;
+        valueLabel.color = new Color(0.82f, 0.90f, 1f, 0.92f);
+        valueLabel.alignment = TextAlignmentOptions.MidlineLeft;
+        if (prismFont != null)
+            valueLabel.font = prismFont;
+        RectTransform valueRect = valueLabel.rectTransform;
+        valueRect.anchorMin = new Vector2(0.5f, 0.5f);
+        valueRect.anchorMax = new Vector2(0.5f, 0.5f);
+        valueRect.pivot = new Vector2(0f, 0.5f);
+        valueRect.sizeDelta = new Vector2(90f, 30f);
+        valueRect.anchoredPosition = new Vector2(320f, 0f);
+        valueLabel.text = Mathf.RoundToInt(slider.value * 100f) + "%";
+        slider.onValueChanged.AddListener(value =>
+        {
+            valueLabel.text = Mathf.RoundToInt(value * 100f) + "%";
+        });
+
+        return slider;
     }
 
     private void CreateButton(Transform parent, string text, Vector2 position, UnityEngine.Events.UnityAction action)
@@ -344,44 +450,6 @@ public class PauseMenuController : MonoBehaviour
             PlayerPrefs.SetInt("MovementScheme", (int)next);
             PlayerPrefs.Save();
         }
-    }
-
-    private string GetMasterVolumeLabel()
-    {
-        float volume = PlayerPrefs.GetFloat("MasterVol", 0.8f);
-        int index = 0;
-        float smallestDifference = float.MaxValue;
-        for (int i = 0; i < volumeLevels.Length; i++)
-        {
-            float difference = Mathf.Abs(volume - volumeLevels[i]);
-            if (difference < smallestDifference)
-            {
-                smallestDifference = difference;
-                index = i;
-            }
-        }
-
-        return volumeLabels[index];
-    }
-
-    private void CycleMasterVolume()
-    {
-        float current = PlayerPrefs.GetFloat("MasterVol", 0.8f);
-        int index = 0;
-        for (int i = 0; i < volumeLevels.Length; i++)
-        {
-            if (Mathf.Abs(current - volumeLevels[i]) < 0.01f)
-            {
-                index = i;
-                break;
-            }
-        }
-
-        int nextIndex = (index + 1) % volumeLevels.Length;
-        float next = volumeLevels[nextIndex];
-        PlayerPrefs.SetFloat("MasterVol", next);
-        PlayerPrefs.Save();
-        AudioListener.volume = next;
     }
 
     private string GetGraphicsLabel()
