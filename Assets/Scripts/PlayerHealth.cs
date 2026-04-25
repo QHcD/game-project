@@ -24,6 +24,7 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     // ── Internal state ──
     private float timeSinceLastDamage;
     private bool isRegenerating;
+    private string _lastAttackerStatsId;
 
     private void Awake()
     {
@@ -32,6 +33,9 @@ public class PlayerHealth : MonoBehaviour, IDamageable
             currentHealth = maxHealth;
 
         timeSinceLastDamage = regenDelay + 1f; // Start fully healed, no regen needed
+
+        if (MatchStatsManager.Instance != null)
+            MatchStatsManager.Instance.RegisterCombatant(MatchStatsManager.BuildCombatantId(this), "PLAYER", isPlayer: true);
     }
 
     private void Update()
@@ -84,6 +88,12 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         if (currentHealth <= 0f)
         {
+            if (MatchStatsManager.Instance != null)
+            {
+                MatchStatsManager.Instance.MarkEliminated(MatchStatsManager.BuildCombatantId(this));
+                MatchStatsManager.Instance.RecordKill(_lastAttackerStatsId);
+            }
+
             if (GameManager.Instance != null)
             {
                 GameManager.Instance.playerTookDamage = true;
@@ -101,6 +111,13 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        if (attackerRoot != null)
+        {
+            EnemyController attackerEnemy = attackerRoot.GetComponentInParent<EnemyController>();
+            if (attackerEnemy != null)
+                _lastAttackerStatsId = MatchStatsManager.BuildCombatantId(attackerEnemy);
+        }
+
         bool fromEnemy = attackerRoot != null && attackerRoot.GetComponentInParent<EnemyController>() != null;
         if (fromEnemy && GameManager.Instance != null)
         {

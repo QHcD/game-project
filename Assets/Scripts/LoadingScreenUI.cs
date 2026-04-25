@@ -1,4 +1,5 @@
 using TMPro;
+using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -9,8 +10,10 @@ public class LoadingScreenUI : MonoBehaviour
 {
     private Canvas _canvas;
     private TextMeshProUGUI _loadingLabel;
+    private Image _backgroundImage;
     private Image _dimOverlay;
     private float _startTime;
+    private static Sprite _cachedLoadingSprite;
 
     public static LoadingScreenUI CreateOrGet()
     {
@@ -56,8 +59,18 @@ public class LoadingScreenUI : MonoBehaviour
 
         GameObject overlayObject = new GameObject("Overlay");
         overlayObject.transform.SetParent(transform, false);
-        _dimOverlay = overlayObject.AddComponent<Image>();
-        _dimOverlay.color = new Color(0.02f, 0.03f, 0.05f, 0.98f);
+        _backgroundImage = overlayObject.AddComponent<Image>();
+        _backgroundImage.color = Color.white;
+        _backgroundImage.sprite = LoadLoadingSprite();
+        _backgroundImage.preserveAspect = false;
+        Stretch(_backgroundImage.rectTransform);
+
+        GameObject dimObject = new GameObject("DimOverlay");
+        dimObject.transform.SetParent(transform, false);
+        _dimOverlay = dimObject.AddComponent<Image>();
+        _dimOverlay.color = _backgroundImage.sprite != null
+            ? new Color(0.02f, 0.03f, 0.05f, 0.34f)
+            : new Color(0.02f, 0.03f, 0.05f, 0.98f);
         Stretch(_dimOverlay.rectTransform);
 
         // Soft vignette-ish accent
@@ -106,5 +119,38 @@ public class LoadingScreenUI : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = Vector2.zero;
         rect.offsetMax = Vector2.zero;
+    }
+
+    private static Sprite LoadLoadingSprite()
+    {
+        if (_cachedLoadingSprite != null)
+            return _cachedLoadingSprite;
+
+        string path = Path.Combine(Application.dataPath, "loading.png");
+        if (!File.Exists(path))
+            return null;
+
+        try
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            Texture2D texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            if (!texture.LoadImage(bytes))
+            {
+                Destroy(texture);
+                return null;
+            }
+
+            texture.name = "loading.png";
+            _cachedLoadingSprite = Sprite.Create(
+                texture,
+                new Rect(0f, 0f, texture.width, texture.height),
+                new Vector2(0.5f, 0.5f),
+                100f);
+            return _cachedLoadingSprite;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

@@ -728,14 +728,12 @@ public class LevelBuilder : MonoBehaviour
             controller.attackDamage = enemyDamage;
             controller.maxHealth   = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
 
-            // Find an open-air spawn point (not inside buildings)
+            // Find an open-air spawn point (not inside buildings) and snap the
+            // agent onto the nearest NavMesh position before it begins moving.
             Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i);
-            enemyObject.transform.position = openSpawn;
-            if (_navMeshReady && agent.isOnNavMesh)
-                agent.Warp(openSpawn);
-            else
-                agent.transform.position = openSpawn;
-            Debug.Log($"[LevelBuilder] Enemy_{i + 1} spawned at {openSpawn}");
+            Vector3 agentSpawn = ResolveAgentSpawnPosition(openSpawn);
+            PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn);
+            Debug.Log($"[LevelBuilder] Enemy_{i + 1} spawned at {agentSpawn}");
 
             // Attach the same melee weapon the player is using
             AttachWeaponToEnemy(enemyObject, currentLvl);
@@ -1388,6 +1386,44 @@ public class LevelBuilder : MonoBehaviour
             return fallbackHit.position + Vector3.up * 0.1f;
 
         return new Vector3(preferred.x, 0.1f, preferred.z);
+    }
+
+    private static Vector3 ResolveAgentSpawnPosition(Vector3 preferred)
+    {
+        if (NavMesh.SamplePosition(preferred, out NavMeshHit hit, 8f, NavMesh.AllAreas))
+            return hit.position;
+
+        return preferred;
+    }
+
+    private static void PlaceAgentOnNavMesh(NavMeshAgent agent, Transform target, Vector3 spawnPosition)
+    {
+        if (target == null)
+            return;
+
+        if (agent == null)
+        {
+            target.position = spawnPosition;
+            return;
+        }
+
+        bool wasEnabled = agent.enabled;
+        if (wasEnabled)
+            agent.enabled = false;
+
+        target.position = spawnPosition;
+
+        if (wasEnabled)
+            agent.enabled = true;
+
+        if (agent.enabled && NavMesh.SamplePosition(spawnPosition, out NavMeshHit hit, 2f, NavMesh.AllAreas))
+        {
+            agent.Warp(hit.position);
+            target.position = hit.position;
+            return;
+        }
+
+        target.position = spawnPosition;
     }
 
     private static T EnsureComponent<T>(GameObject target) where T : Component
