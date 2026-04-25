@@ -69,29 +69,29 @@ public class WeaponHitbox : MonoBehaviour
     private void OnTriggerEnter(Collider other)
     {
         if (!isActive) return;
+        if (hitboxCollider == null || !hitboxCollider.enabled) return;
 
         int id = other.gameObject.GetInstanceID();
         if (hitThisSwing.Contains(id)) return;
 
         // ── IDamageable path (player, enemy, or any future damageable) ──────
         IDamageable target = other.GetComponentInParent<IDamageable>();
-        if (target != null && target.gameObject != transform.root.gameObject)
-        {
-            if (!target.IsAlive) return;
+        if (target == null || target.gameObject == transform.root.gameObject) return;
+        if (!target.IsAlive) return;
 
-            int dmg = damage > 0 ? damage : 25;
-            target.ReceiveDamage(dmg, transform.root.gameObject);
-            hitThisSwing.Add(id);
+        // Phantom-damage guard: verify a real physical overlap with the collider
+        // before applying damage. Trigger events can fire from far-away colliders
+        // when scaled-up roots momentarily overlap on enable.
+        if (!Physics.ComputePenetration(
+                hitboxCollider, hitboxCollider.transform.position, hitboxCollider.transform.rotation,
+                other,           other.transform.position,           other.transform.rotation,
+                out _, out _))
             return;
-        }
 
-        // ── Legacy fallback: Actor base class ───────────────────────────────
-        Actor actor = other.GetComponentInParent<Actor>();
-        if (actor != null && actor.gameObject != transform.root.gameObject)
-        {
-            int dmg = damage > 0 ? damage : 25;
-            actor.TakeDamage(dmg);
-            hitThisSwing.Add(id);
-        }
+        int dmg = damage > 0 ? damage : 25;
+        target.ReceiveDamage(dmg, transform.root.gameObject);
+        hitThisSwing.Add(id);
+        return;
     }
+
 }

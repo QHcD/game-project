@@ -1,6 +1,7 @@
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.UI;
 using UnityEngine.UI;
 
@@ -23,16 +24,24 @@ public class HUDManager : MonoBehaviour
     private RawImage minimapImage;
     private RectTransform minimapArrow;
     private Texture2D minimapCircleTexture;
+    private GameObject fullMapOverlay;
+    private RawImage fullMapImage;
+    private TextMeshProUGUI fullMapHintText;
+    private GameObject scoreboardOverlay;
+    private TextMeshProUGUI scoreboardTitleText;
+    private TextMeshProUGUI scoreboardSummaryText;
+    private TextMeshProUGUI[] scoreboardEntryTexts;
     private GameObject matchFinishedOverlay;
     private bool matchFinished;
     private TMP_FontAsset prismFont;
     private Image healthFillVisual;
+    private bool isFullMapVisible;
+    private bool isScoreboardVisible;
 
     // Kill counter (CoD-style)
     private TextMeshProUGUI killCountText;
     private int killCount;
-    private float killFeedTimer;
-    private TextMeshProUGUI killFeedText;
+    private CombatUIManager combatUIManager;
 
     // Damage flash
     private Image damageFlashImage;
@@ -136,8 +145,9 @@ public class HUDManager : MonoBehaviour
             weaponText.text = playerController.equippedWeaponName.ToUpperInvariant();
         }
 
+        HandleOverlayInput();
         UpdateMinimap();
-        TickKillFeed();
+        RefreshScoreboard();
     }
 
     public void UpdateHealth(float current, float max)
@@ -188,39 +198,12 @@ public class HUDManager : MonoBehaviour
             killCountText.text = "KILLS  " + killCount;
         }
 
-        // Show kill feed popup
-        if (killFeedText != null)
-        {
-            string[] messages = { "ENEMY DOWN", "ELIMINATED", "NEUTRALIZED", "TARGET DOWN", "HOSTILE KILLED" };
-            killFeedText.text = messages[killCount % messages.Length];
-            killFeedText.alpha = 1f;
-            killFeedTimer = 2f;
-        }
     }
 
     public void ShowXpPopup(int xpAmount, string eventLabel = "")
     {
-        if (killFeedText == null)
-            return;
-
-        string suffix = string.IsNullOrWhiteSpace(eventLabel) ? string.Empty : " " + eventLabel.ToUpperInvariant();
-        killFeedText.text = $"+{Mathf.Max(0, xpAmount)} XP{suffix}";
-        killFeedText.alpha = 1f;
-        killFeedTimer = 1.8f;
-    }
-
-    private void TickKillFeed()
-    {
-        if (killFeedText == null || killFeedTimer <= 0f)
-        {
-            return;
-        }
-
-        killFeedTimer -= Time.deltaTime;
-        if (killFeedTimer <= 0.5f)
-        {
-            killFeedText.alpha = Mathf.Max(0f, killFeedTimer / 0.5f);
-        }
+        combatUIManager ??= CombatUIManager.CreateOrGet(GameObject.Find("HUDCanvas")?.transform, prismFont);
+        combatUIManager?.ShowXpPopup(xpAmount, eventLabel);
     }
 
     public void ShowDamageFlash(float damageAmount)
@@ -307,13 +290,20 @@ public class HUDManager : MonoBehaviour
 
     private void EnsureRuntimeHud()
     {
+        GameObject canvasObject = GameObject.Find("HUDCanvas");
         if (healthText != null && scoreText != null && levelText != null &&
             weaponText != null && enemyCountText != null && timerText != null && healthBar != null)
         {
+            if (canvasObject != null)
+            {
+                EnsureCombatUi(canvasObject.transform);
+                EnsureMinimap(canvasObject.transform);
+                EnsureFullMapOverlay(canvasObject.transform);
+                EnsureScoreboardOverlay(canvasObject.transform);
+            }
             return;
         }
 
-        GameObject canvasObject = GameObject.Find("HUDCanvas");
         if (canvasObject == null)
         {
             canvasObject = new GameObject("HUDCanvas");
@@ -321,12 +311,20 @@ public class HUDManager : MonoBehaviour
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             canvas.sortingOrder = 50;
 
-            CanvasScaler scaler = canvasObject.AddComponent<CanvasScaler>();
+            CanvasScaler newScaler = canvasObject.AddComponent<CanvasScaler>();
+            newScaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            newScaler.referenceResolution = new Vector2(1920f, 1080f);
+            newScaler.matchWidthOrHeight = 0.5f;
+
+            canvasObject.AddComponent<GraphicRaycaster>();
+        }
+
+        CanvasScaler scaler = canvasObject.GetComponent<CanvasScaler>();
+        if (scaler != null)
+        {
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1920f, 1080f);
             scaler.matchWidthOrHeight = 0.5f;
-
-            canvasObject.AddComponent<GraphicRaycaster>();
         }
 
         GameObject topBar = CreateImage(canvasObject.transform, "TopBar",
@@ -412,13 +410,6 @@ public class HUDManager : MonoBehaviour
         killCountText.text = "KILLS  0";
         killCountText.color = new Color(1f, 0.85f, 0.3f, 1f);
 
-        // Kill feed popup — centre screen, slightly above middle
-        killFeedText ??= CreateText(canvasObject.transform, "KillFeedText",
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 80f), new Vector2(500f, 50f),
-            32f, FontStyles.Bold, TextAlignmentOptions.Center);
-        killFeedText.color = new Color(1f, 0.35f, 0.25f, 1f);
-        killFeedText.alpha = 0f;
-
         scoreText.color = new Color(0.97f, 0.98f, 1f, 1f);
         levelText.color = new Color(0.97f, 0.98f, 1f, 1f);
         weaponText.color = new Color(0.66f, 0.88f, 1f, 1f);
@@ -426,7 +417,15 @@ public class HUDManager : MonoBehaviour
         timerText.color = new Color(0.86f, 0.92f, 1f, 1f);
         healthText.color = Color.white;
 
+        EnsureCombatUi(canvasObject.transform);
         EnsureMinimap(canvasObject.transform);
+        EnsureFullMapOverlay(canvasObject.transform);
+        EnsureScoreboardOverlay(canvasObject.transform);
+    }
+
+    private void EnsureCombatUi(Transform canvasTransform)
+    {
+        combatUIManager = CombatUIManager.CreateOrGet(canvasTransform, prismFont);
     }
 
     private GameObject CreateImage(Transform parent, string name, Color color,
@@ -528,6 +527,103 @@ public class HUDManager : MonoBehaviour
         minimapArrow = arrowObject.GetComponent<RectTransform>();
     }
 
+    private void EnsureFullMapOverlay(Transform canvasTransform)
+    {
+        fullMapOverlay = canvasTransform.Find("FullMapOverlay")?.gameObject;
+        if (fullMapOverlay == null)
+        {
+            fullMapOverlay = new GameObject("FullMapOverlay");
+            fullMapOverlay.transform.SetParent(canvasTransform, false);
+            Image backdrop = fullMapOverlay.AddComponent<Image>();
+            backdrop.color = new Color(0.02f, 0.04f, 0.08f, 0.88f);
+            Stretch(fullMapOverlay.GetComponent<RectTransform>());
+
+            GameObject frame = CreateImage(fullMapOverlay.transform, "FullMapFrame",
+                new Color(0.08f, 0.12f, 0.18f, 0.96f),
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(1040f, 760f));
+            frame.AddComponent<Outline>().effectColor = new Color(0.32f, 0.78f, 1f, 0.24f);
+
+            GameObject mapImageObject = new GameObject("FullMapImage");
+            mapImageObject.transform.SetParent(frame.transform, false);
+            fullMapImage = mapImageObject.AddComponent<RawImage>();
+            fullMapImage.color = Color.white;
+            RectTransform mapRect = mapImageObject.GetComponent<RectTransform>();
+            mapRect.anchorMin = new Vector2(0.5f, 0.5f);
+            mapRect.anchorMax = new Vector2(0.5f, 0.5f);
+            mapRect.anchoredPosition = new Vector2(0f, 18f);
+            mapRect.sizeDelta = new Vector2(920f, 620f);
+
+            fullMapHintText = CreateText(frame.transform, "FullMapHint",
+                new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 26f), new Vector2(760f, 40f),
+                24f, FontStyles.Bold, TextAlignmentOptions.Center);
+            fullMapHintText.text = "TAB  TOGGLE FULL MAP";
+            fullMapHintText.color = new Color(0.76f, 0.90f, 1f, 0.92f);
+        }
+        else
+        {
+            fullMapImage = fullMapOverlay.transform.Find("FullMapFrame/FullMapImage")?.GetComponent<RawImage>();
+            fullMapHintText = fullMapOverlay.transform.Find("FullMapFrame/FullMapHint")?.GetComponent<TextMeshProUGUI>();
+        }
+
+        fullMapOverlay.SetActive(false);
+    }
+
+    private void EnsureScoreboardOverlay(Transform canvasTransform)
+    {
+        scoreboardOverlay = canvasTransform.Find("ScoreboardOverlay")?.gameObject;
+        if (scoreboardOverlay == null)
+        {
+            scoreboardOverlay = new GameObject("ScoreboardOverlay");
+            scoreboardOverlay.transform.SetParent(canvasTransform, false);
+            Image backdrop = scoreboardOverlay.AddComponent<Image>();
+            backdrop.color = new Color(0.01f, 0.03f, 0.06f, 0.72f);
+            Stretch(scoreboardOverlay.GetComponent<RectTransform>());
+
+            GameObject panel = CreateImage(scoreboardOverlay.transform, "ScoreboardPanel",
+                new Color(0.05f, 0.08f, 0.14f, 0.95f),
+                new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-260f, 0f), new Vector2(460f, 620f));
+            panel.AddComponent<Outline>().effectColor = new Color(0.32f, 0.78f, 1f, 0.18f);
+
+            scoreboardTitleText = CreateText(panel.transform, "ScoreboardTitle",
+                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -42f), new Vector2(360f, 44f),
+                32f, FontStyles.Bold, TextAlignmentOptions.Center);
+            scoreboardTitleText.text = "MATCH STATS";
+            scoreboardTitleText.color = new Color(0.92f, 0.97f, 1f, 1f);
+
+            scoreboardSummaryText = CreateText(panel.transform, "ScoreboardSummary",
+                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -84f), new Vector2(380f, 30f),
+                18f, FontStyles.Normal, TextAlignmentOptions.Center);
+            scoreboardSummaryText.color = new Color(0.68f, 0.84f, 1f, 0.92f);
+
+            scoreboardEntryTexts = new TextMeshProUGUI[5];
+            for (int i = 0; i < scoreboardEntryTexts.Length; i++)
+            {
+                float y = -154f - (i * 86f);
+                TextMeshProUGUI entry = CreateText(panel.transform, $"ScoreboardEntry_{i + 1}",
+                    new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, y), new Vector2(390f, 58f),
+                    26f, FontStyles.Bold, TextAlignmentOptions.Left);
+                entry.color = Color.white;
+                scoreboardEntryTexts[i] = entry;
+            }
+
+            TextMeshProUGUI footer = CreateText(panel.transform, "ScoreboardFooter",
+                new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 28f), new Vector2(380f, 32f),
+                18f, FontStyles.Bold, TextAlignmentOptions.Center);
+            footer.text = "CAPS LOCK  TOGGLE LEADERBOARD";
+            footer.color = new Color(0.76f, 0.90f, 1f, 0.88f);
+        }
+        else
+        {
+            scoreboardTitleText = scoreboardOverlay.transform.Find("ScoreboardPanel/ScoreboardTitle")?.GetComponent<TextMeshProUGUI>();
+            scoreboardSummaryText = scoreboardOverlay.transform.Find("ScoreboardPanel/ScoreboardSummary")?.GetComponent<TextMeshProUGUI>();
+            scoreboardEntryTexts = new TextMeshProUGUI[5];
+            for (int i = 0; i < scoreboardEntryTexts.Length; i++)
+                scoreboardEntryTexts[i] = scoreboardOverlay.transform.Find($"ScoreboardPanel/ScoreboardEntry_{i + 1}")?.GetComponent<TextMeshProUGUI>();
+        }
+
+        scoreboardOverlay.SetActive(false);
+    }
+
     private void UpdateMinimap()
     {
         if (minimapImage == null)
@@ -543,6 +639,9 @@ public class HUDManager : MonoBehaviour
             {
                 minimapImage.texture = texture;
             }
+
+            if (fullMapImage != null && fullMapImage.texture != texture)
+                fullMapImage.texture = texture;
 
             // Update minimap camera position HERE before rendering so it tracks the player this frame
             if (playerController != null && !minimap.lockToArenaCenter)
@@ -566,6 +665,79 @@ public class HUDManager : MonoBehaviour
             // Camera now follows the player, so player is always at minimap centre
             minimapArrow.anchoredPosition = Vector2.zero;
             minimapArrow.localEulerAngles = new Vector3(0f, 0f, -playerController.transform.eulerAngles.y);
+        }
+
+        if (minimapArrow != null)
+            minimapArrow.gameObject.SetActive(!isFullMapVisible);
+    }
+
+    private void HandleOverlayInput()
+    {
+        if (Keyboard.current == null)
+            return;
+
+        if (Keyboard.current.tabKey.wasPressedThisFrame)
+            ToggleFullMap();
+
+        if (Keyboard.current.capsLockKey.wasPressedThisFrame)
+            ToggleScoreboard();
+    }
+
+    private void ToggleFullMap()
+    {
+        isFullMapVisible = !isFullMapVisible;
+        if (fullMapOverlay != null)
+            fullMapOverlay.SetActive(isFullMapVisible);
+
+        MinimapCameraFollow minimap = FindFirstObjectByType<MinimapCameraFollow>();
+        if (minimap != null)
+            minimap.SetFullMapMode(isFullMapVisible, playerController != null ? playerController.transform : null);
+    }
+
+    private void ToggleScoreboard()
+    {
+        isScoreboardVisible = !isScoreboardVisible;
+        if (scoreboardOverlay != null)
+            scoreboardOverlay.SetActive(isScoreboardVisible);
+
+        RefreshScoreboard(force: true);
+    }
+
+    private void RefreshScoreboard(bool force = false)
+    {
+        if (!force && (!isScoreboardVisible || scoreboardEntryTexts == null))
+            return;
+
+        if (scoreboardOverlay != null)
+            scoreboardOverlay.SetActive(isScoreboardVisible);
+
+        MatchStatsManager stats = MatchStatsManager.Instance;
+        if (stats == null || scoreboardEntryTexts == null)
+            return;
+
+        if (scoreboardSummaryText != null)
+            scoreboardSummaryText.text = $"TOP 5 OF {stats.GetRegisteredCombatantCount()} COMBATANTS";
+
+        var entries = stats.GetTopCombatants(scoreboardEntryTexts.Length);
+        for (int i = 0; i < scoreboardEntryTexts.Length; i++)
+        {
+            TextMeshProUGUI entryText = scoreboardEntryTexts[i];
+            if (entryText == null)
+                continue;
+
+            if (i >= entries.Count)
+            {
+                entryText.text = $"{i + 1}. ---";
+                entryText.color = new Color(0.60f, 0.72f, 0.82f, 0.72f);
+                continue;
+            }
+
+            MatchStatsManager.CombatantSnapshot entry = entries[i];
+            string status = entry.IsAlive ? "ALIVE" : "OUT";
+            entryText.text = $"{i + 1}. {entry.DisplayName}   {entry.Kills} KILLS   {status}";
+            entryText.color = entry.IsPlayer
+                ? new Color(1f, 0.84f, 0.34f, 1f)
+                : new Color(0.92f, 0.97f, 1f, entry.IsAlive ? 1f : 0.76f);
         }
     }
 

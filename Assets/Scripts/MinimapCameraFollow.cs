@@ -20,12 +20,18 @@ public class MinimapCameraFollow : MonoBehaviour
     // Orthographic size — controls how much of the arena is visible in the minimap.
     public float viewRadius = 28f;
 
+    [Tooltip("Extra padding added around the calculated arena bounds for the full-map view.")]
+    public float fullMapPadding = 12f;
+
     private RenderTexture _rt;
     private Camera _cam;
+    private Bounds _arenaBounds;
+    private bool _hasArenaBounds;
 
     private void Awake()
     {
         _cam = GetComponent<Camera>();
+        CacheArenaBounds();
         ConfigureCamera();
     }
 
@@ -42,6 +48,34 @@ public class MinimapCameraFollow : MonoBehaviour
         _cam.cullingMask = ~0; // render all layers
         _cam.depth = -2;       // render before main cameras
         _cam.enabled = false;  // HUDManager calls Render() manually — disable auto rendering
+    }
+
+    public void SetFullMapMode(bool enabled, Transform playerTarget = null)
+    {
+        CacheArenaBounds();
+
+        if (enabled)
+        {
+            lockToArenaCenter = true;
+            if (_hasArenaBounds)
+            {
+                Vector3 center = _arenaBounds.center;
+                transform.position = new Vector3(center.x, height, center.z);
+                _cam.orthographicSize = Mathf.Max(24f, Mathf.Max(_arenaBounds.extents.x, _arenaBounds.extents.z) + fullMapPadding);
+            }
+            else
+            {
+                _cam.orthographicSize = Mathf.Max(viewRadius, 42f);
+            }
+
+            transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+            return;
+        }
+
+        lockToArenaCenter = false;
+        _cam.orthographicSize = viewRadius;
+        if (playerTarget != null)
+            transform.position = new Vector3(playerTarget.position.x, height, playerTarget.position.z);
     }
 
     /// <summary>
@@ -77,5 +111,39 @@ public class MinimapCameraFollow : MonoBehaviour
             Destroy(_rt);
             _rt = null;
         }
+    }
+
+    private void CacheArenaBounds()
+    {
+        Renderer[] renderers = FindObjectsByType<Renderer>(FindObjectsSortMode.None);
+        bool hasBounds = false;
+        Bounds combinedBounds = default;
+
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null || !renderer.enabled)
+                continue;
+
+            if (renderer.GetComponentInParent<Canvas>() != null)
+                continue;
+
+            string lowerName = renderer.gameObject.name.ToLowerInvariant();
+            if (lowerName.Contains("weapon") || lowerName.Contains("player") || lowerName.Contains("enemy"))
+                continue;
+
+            if (!hasBounds)
+            {
+                combinedBounds = renderer.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                combinedBounds.Encapsulate(renderer.bounds);
+            }
+        }
+
+        _hasArenaBounds = hasBounds;
+        _arenaBounds = combinedBounds;
     }
 }

@@ -168,6 +168,22 @@ public class GameManager : MonoBehaviour
         StartCoroutine(RefreshEnemyCountNextFrame());
     }
 
+    private void Update()
+    {
+        if (!Application.isPlaying) return;
+        Scene active = SceneManager.GetActiveScene();
+        if (!active.name.Equals("GameScene")) return;
+        if (_levelCompleteTriggered) return;
+
+        levelTime += Time.deltaTime;
+        if (levelTime >= LevelTimeLimitSeconds)
+        {
+            levelTime = LevelTimeLimitSeconds;
+            _levelCompleteTriggered = true;
+            GameOver();
+        }
+    }
+
     private IEnumerator RefreshEnemyCountNextFrame()
     {
         // Let LevelBuilder finish spawning for this frame first.
@@ -235,6 +251,8 @@ public class GameManager : MonoBehaviour
     {
         Time.timeScale = 1f;
         score = 0;
+        if (MatchStatsManager.Instance != null)
+            MatchStatsManager.Instance.ResetMatch();
         SetCurrentLevel(level);
         PendingMenuScreen = MenuScreen.MainMenu;
         BeginSceneLoad("GameScene");
@@ -243,6 +261,8 @@ public class GameManager : MonoBehaviour
     public void ReplayCurrentLevel()
     {
         Time.timeScale = 1f;
+        if (MatchStatsManager.Instance != null)
+            MatchStatsManager.Instance.ResetMatch();
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
         BeginSceneLoad("GameScene");
@@ -253,15 +273,18 @@ public class GameManager : MonoBehaviour
         currentLevel = Mathf.Clamp(level, 1, TotalLevels);
         enemiesRemaining = 0;
         PlayerPrefs.SetInt("ContinueLevel", currentLevel);
+        if (MatchStatsManager.Instance != null)
+            MatchStatsManager.Instance.ResetMatch();
         ResetLevelState();
     }
 
     // ── Enemy helpers ─────────────────────────────────────────────────────────
+    public const float LevelTimeLimitSeconds = 180f;
+
     public int GetEnemyCount()
     {
-        // The arena should always spawn 12 enemies; difficulty is handled
-        // through speed and damage, not by reducing the combatant count.
-        return 12;
+        // 25 combatants per arena. Difficulty scales speed/damage, not headcount.
+        return 25;
     }
 
     public float GetEnemySpeed()
@@ -361,12 +384,14 @@ public class GameManager : MonoBehaviour
             {
                 HUDManager.Instance.UpdateScore(score);
                 HUDManager.Instance.RegisterKill();
-                HUDManager.Instance.ShowXpPopup(100, "KILL");
+                if (CombatUIManager.Instance != null) CombatUIManager.Instance.ShowKill();
+                else HUDManager.Instance.ShowXpPopup(100, "KILL");
             }
             else if (assistedByPlayer)
             {
                 HUDManager.Instance.UpdateScore(score);
-                HUDManager.Instance.ShowXpPopup(50, "ASSIST");
+                if (CombatUIManager.Instance != null) CombatUIManager.Instance.ShowAssist();
+                else HUDManager.Instance.ShowXpPopup(50, "ASSIST");
             }
         }
 

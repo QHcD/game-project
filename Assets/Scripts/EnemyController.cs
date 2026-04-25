@@ -305,6 +305,8 @@ public class EnemyController : MonoBehaviour, IDamageable
                 _agent.enabled = false;
         }
 
+        RegisterForMatchStats();
+
         _ragdoll = GetComponent<RagdollController>();
         _mainCapsuleCollider = GetComponent<CapsuleCollider>();
 
@@ -839,6 +841,19 @@ public class EnemyController : MonoBehaviour, IDamageable
                 byPlayer: _killedByPlayer,
                 assistedByPlayer: !_killedByPlayer && _playerDamagedThisLife);
 
+        if (MatchStatsManager.Instance != null)
+        {
+            string combatantId = MatchStatsManager.BuildCombatantId(this);
+            MatchStatsManager.Instance.MarkEliminated(combatantId);
+
+            if (_killedByPlayer)
+            {
+                PlayerHealth player = FindFirstObjectByType<PlayerHealth>();
+                string playerId = MatchStatsManager.BuildCombatantId(player);
+                MatchStatsManager.Instance.RecordKill(playerId);
+            }
+        }
+
         // Stop all navigation immediately
         if (_rb != null)    _rb.isKinematic = true;
         if (_controller != null) _controller.enabled = false;
@@ -859,6 +874,16 @@ public class EnemyController : MonoBehaviour, IDamageable
         // ── Corpse cleanup ────────────────────────────────────────────────────
         if (ragdollVisibleDuration > 0f)
             Destroy(gameObject, ragdollVisibleDuration);
+    }
+
+    private void RegisterForMatchStats()
+    {
+        if (MatchStatsManager.Instance == null)
+            return;
+
+        string combatantId = MatchStatsManager.BuildCombatantId(this);
+        string displayName = gameObject.name.ToUpperInvariant();
+        MatchStatsManager.Instance.RegisterCombatant(combatantId, displayName, isPlayer: false);
     }
 
     /// <summary>
