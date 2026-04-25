@@ -23,8 +23,31 @@ public class CameraController : MonoBehaviour
     [Tooltip("Smooth-follow speed. Higher = snappier.")]
     public float smoothSpeed = 12f;
 
-    // Vertical pitch (degrees) — set each frame by PlayerController.ApplyLook
+    // Vertical pitch (degrees) — set each frame by PlayerController.ApplyLook.
+    // Public for back-compat with PlayerController.ApplyLook; the (minPitch,
+    // maxPitch) clamp is enforced defensively in LateUpdate AND via the
+    // Pitch property below for any new caller that wants automatic clamping.
     [HideInInspector] public float pitch = 0f;
+
+    // ── Pitch (vertical-look) clamp ─────────────────────────────────────────
+    // The world-tilt / underside-of-map view in the screenshot is caused by
+    // the camera orbiting too far below the player. In this rig, NEGATIVE
+    // pitch puts the camera under the player looking up — clamping the lower
+    // bound to -20° keeps the camera roughly level with the floor at all
+    // times. The upper bound of +80° still allows a steep top-down view
+    // without the camera flipping upside-down (avoids gimbal flip at ±90°).
+    [Header("Pitch Clamp")]
+    [Tooltip("Lowest allowed pitch in degrees. -20 prevents the camera orbiting under the floor.")]
+    public float minPitch = -20f;
+    [Tooltip("Highest allowed pitch in degrees. +80 prevents the camera flipping past vertical.")]
+    public float maxPitch = 80f;
+
+    /// <summary>Public pitch accessor — clamps every assignment to [minPitch, maxPitch].</summary>
+    public float Pitch
+    {
+        get => pitch;
+        set => pitch = Mathf.Clamp(value, minPitch, maxPitch);
+    }
 
     // ── Look-at height ───────────────────────────────────────────────────────
     [Header("Look-At")]
@@ -144,6 +167,12 @@ public class CameraController : MonoBehaviour
             }
             return;
         }
+
+        // ── Defensive pitch clamp ────────────────────────────────────────────
+        // PlayerController writes `pitch` directly each frame; clamp it here
+        // as the last line of defense so the rotation never escapes the
+        // (minPitch, maxPitch) range no matter what the caller did.
+        pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
 
         Vector3 lookTarget = GetLookTarget();
         Vector3 currentOffset = GetCurrentOffset();

@@ -209,10 +209,6 @@ public class OptionsBuilder : MonoBehaviour
         TextMeshProUGUI caption = MakeDropdownText(dropdownObject.transform, "Caption", TextAlignmentOptions.Center, new Vector2(16f, 0f), new Vector2(-40f, 0f));
         dropdown.captionText = caption;
 
-        TextMeshProUGUI arrow = MakeDropdownText(dropdownObject.transform, "Arrow", TextAlignmentOptions.Center, new Vector2(320f, 0f), new Vector2(-8f, 0f));
-        arrow.text = "v";
-        arrow.fontSize = 18f;
-
         RectTransform templateRect = CreateDropdownTemplate(dropdownObject.transform, out TextMeshProUGUI itemLabel);
         dropdown.template = templateRect;
         dropdown.itemText = itemLabel;
@@ -281,27 +277,9 @@ public class OptionsBuilder : MonoBehaviour
         Toggle itemToggle = itemObject.AddComponent<Toggle>();
         itemToggle.targetGraphic = itemBackground;
 
-        GameObject checkmarkObject = new GameObject("Item Checkmark");
-        checkmarkObject.transform.SetParent(itemObject.transform, false);
-        TextMeshProUGUI checkmark = checkmarkObject.AddComponent<TextMeshProUGUI>();
-        checkmark.text = "v";
-        checkmark.fontSize = 20f;
-        checkmark.color = new Color(0.24f, 0.22f, 0.38f, 1f);
-        checkmark.alignment = TextAlignmentOptions.Center;
-        if (prismFont != null)
-        {
-            checkmark.font = prismFont;
-        }
+        itemToggle.graphic = null;
 
-        RectTransform checkRect = checkmark.GetComponent<RectTransform>();
-        checkRect.anchorMin = new Vector2(0f, 0f);
-        checkRect.anchorMax = new Vector2(0f, 1f);
-        checkRect.pivot = new Vector2(0.5f, 0.5f);
-        checkRect.sizeDelta = new Vector2(28f, 0f);
-        checkRect.anchoredPosition = new Vector2(18f, 0f);
-        itemToggle.graphic = checkmark;
-
-        itemLabel = MakeDropdownText(itemObject.transform, "Item Label", TextAlignmentOptions.MidlineLeft, new Vector2(40f, 0f), new Vector2(-12f, 0f));
+        itemLabel = MakeDropdownText(itemObject.transform, "Item Label", TextAlignmentOptions.MidlineLeft, new Vector2(16f, 0f), new Vector2(-12f, 0f));
 
         scrollRect.content = contentRect;
         scrollRect.viewport = viewportRect;

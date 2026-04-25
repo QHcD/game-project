@@ -7,6 +7,8 @@ using UnityEngine;
 /// </summary>
 public class MatchStatsManager : MonoBehaviour
 {
+    public event System.Action StatsChanged;
+
     public struct CombatantSnapshot
     {
         public string Id;
@@ -64,6 +66,7 @@ public class MatchStatsManager : MonoBehaviour
     public void ResetMatch()
     {
         _combatants.Clear();
+        NotifyStatsChanged();
     }
 
     public void RegisterCombatant(string id, string displayName, bool isPlayer)
@@ -83,6 +86,7 @@ public class MatchStatsManager : MonoBehaviour
         combatant.DisplayName = string.IsNullOrWhiteSpace(displayName) ? (isPlayer ? "PLAYER" : "COMBATANT") : displayName.ToUpperInvariant();
         combatant.IsPlayer = isPlayer;
         combatant.IsAlive = true;
+        NotifyStatsChanged();
     }
 
     public void MarkEliminated(string id)
@@ -91,7 +95,10 @@ public class MatchStatsManager : MonoBehaviour
             return;
 
         if (_combatants.TryGetValue(id, out CombatantData combatant))
+        {
             combatant.IsAlive = false;
+            NotifyStatsChanged();
+        }
     }
 
     public void RecordKill(string killerId)
@@ -100,7 +107,10 @@ public class MatchStatsManager : MonoBehaviour
             return;
 
         if (_combatants.TryGetValue(killerId, out CombatantData combatant))
+        {
             combatant.Kills++;
+            NotifyStatsChanged();
+        }
     }
 
     public IReadOnlyList<CombatantSnapshot> GetTopCombatants(int count)
@@ -127,5 +137,10 @@ public class MatchStatsManager : MonoBehaviour
     public int GetRegisteredCombatantCount()
     {
         return _combatants.Count;
+    }
+
+    private void NotifyStatsChanged()
+    {
+        StatsChanged?.Invoke();
     }
 }

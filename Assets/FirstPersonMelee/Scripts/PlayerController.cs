@@ -626,7 +626,11 @@ public class PlayerController : MonoBehaviour
         float mouseY = lookInput.y * sensitivity * Time.deltaTime;
 
         cameraPitch -= mouseY;
-        cameraPitch  = Mathf.Clamp(cameraPitch, -80f, 80f);
+        // Clamped to (-20, 80) so the camera never orbits below the player's
+        // feet (which would reveal the underside of the map). The upper bound
+        // stays at +80 to allow a steep top-down view without flipping past
+        // vertical and inducing gimbal lock.
+        cameraPitch  = Mathf.Clamp(cameraPitch, -20f, 80f);
 
         // First-person camera is permanently disabled — no pitch update needed.
 
@@ -657,7 +661,11 @@ public class PlayerController : MonoBehaviour
         cameraKickCurrent = Mathf.Lerp(cameraKickCurrent, cameraKickTarget, 18f * Time.deltaTime);
         cameraKickTarget  = Mathf.Lerp(cameraKickTarget, 0f, 14f * Time.deltaTime);
         cameraPitch += cameraKickCurrent * Time.deltaTime;
-        cameraPitch  = Mathf.Clamp(cameraPitch, -80f, 80f);
+        // Clamped to (-20, 80) so the camera never orbits below the player's
+        // feet (which would reveal the underside of the map). The upper bound
+        // stays at +80 to allow a steep top-down view without flipping past
+        // vertical and inducing gimbal lock.
+        cameraPitch  = Mathf.Clamp(cameraPitch, -20f, 80f);
     }
 
     // ════════════════════════════════════════════════════════════════════════

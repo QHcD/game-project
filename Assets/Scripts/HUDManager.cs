@@ -7,6 +7,14 @@ using UnityEngine.UI;
 
 public class HUDManager : MonoBehaviour
 {
+    private sealed class ScoreboardRowUi
+    {
+        public GameObject Root;
+        public TextMeshProUGUI NameText;
+        public TextMeshProUGUI KillsText;
+        public TextMeshProUGUI StatusText;
+    }
+
     public static HUDManager Instance;
 
     public TextMeshProUGUI healthText;
@@ -30,7 +38,7 @@ public class HUDManager : MonoBehaviour
     private GameObject scoreboardOverlay;
     private TextMeshProUGUI scoreboardTitleText;
     private TextMeshProUGUI scoreboardSummaryText;
-    private TextMeshProUGUI[] scoreboardEntryTexts;
+    private ScoreboardRowUi[] scoreboardRows;
     private GameObject matchFinishedOverlay;
     private bool matchFinished;
     private TMP_FontAsset prismFont;
@@ -66,6 +74,12 @@ public class HUDManager : MonoBehaviour
         }
     }
 
+    private void OnDestroy()
+    {
+        if (MatchStatsManager.Instance != null)
+            MatchStatsManager.Instance.StatsChanged -= HandleMatchStatsChanged;
+    }
+
     private void Start()
     {
         if (GameManager.Instance == null)
@@ -97,8 +111,17 @@ public class HUDManager : MonoBehaviour
         UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
 
         if (playerHealth != null)
-        {
             UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth);
+
+        // ── Register the local player in MatchStatsManager ──────────────────
+        // Without this the RecordKill(playerId) call in EnemyController has
+        // no matching row, so kill counts stay at 0 in the leaderboard.
+        if (MatchStatsManager.Instance != null && playerHealth != null)
+        {
+            string playerId = MatchStatsManager.BuildCombatantId(playerHealth);
+            MatchStatsManager.Instance.RegisterCombatant(playerId, "YOU", isPlayer: true);
+            MatchStatsManager.Instance.StatsChanged -= HandleMatchStatsChanged;
+            MatchStatsManager.Instance.StatsChanged += HandleMatchStatsChanged;
         }
     }
 
@@ -150,6 +173,11 @@ public class HUDManager : MonoBehaviour
         RefreshScoreboard();
     }
 
+    private void HandleMatchStatsChanged()
+    {
+        RefreshScoreboard(force: false);
+    }
+
     public void UpdateHealth(float current, float max)
     {
         float ratio = Mathf.Clamp01(current / Mathf.Max(1f, max));
@@ -194,10 +222,19 @@ public class HUDManager : MonoBehaviour
         killCount++;
 
         if (killCountText != null)
-        {
             killCountText.text = "KILLS  " + killCount;
+
+        // Mirror into MatchStatsManager so the leaderboard kill count
+        // stays in sync with the on-screen counter.
+        if (MatchStatsManager.Instance != null && playerHealth != null)
+        {
+            string playerId = MatchStatsManager.BuildCombatantId(playerHealth);
+            MatchStatsManager.Instance.RecordKill(playerId);
         }
 
+        // Live-refresh the leaderboard row (visible or not) so the sort
+        // order updates the moment the kill is confirmed.
+        RefreshScoreboard(force: false);
     }
 
     public void ShowXpPopup(int xpAmount, string eventLabel = "")
@@ -579,46 +616,66 @@ public class HUDManager : MonoBehaviour
             backdrop.color = new Color(0.01f, 0.03f, 0.06f, 0.72f);
             Stretch(scoreboardOverlay.GetComponent<RectTransform>());
 
+            // ── Panel — centred on screen (anchor + pivot both at 0.5,0.5) ─────
+            // Previously anchored to the right edge (1,0.5), which caused the
+            // panel to be off-centre and resolution-dependent.
             GameObject panel = CreateImage(scoreboardOverlay.transform, "ScoreboardPanel",
                 new Color(0.05f, 0.08f, 0.14f, 0.95f),
-                new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-260f, 0f), new Vector2(460f, 620f));
-            panel.AddComponent<Outline>().effectColor = new Color(0.32f, 0.78f, 1f, 0.18f);
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(540f, 560f));
 
+            RectTransform panelRect = panel.GetComponent<RectTransform>();
+            panelRect.pivot = new Vector2(0.5f, 0.5f);
+
+            Outline panelOutline = panel.AddComponent<Outline>();
+            panelOutline.effectColor = new Color(0.32f, 0.78f, 1f, 0.30f);
+            panelOutline.effectDistance = new Vector2(1.5f, -1.5f);
+
+            // ── Title ────────────────────────────────────────────────────────
             scoreboardTitleText = CreateText(panel.transform, "ScoreboardTitle",
-                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -42f), new Vector2(360f, 44f),
-                32f, FontStyles.Bold, TextAlignmentOptions.Center);
+                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -36f), new Vector2(480f, 46f),
+                34f, FontStyles.Bold, TextAlignmentOptions.Center);
             scoreboardTitleText.text = "MATCH STATS";
-            scoreboardTitleText.color = new Color(0.92f, 0.97f, 1f, 1f);
+            scoreboardTitleText.color = Color.white;
 
+            // Thin separator line under title
+            GameObject sep = new GameObject("TitleSeparator");
+            sep.transform.SetParent(panel.transform, false);
+            Image sepImg = sep.AddComponent<Image>();
+            sepImg.color = new Color(0.32f, 0.78f, 1f, 0.35f);
+            RectTransform sepRect = sep.GetComponent<RectTransform>();
+            sepRect.anchorMin = new Vector2(0.5f, 1f);
+            sepRect.anchorMax = new Vector2(0.5f, 1f);
+            sepRect.pivot     = new Vector2(0.5f, 1f);
+            sepRect.anchoredPosition = new Vector2(0f, -84f);
+            sepRect.sizeDelta        = new Vector2(480f, 2f);
+
+            // ── Column headers ───────────────────────────────────────────────
             scoreboardSummaryText = CreateText(panel.transform, "ScoreboardSummary",
-                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -84f), new Vector2(380f, 30f),
-                18f, FontStyles.Normal, TextAlignmentOptions.Center);
-            scoreboardSummaryText.color = new Color(0.68f, 0.84f, 1f, 0.92f);
+                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -96f), new Vector2(480f, 28f),
+                17f, FontStyles.Bold, TextAlignmentOptions.Left);
+            scoreboardSummaryText.text = "LIVE MATCH LEADERBOARD";
+            scoreboardSummaryText.color = new Color(0.50f, 0.75f, 1f, 0.80f);
 
-            scoreboardEntryTexts = new TextMeshProUGUI[5];
-            for (int i = 0; i < scoreboardEntryTexts.Length; i++)
-            {
-                float y = -154f - (i * 86f);
-                TextMeshProUGUI entry = CreateText(panel.transform, $"ScoreboardEntry_{i + 1}",
-                    new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, y), new Vector2(390f, 58f),
-                    26f, FontStyles.Bold, TextAlignmentOptions.Left);
-                entry.color = Color.white;
-                scoreboardEntryTexts[i] = entry;
-            }
-
-            TextMeshProUGUI footer = CreateText(panel.transform, "ScoreboardFooter",
-                new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 28f), new Vector2(380f, 32f),
-                18f, FontStyles.Bold, TextAlignmentOptions.Center);
-            footer.text = "CAPS LOCK  TOGGLE LEADERBOARD";
-            footer.color = new Color(0.76f, 0.90f, 1f, 0.88f);
+            // ── Entry rows — 5 rows, 82 px apart ────────────────────────────
+            CreateScoreboardHeader(panel.transform);
+            CreateScoreboardRows(panel.transform);
+            // Footer intentionally removed — the "CAPS LOCK TOGGLE LEADERBOARD"
+            // hint is no longer shown.
         }
         else
         {
             scoreboardTitleText = scoreboardOverlay.transform.Find("ScoreboardPanel/ScoreboardTitle")?.GetComponent<TextMeshProUGUI>();
             scoreboardSummaryText = scoreboardOverlay.transform.Find("ScoreboardPanel/ScoreboardSummary")?.GetComponent<TextMeshProUGUI>();
-            scoreboardEntryTexts = new TextMeshProUGUI[5];
-            for (int i = 0; i < scoreboardEntryTexts.Length; i++)
-                scoreboardEntryTexts[i] = scoreboardOverlay.transform.Find($"ScoreboardPanel/ScoreboardEntry_{i + 1}")?.GetComponent<TextMeshProUGUI>();
+            CacheScoreboardRows();
+            if (scoreboardRows == null || scoreboardRows.Length == 0 || scoreboardRows[0] == null)
+            {
+                Transform panel = scoreboardOverlay.transform.Find("ScoreboardPanel");
+                if (panel != null)
+                {
+                    CreateScoreboardHeader(panel);
+                    CreateScoreboardRows(panel);
+                }
+            }
         }
 
         scoreboardOverlay.SetActive(false);
@@ -705,40 +762,190 @@ public class HUDManager : MonoBehaviour
 
     private void RefreshScoreboard(bool force = false)
     {
-        if (!force && (!isScoreboardVisible || scoreboardEntryTexts == null))
-            return;
-
-        if (scoreboardOverlay != null)
+        // Always update data even when hidden — kill counts must be live.
+        // Only update visibility when explicitly toggled (force = true from ToggleScoreboard).
+        if (force && scoreboardOverlay != null)
             scoreboardOverlay.SetActive(isScoreboardVisible);
 
+        if (scoreboardRows == null || scoreboardRows.Length == 0) return;
+
         MatchStatsManager stats = MatchStatsManager.Instance;
-        if (stats == null || scoreboardEntryTexts == null)
-            return;
+        if (stats == null) return;
 
+        // Header row stays as a fixed column guide.
         if (scoreboardSummaryText != null)
-            scoreboardSummaryText.text = $"TOP 5 OF {stats.GetRegisteredCombatantCount()} COMBATANTS";
+            scoreboardSummaryText.text = $"LIVE MATCH LEADERBOARD  ({stats.GetRegisteredCombatantCount()} COMBATANTS)";
 
-        var entries = stats.GetTopCombatants(scoreboardEntryTexts.Length);
-        for (int i = 0; i < scoreboardEntryTexts.Length; i++)
+        var entries = stats.GetTopCombatants(scoreboardRows.Length);
+        for (int i = 0; i < scoreboardRows.Length; i++)
         {
-            TextMeshProUGUI entryText = scoreboardEntryTexts[i];
-            if (entryText == null)
-                continue;
+            ScoreboardRowUi row = scoreboardRows[i];
+            if (row == null || row.Root == null) continue;
 
             if (i >= entries.Count)
             {
-                entryText.text = $"{i + 1}. ---";
-                entryText.color = new Color(0.60f, 0.72f, 0.82f, 0.72f);
+                row.NameText.text = $"{i + 1}. ---";
+                row.KillsText.text = "0";
+                row.StatusText.text = "---";
+                ApplyScoreboardRowStyle(row, false, false, true);
                 continue;
             }
 
             MatchStatsManager.CombatantSnapshot entry = entries[i];
-            string status = entry.IsAlive ? "ALIVE" : "OUT";
-            entryText.text = $"{i + 1}. {entry.DisplayName}   {entry.Kills} KILLS   {status}";
-            entryText.color = entry.IsPlayer
-                ? new Color(1f, 0.84f, 0.34f, 1f)
-                : new Color(0.92f, 0.97f, 1f, entry.IsAlive ? 1f : 0.76f);
+            row.NameText.text = $"{i + 1}. {entry.DisplayName}";
+            row.KillsText.text = entry.Kills.ToString();
+            row.StatusText.text = entry.IsAlive ? "ALIVE" : "OUT";
+            ApplyScoreboardRowStyle(row, entry.IsPlayer, entry.IsAlive, false);
         }
+    }
+
+    private void CreateScoreboardHeader(Transform panelTransform)
+    {
+        GameObject headerRow = new GameObject("ScoreboardHeaderRow");
+        headerRow.transform.SetParent(panelTransform, false);
+        RectTransform headerRect = headerRow.AddComponent<RectTransform>();
+        headerRect.anchorMin = new Vector2(0.5f, 1f);
+        headerRect.anchorMax = new Vector2(0.5f, 1f);
+        headerRect.pivot = new Vector2(0.5f, 1f);
+        headerRect.anchoredPosition = new Vector2(0f, -128f);
+        headerRect.sizeDelta = new Vector2(480f, 30f);
+
+        HorizontalLayoutGroup headerLayout = headerRow.AddComponent<HorizontalLayoutGroup>();
+        headerLayout.childAlignment = TextAnchor.MiddleLeft;
+        headerLayout.childControlHeight = true;
+        headerLayout.childControlWidth = true;
+        headerLayout.childForceExpandHeight = true;
+        headerLayout.childForceExpandWidth = false;
+        headerLayout.spacing = 12f;
+
+        CreateScoreboardColumn(headerRow.transform, "HeaderName", "NAME", 256f, TextAlignmentOptions.Left, true);
+        CreateScoreboardColumn(headerRow.transform, "HeaderKills", "KILLS", 84f, TextAlignmentOptions.Center, true);
+        CreateScoreboardColumn(headerRow.transform, "HeaderStatus", "STATUS", 104f, TextAlignmentOptions.Center, true);
+    }
+
+    private void CreateScoreboardRows(Transform panelTransform)
+    {
+        GameObject rowsRoot = new GameObject("ScoreboardRows");
+        rowsRoot.transform.SetParent(panelTransform, false);
+        RectTransform rowsRect = rowsRoot.AddComponent<RectTransform>();
+        rowsRect.anchorMin = new Vector2(0.5f, 1f);
+        rowsRect.anchorMax = new Vector2(0.5f, 1f);
+        rowsRect.pivot = new Vector2(0.5f, 1f);
+        rowsRect.anchoredPosition = new Vector2(0f, -168f);
+        rowsRect.sizeDelta = new Vector2(480f, 320f);
+
+        // English comment: VerticalLayoutGroup keeps each leaderboard row aligned automatically.
+        VerticalLayoutGroup layout = rowsRoot.AddComponent<VerticalLayoutGroup>();
+        layout.childAlignment = TextAnchor.UpperLeft;
+        layout.childControlHeight = false;
+        layout.childControlWidth = true;
+        layout.childForceExpandHeight = false;
+        layout.childForceExpandWidth = true;
+        layout.spacing = 8f;
+        layout.padding = new RectOffset(0, 0, 0, 0);
+
+        scoreboardRows = new ScoreboardRowUi[5];
+        for (int i = 0; i < scoreboardRows.Length; i++)
+        {
+            GameObject rowObject = new GameObject($"ScoreboardRow_{i + 1}");
+            rowObject.transform.SetParent(rowsRoot.transform, false);
+
+            RectTransform rowRect = rowObject.AddComponent<RectTransform>();
+            rowRect.sizeDelta = new Vector2(480f, 52f);
+
+            LayoutElement rowLayout = rowObject.AddComponent<LayoutElement>();
+            rowLayout.preferredHeight = 52f;
+
+            Image rowBg = rowObject.AddComponent<Image>();
+            rowBg.color = i % 2 == 0 ? new Color(1f, 1f, 1f, 0.035f) : new Color(1f, 1f, 1f, 0.015f);
+
+            HorizontalLayoutGroup rowHorizontal = rowObject.AddComponent<HorizontalLayoutGroup>();
+            rowHorizontal.childAlignment = TextAnchor.MiddleLeft;
+            rowHorizontal.childControlHeight = true;
+            rowHorizontal.childControlWidth = true;
+            rowHorizontal.childForceExpandHeight = true;
+            rowHorizontal.childForceExpandWidth = false;
+            rowHorizontal.spacing = 12f;
+            rowHorizontal.padding = new RectOffset(12, 12, 0, 0);
+
+            scoreboardRows[i] = new ScoreboardRowUi
+            {
+                Root = rowObject,
+                NameText = CreateScoreboardColumn(rowObject.transform, $"RowName_{i + 1}", $"{i + 1}. ---", 256f, TextAlignmentOptions.Left, false),
+                KillsText = CreateScoreboardColumn(rowObject.transform, $"RowKills_{i + 1}", "0", 84f, TextAlignmentOptions.Center, false),
+                StatusText = CreateScoreboardColumn(rowObject.transform, $"RowStatus_{i + 1}", "---", 104f, TextAlignmentOptions.Center, false)
+            };
+        }
+    }
+
+    private void CacheScoreboardRows()
+    {
+        Transform rowsRoot = scoreboardOverlay != null
+            ? scoreboardOverlay.transform.Find("ScoreboardPanel/ScoreboardRows")
+            : null;
+        if (rowsRoot == null)
+            return;
+
+        scoreboardRows = new ScoreboardRowUi[5];
+        for (int i = 0; i < scoreboardRows.Length; i++)
+        {
+            Transform row = rowsRoot.Find($"ScoreboardRow_{i + 1}");
+            if (row == null)
+                continue;
+
+            scoreboardRows[i] = new ScoreboardRowUi
+            {
+                Root = row.gameObject,
+                NameText = row.Find($"RowName_{i + 1}")?.GetComponent<TextMeshProUGUI>(),
+                KillsText = row.Find($"RowKills_{i + 1}")?.GetComponent<TextMeshProUGUI>(),
+                StatusText = row.Find($"RowStatus_{i + 1}")?.GetComponent<TextMeshProUGUI>()
+            };
+        }
+    }
+
+    private TextMeshProUGUI CreateScoreboardColumn(Transform parent, string name, string text, float width, TextAlignmentOptions alignment, bool isHeader)
+    {
+        GameObject obj = new GameObject(name);
+        obj.transform.SetParent(parent, false);
+
+        LayoutElement layout = obj.AddComponent<LayoutElement>();
+        layout.preferredWidth = width;
+        layout.minWidth = width;
+
+        TextMeshProUGUI tmp = obj.AddComponent<TextMeshProUGUI>();
+        tmp.text = text;
+        tmp.fontSize = isHeader ? 17f : 22f;
+        tmp.fontStyle = FontStyles.Bold;
+        tmp.alignment = alignment;
+        tmp.textWrappingMode = TextWrappingModes.NoWrap;
+        tmp.overflowMode = TextOverflowModes.Ellipsis;
+        tmp.color = isHeader ? new Color(0.50f, 0.75f, 1f, 0.80f) : Color.white;
+        if (prismFont != null)
+            tmp.font = prismFont;
+        return tmp;
+    }
+
+    private static void ApplyScoreboardRowStyle(ScoreboardRowUi row, bool isPlayer, bool isAlive, bool isEmpty)
+    {
+        Color nameColor = isEmpty
+            ? new Color(0.45f, 0.55f, 0.68f, 0.55f)
+            : isPlayer
+                ? new Color(1f, 0.84f, 0.34f, 1f)
+                : new Color(0.92f, 0.97f, 1f, isAlive ? 1f : 0.60f);
+
+        Color valueColor = isEmpty
+            ? new Color(0.45f, 0.55f, 0.68f, 0.55f)
+            : new Color(0.92f, 0.97f, 1f, isAlive ? 0.95f : 0.60f);
+
+        Color statusColor = isEmpty
+            ? new Color(0.45f, 0.55f, 0.68f, 0.55f)
+            : isAlive
+                ? new Color(0.54f, 0.95f, 0.64f, 0.95f)
+                : new Color(1f, 0.32f, 0.32f, 0.92f);
+
+        if (row.NameText != null) row.NameText.color = nameColor;
+        if (row.KillsText != null) row.KillsText.color = valueColor;
+        if (row.StatusText != null) row.StatusText.color = statusColor;
     }
 
     private void ShowMatchFinishedOverlay()
