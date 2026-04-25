@@ -544,10 +544,56 @@ public class GameManager : MonoBehaviour
         while (!op.isDone)
             yield return null;
 
-        yield return null; // allow scene first frame to settle
+        // ── Gameplay-ready gate ─────────────────────────────────────────────
+        // Hold the loading overlay up until the scene has actually settled:
+        //  • player exists,
+        //  • player is grounded (not mid-air during the spawn drop),
+        //  • camera has had at least one LateUpdate to snap onto the target,
+        //  • LevelBuilder has registered the spawned enemy count.
+        // Without this gate the camera briefly reveals a tilted, half-built
+        // scene with the player floating mid-fall.
+        const float maxReadyWait = 4f;
+        float readyStart = Time.unscaledTime;
+        while (Time.unscaledTime - readyStart < maxReadyWait)
+        {
+            if (IsGameplayReady())
+                break;
+            yield return null;
+        }
+
+        // Two extra frames so the camera's LateUpdate runs and locks on.
+        yield return null;
+        yield return null;
+
         if (loadingUi != null)
             loadingUi.DestroySelf();
 
         _sceneLoadRoutine = null;
+    }
+
+    private bool IsGameplayReady()
+    {
+        if (totalEnemiesSpawned <= 0) return false;
+
+        GameObject player = GameObject.FindWithTag("Player");
+        if (player == null) return false;
+
+        // Player must be at rest on the ground (not mid-fall during spawn drop).
+        if (Physics.Raycast(player.transform.position + Vector3.up * 0.5f,
+                            Vector3.down, out RaycastHit groundHit, 3f,
+                            ~0, QueryTriggerInteraction.Ignore))
+        {
+            float airborne = (player.transform.position.y - groundHit.point.y);
+            if (airborne > 1.2f) return false;
+        }
+        else
+        {
+            return false;
+        }
+
+        Camera cam = Camera.main;
+        if (cam == null) return false;
+
+        return true;
     }
 }

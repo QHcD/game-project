@@ -21,6 +21,7 @@ public class LevelBuilder : MonoBehaviour
 #if UNITY_EDITOR
     private static bool _editorPreviewQueued;
     private static double _lastEditorPreviewTime;
+    private static string _lastEditorPreviewSignature;
 #endif
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -80,6 +81,8 @@ public class LevelBuilder : MonoBehaviour
     {
         EditorApplication.delayCall -= QueueEditorPreviewBuild;
         EditorApplication.delayCall += QueueEditorPreviewBuild;
+        EditorApplication.update -= OnEditorUpdate;
+        EditorApplication.update += OnEditorUpdate;
         EditorSceneManager.sceneOpened -= OnEditorSceneOpened;
         EditorSceneManager.sceneOpened += OnEditorSceneOpened;
     }
@@ -87,6 +90,20 @@ public class LevelBuilder : MonoBehaviour
     private static void OnEditorSceneOpened(Scene scene, OpenSceneMode mode)
     {
         QueueEditorPreviewBuild();
+    }
+
+    private static void OnEditorUpdate()
+    {
+        if (Application.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode)
+            return;
+
+        Scene activeScene = SceneManager.GetActiveScene();
+        if (!activeScene.IsValid() || !activeScene.isLoaded || activeScene.name != "GameScene")
+            return;
+
+        string signature = GetEditorPreviewSignature();
+        if (!string.Equals(signature, _lastEditorPreviewSignature, System.StringComparison.Ordinal))
+            QueueEditorPreviewBuild(force: true);
     }
 
     [MenuItem("PRISM/Build Scene Preview (No Play Mode)")]
@@ -169,8 +186,17 @@ public class LevelBuilder : MonoBehaviour
         Debug.Log("[LevelBuilder] Building edit-mode GameScene preview.");
         BuildGameScene();
         EnsurePreviewObjectsVisible();
+        _lastEditorPreviewSignature = GetEditorPreviewSignature();
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
         SceneView.RepaintAll();
+    }
+
+    private static string GetEditorPreviewSignature()
+    {
+        GameManager manager = GameManager.Instance;
+        int level = manager != null ? manager.currentLevel : 1;
+        int map = manager != null ? (int)manager.GetSelectedMap() : 0;
+        return $"{level}:{map}";
     }
 
     private static bool HasCompleteScenePreview()
@@ -268,6 +294,12 @@ public class LevelBuilder : MonoBehaviour
             if (manager != null)
                 manager.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
 
+            // ── Clear stale tagged level content from the previous level ───────
+            // Kills any "Environment"/"LevelContent"/"Map"-tagged objects left
+            // over from a previous build so the new map spawns into a clean
+            // scene (fixes the "old map still visible in Editor" bug).
+            ClearExistingLevel();
+
             Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
             Transform arenaRoot    = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
             Transform enemyRoot    = GetOrCreateChildRoot(gameplayRoot, EnemyRootName);
@@ -286,7 +318,8 @@ public class LevelBuilder : MonoBehaviour
 
             BuildArena(arenaRoot);
             // EnsureSceneGroundVisible skipped — industrial map has its own ground
-            Debug.Log("[LevelBuilder] Step 3: Arena built");
+            StabilizeGround(arenaRoot);
+            Debug.Log("[LevelBuilder] Step 3: Arena built + floor stabilised");
 
             // Environmental props are provided by the RPG/FPS industrial map prefab — skip procedural spawning.
             Debug.Log("[LevelBuilder] Step 4: Props skipped (industrial map provides own environment)");
@@ -509,6 +542,8 @@ public class LevelBuilder : MonoBehaviour
         mapInstance.name = "FbxMap";
         mapInstance.transform.localPosition = Vector3.zero;
         mapInstance.transform.localRotation = Quaternion.identity;
+        TagObjectIfDefined(mapInstance, "Map");
+        TagHierarchyByName(mapInstance.transform);
 
         // ── Activate EVERYTHING in the industrial map ──────────────────────
         // The prefab may have been captured with some objects inactive.
@@ -1430,5 +1465,222 @@ public class LevelBuilder : MonoBehaviour
     {
         T component = target.GetComponent<T>();
         return component != null ? component : target.AddComponent<T>();
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  EDITOR-READY CLEANUP / STABILIZATION (Inspector-callable)
+    // ════════════════════════════════════════════════════════════════════════
+    //
+    // Why these live here: the user can change the level index in the
+    // Inspector and immediately see the new map preview in the Scene view
+    // (because LevelBuilder is [ExecuteAlways]). But stale prefabs from the
+    // previous level — anything tagged "Environment", "LevelContent", or
+    // "Map" — would otherwise pile up on top of the new geometry, blocking
+    // a clean NavMesh bake. ClearExistingLevel() wipes them. After the new
+    // map is instantiated, StabilizeGround() walks the geometry and forces
+    // floors to be static, on the Environment layer, and not kinematic-free.
+    //
+    // PrepareForBake() is the one-shot entry point the user calls from a
+    // context-menu before pressing the Navigation window's Bake button.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private static readonly string[] LevelContentTags = { "Environment", "LevelContent", "Map" };
+
+    /// <summary>
+    /// Destroys every loose GameObject in the active scene that carries one of
+    /// the level-content tags. Runs in Editor and at runtime.
+    /// </summary>
+    [ContextMenu("Level/Clear Existing Level")]
+    public void ClearExistingLevel()
+    {
+        int destroyed = 0;
+        foreach (string tag in LevelContentTags)
+        {
+            GameObject[] tagged;
+            try { tagged = GameObject.FindGameObjectsWithTag(tag); }
+            catch { continue; } // Tag not defined in this project — skip.
+
+            for (int i = 0; i < tagged.Length; i++)
+            {
+                if (tagged[i] == null) continue;
+                if (tagged[i].transform.IsChildOf(transform)) continue; // never nuke ourselves
+                DestroyObjectSafe(tagged[i]);
+                destroyed++;
+            }
+        }
+
+        // Also wipe the procedural roots so the next build starts clean.
+        Transform arena = GameObject.Find(ArenaRootName)?.transform;
+        Transform enemies = GameObject.Find(EnemyRootName)?.transform;
+        if (arena != null)   ClearChildren(arena);
+        if (enemies != null) ClearChildren(enemies);
+
+        Debug.Log($"[LevelBuilder] ClearExistingLevel: removed {destroyed} tagged objects + procedural roots.");
+    }
+
+    /// <summary>
+    /// Walks every renderer under <paramref name="root"/>, snaps anything that
+    /// looks like a floor onto the Environment layer, marks it static, and
+    /// neutralises stray Rigidbodies that were causing the floor to drift.
+    /// </summary>
+    public void StabilizeGround(Transform root)
+    {
+        if (root == null) return;
+
+        int envLayer = LayerMask.NameToLayer("Environment");
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+
+        foreach (Renderer r in renderers)
+        {
+            if (r == null) continue;
+            GameObject go = r.gameObject;
+            string n = go.name.ToLowerInvariant();
+            bool looksLikeFloor =
+                n.Contains("floor") || n.Contains("ground") ||
+                n.Contains("plane") || n.Contains("terrain");
+
+            if (!looksLikeFloor) continue;
+
+            // Layer
+            if (envLayer >= 0) SetLayerRecursively(go, envLayer);
+
+            // Static flags — marks for batching, navigation, occlusion bake.
+#if UNITY_EDITOR
+            UnityEditor.GameObjectUtility.SetStaticEditorFlags(
+                go, (UnityEditor.StaticEditorFlags)~0);
+#endif
+            go.isStatic = true;
+
+            // Collider — guarantee one exists so NavMesh + physics work.
+            if (go.GetComponent<Collider>() == null)
+            {
+                if (go.GetComponent<MeshFilter>() != null)
+                    go.AddComponent<MeshCollider>();
+                else
+                    go.AddComponent<BoxCollider>();
+            }
+
+            // Rigidbody — floor must never move. Prefer to remove; if other
+            // scripts depend on it, force-kinematic.
+            Rigidbody rb = go.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                rb.isKinematic = true;
+                rb.useGravity = false;
+                rb.linearVelocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+                // If you'd rather delete it outright, uncomment:
+                // DestroyObjectSafe(rb);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Editor-callable: ensures every level-content root is active, geometry
+    /// is stabilised, and tags/layers are correct so the Navigation window's
+    /// Bake button picks up the new map perfectly.
+    /// </summary>
+    [ContextMenu("Level/Prepare For Bake")]
+    public void PrepareForBake()
+    {
+        // 1. Force every relevant root active so its renderers contribute.
+        SetRootActive(GameplayRootName);
+        SetRootActive(ArenaRootName);
+        SetRootActive(EnemyRootName);
+
+        Transform gameplay = GameObject.Find(GameplayRootName)?.transform;
+        Transform arena = GameObject.Find(ArenaRootName)?.transform;
+        Transform enemies = GameObject.Find(EnemyRootName)?.transform;
+
+        if (gameplay != null)
+            TagObjectIfDefined(gameplay.gameObject, "LevelContent");
+
+        if (arena != null)
+        {
+            TagObjectIfDefined(arena.gameObject, "LevelContent");
+            EnsureHierarchyActive(arena);
+            TagHierarchyByName(arena);
+        }
+
+        if (enemies != null)
+            EnsureHierarchyActive(enemies);
+
+        // 2. Activate every tagged level-content object.
+        foreach (string tag in LevelContentTags)
+        {
+            GameObject[] tagged;
+            try { tagged = GameObject.FindGameObjectsWithTag(tag); }
+            catch { continue; }
+            foreach (GameObject go in tagged)
+                if (go != null && !go.activeSelf) go.SetActive(true);
+        }
+
+        // 3. Stabilise the floor across both procedural and tagged content.
+        if (arena != null) StabilizeGround(arena);
+
+        foreach (string tag in LevelContentTags)
+        {
+            GameObject[] tagged;
+            try { tagged = GameObject.FindGameObjectsWithTag(tag); }
+            catch { continue; }
+            foreach (GameObject go in tagged)
+            {
+                if (go == null) continue;
+                EnsureHierarchyActive(go.transform);
+                TagHierarchyByName(go.transform);
+                StabilizeGround(go.transform);
+            }
+        }
+
+#if UNITY_EDITOR
+        // Mark scene dirty so the bake button sees the static-flag changes.
+        UnityEditor.SceneManagement.EditorSceneManager.MarkAllScenesDirty();
+#endif
+        Debug.Log("[LevelBuilder] PrepareForBake: scene is ready for NavMesh bake.");
+    }
+
+    private static void SetLayerRecursively(GameObject go, int layer)
+    {
+        if (go == null) return;
+        go.layer = layer;
+        foreach (Transform child in go.transform)
+            SetLayerRecursively(child.gameObject, layer);
+    }
+
+    private static void EnsureHierarchyActive(Transform root)
+    {
+        if (root == null) return;
+        foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
+            child.gameObject.SetActive(true);
+    }
+
+    private static void TagHierarchyByName(Transform root)
+    {
+        if (root == null) return;
+
+        foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
+        {
+            if (child == null) continue;
+
+            string lowerName = child.gameObject.name.ToLowerInvariant();
+            if (lowerName.Contains("floor") || lowerName.Contains("ground") ||
+                lowerName.Contains("plane") || lowerName.Contains("terrain"))
+                TagObjectIfDefined(child.gameObject, "Environment");
+        }
+    }
+
+    private static void TagObjectIfDefined(GameObject go, string tag)
+    {
+        if (go == null || string.IsNullOrWhiteSpace(tag))
+            return;
+
+        try
+        {
+            go.tag = tag;
+        }
+        catch
+        {
+            // Tag is not configured in the project yet; skip safely.
+        }
     }
 }
