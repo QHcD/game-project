@@ -50,8 +50,14 @@ public class CameraController : MonoBehaviour
 
     // ── Wall / Mesh Collision ────────────────────────────────────────────────
     [Header("Wall Collision")]
-    [Tooltip("Enable SphereCast collision so the camera never enters walls.")]
-    public bool enableCollision = false;
+    [Tooltip("Enable SphereCast collision so the camera never enters walls or the floor.")]
+    public bool enableCollision = true;
+
+    [Tooltip("Minimum height above the resolved ground hit. Camera is lifted so the player cannot see under the map.")]
+    public float minHeightAboveGround = 0.3f;
+
+    [Tooltip("How quickly the camera is lifted off the floor after a downward ray hits ground.")]
+    public float groundLiftSpeed = 15f;
 
     [Tooltip("SphereCast radius. Larger = more conservative pull-in.")]
     [Range(0.05f, 0.5f)]
@@ -112,6 +118,17 @@ public class CameraController : MonoBehaviour
         ExcludeLayerIfExists("UI");
         ExcludeLayerIfExists("TransparentFX");
         ExcludeLayerIfExists("Ignore Raycast");
+
+        // Force-include world geometry so the floor always blocks the camera.
+        IncludeLayerIfExists("Environment");
+        IncludeLayerIfExists("Default");
+        IncludeLayerIfExists("Ground");
+    }
+
+    private void IncludeLayerIfExists(string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0) collisionMask |= (1 << layer);
     }
 
     private void LateUpdate()
@@ -178,8 +195,13 @@ public class CameraController : MonoBehaviour
                                out RaycastHit hit, castDist,
                                collisionMask, QueryTriggerInteraction.Ignore))
         {
-            // Pull to the hit point minus padding; never closer than minDistance
             targetDist = Mathf.Max(hit.distance - wallPadding, minDistance);
+        }
+        else if (Physics.Linecast(castOrigin, desiredPos, out RaycastHit lineHit,
+                                  collisionMask, QueryTriggerInteraction.Ignore))
+        {
+            // Linecast fallback catches thin walls the SphereCast misses.
+            targetDist = Mathf.Max(lineHit.distance - wallPadding, minDistance);
         }
 
         // ── Smooth in both directions — no more instant snap ─────────────────
@@ -195,7 +217,30 @@ public class CameraController : MonoBehaviour
 
         // Rebuild position along the same orbit direction at the clamped distance
         Vector3 offsetDir = (orbitRot * currentOffset).normalized;
-        return castOrigin + offsetDir * _currentDistance;
+        Vector3 resolved = castOrigin + offsetDir * _currentDistance;
+        return EnforceGroundFloor(resolved);
+    }
+
+    /// <summary>
+    /// Drop a downward ray from the proposed camera point. If it hits ground,
+    /// lift the camera so it sits at least <see cref="minHeightAboveGround"/>
+    /// above the surface — guarantees the player can never see under the map.
+    /// </summary>
+    private Vector3 EnforceGroundFloor(Vector3 candidate)
+    {
+        if (Physics.Raycast(candidate + Vector3.up * 0.05f, Vector3.down,
+                            out RaycastHit groundHit, 6f,
+                            collisionMask, QueryTriggerInteraction.Ignore))
+        {
+            float minY = groundHit.point.y + minHeightAboveGround;
+            if (candidate.y < minY)
+            {
+                candidate.y = Mathf.Lerp(candidate.y, minY,
+                                         groundLiftSpeed * Time.deltaTime);
+                if (candidate.y < minY) candidate.y = minY;
+            }
+        }
+        return candidate;
     }
 
     // ════════════════════════════════════════════════════════════════════════

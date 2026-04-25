@@ -6,6 +6,9 @@ TagManager:
   tags:
   - Player
   - Enemy
+  - Environment
+  - LevelContent
+  - Map
   layers:
   - Default
   - TransparentFX
@@ -14,6 +17,7 @@ TagManager:
   - Water
   - UI
   - Character
+  - Environment
   - 
   - 
   - 
