@@ -1,10 +1,11 @@
 using UnityEngine;
 
 /// <summary>
-/// Over-the-shoulder third-person camera.
+/// Stable third-person shooter camera.
 ///
-/// The camera orbits around a live upper-body bone pivot instead of the player
-/// root, so zooming cannot drift toward empty space ahead of the character.
+/// The camera follows a fixed shoulder-height pivot on the player root. It avoids
+/// animated-bone jitter and keeps the character framed consistently, closer to a
+/// Warzone-style readable gameplay camera.
 /// </summary>
 public class CameraController : MonoBehaviour
 {
@@ -15,13 +16,13 @@ public class CameraController : MonoBehaviour
     // ── Over-the-Shoulder offset ─────────────────────────────────────────────
     [Header("OTS Offset")]
     [Tooltip("Default camera position in local orbit space around the look target.")]
-    public Vector3 offset = new Vector3(1.2f, 2.2f, -5.5f);
+    public Vector3 offset = new Vector3(0.45f, 1.45f, -4.65f);
 
     [Tooltip("Tighter over-the-shoulder offset used while zooming.")]
     public Vector3 zoomOffset = new Vector3(0.55f, 0.45f, -2.35f);
 
     [Tooltip("Smooth-follow speed. Higher = snappier.")]
-    public float smoothSpeed = 12f;
+    public float smoothSpeed = 20f;
 
     // Vertical pitch (degrees) — set each frame by PlayerController.ApplyLook.
     // Public for back-compat with PlayerController.ApplyLook; the (minPitch,
@@ -30,17 +31,31 @@ public class CameraController : MonoBehaviour
     [HideInInspector] public float pitch = 0f;
 
     // ── Pitch (vertical-look) clamp ─────────────────────────────────────────
-    // The world-tilt / underside-of-map view in the screenshot is caused by
-    // the camera orbiting too far below the player. In this rig, NEGATIVE
-    // pitch puts the camera under the player looking up — clamping the lower
-    // bound to -20° keeps the camera roughly level with the floor at all
-    // times. The upper bound of +80° still allows a steep top-down view
-    // without the camera flipping upside-down (avoids gimbal flip at ±90°).
+    // The range intentionally stays narrow: enough vertical freedom for combat,
+    // but not enough to become a top-down or under-map debug camera.
     [Header("Pitch Clamp")]
-    [Tooltip("Lowest allowed pitch in degrees. -20 prevents the camera orbiting under the floor.")]
-    public float minPitch = -20f;
-    [Tooltip("Highest allowed pitch in degrees. +80 prevents the camera flipping past vertical.")]
-    public float maxPitch = 80f;
+    [Tooltip("Lowest allowed pitch in degrees. Prevents the camera orbiting under the player.")]
+    public float minPitch = -12f;
+    [Tooltip("Highest allowed pitch in degrees. Prevents awkward top-down framing.")]
+    public float maxPitch = 45f;
+
+    // ── Rotation speed (driven by the Options-menu sensitivity slider) ──────
+    /// <summary>
+    /// Designer-tuned base rotation speed. The actual value used by callers
+    /// (PlayerController) is <see cref="RotationSpeed"/>, which scales this
+    /// by the live mouse-sensitivity multiplier.
+    /// </summary>
+    [Header("Rotation Speed")]
+    [Tooltip("Base rotation speed in degrees per second of mouse delta. " +
+             "The Options-menu sensitivity slider (0–7) multiplies this at runtime.")]
+    public float baseRotationSpeed = 100f;
+
+    /// <summary>
+    /// Effective rotation speed applied to the player's mouse-look math.
+    /// Reads <see cref="LookSensitivityRuntime.LookMultiplier"/> live so the
+    /// 0–7 slider in Options controls camera responsiveness in real time.
+    /// </summary>
+    public float RotationSpeed => baseRotationSpeed * LookSensitivityRuntime.LookMultiplier;
 
     /// <summary>Public pitch accessor — clamps every assignment to [minPitch, maxPitch].</summary>
     public float Pitch
@@ -52,10 +67,10 @@ public class CameraController : MonoBehaviour
     // ── Look-at height ───────────────────────────────────────────────────────
     [Header("Look-At")]
     [Tooltip("World-space height to add to the player position when no spine bone is found.")]
-    public float lookHeight = 1.4f;
+    public float lookHeight = 1.55f;
 
     [Tooltip("Extra local offset applied from the resolved look bone.")]
-    public Vector3 lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
+    public Vector3 lookTargetLocalOffset = Vector3.zero;
 
     [Tooltip("How quickly the orbit pivot follows the target bone.")]
     public float lookTargetSmoothSpeed = 20f;
@@ -63,7 +78,7 @@ public class CameraController : MonoBehaviour
     // ── Zoom ────────────────────────────────────────────────────────────────
     [Header("Zoom")]
     [Tooltip("Default field of view when not zooming.")]
-    public float defaultFieldOfView = 70f;
+    public float defaultFieldOfView = 68f;
 
     [Tooltip("Field of view while zooming.")]
     public float zoomFieldOfView = 52f;
@@ -77,21 +92,21 @@ public class CameraController : MonoBehaviour
     public bool enableCollision = true;
 
     [Tooltip("Minimum height above the resolved ground hit. Camera is lifted so the player cannot see under the map.")]
-    public float minHeightAboveGround = 0.3f;
+    public float minHeightAboveGround = 0.55f;
 
     [Tooltip("How quickly the camera is lifted off the floor after a downward ray hits ground.")]
     public float groundLiftSpeed = 15f;
 
-    [Tooltip("SphereCast radius. Larger = more conservative pull-in.")]
+    [Tooltip("SphereCast radius from the player neck/head to the desired camera position.")]
     [Range(0.05f, 0.5f)]
     public float collisionRadius = 0.2f;
 
-    [Tooltip("Minimum distance the camera is allowed to reach (prevents pop-through).")]
-    public float minDistance = 0.5f;
+    [Tooltip("Minimum distance the camera is allowed to reach before close-space failsafe kicks in.")]
+    public float minDistance = 0.35f;
 
     [Tooltip("Padding gap between camera and wall surface.")]
     [Range(0.02f, 0.3f)]
-    public float wallPadding = 0.1f;
+    public float wallPadding = 0.16f;
 
     [Tooltip("Layers treated as solid obstacles (walls, terrain, buildings).")]
     public LayerMask collisionMask = ~0;
@@ -101,7 +116,19 @@ public class CameraController : MonoBehaviour
 
     [Tooltip("How quickly the camera is pulled toward the player when a wall is detected. " +
              "Higher = less clip risk; lower = smoother. 20 is a good balance.")]
-    public float pullInSpeed = 20f;
+    public float pullInSpeed = 0.035f;
+
+    [Tooltip("SmoothDamp time used when returning to full camera distance.")]
+    public float recoverySmoothTime = 0.12f;
+
+    [Tooltip("If camera distance is below this, apply close-space visibility failsafe.")]
+    public float closeDistanceFailsafe = 0.5f;
+
+    [Tooltip("Extra camera lift in cramped spaces.")]
+    public float closeSpaceHeightBoost = 0.35f;
+
+    [Tooltip("FOV used in cramped spaces so the player/action remains visible.")]
+    public float closeSpaceFieldOfView = 76f;
 
     // ── Private ──────────────────────────────────────────────────────────────
     private float     _currentDistance;
@@ -109,6 +136,10 @@ public class CameraController : MonoBehaviour
     private bool      _lookTargetInitialized;
     private Transform _lookAtBone;
     private Animator  _cachedAnimator;
+    private float     _distanceVelocity;
+    private Vector3   _positionVelocity;
+    private float     _fieldOfViewVelocity;
+    private bool      _closeSpaceActive;
 
     // ════════════════════════════════════════════════════════════════════════
     //  LIFECYCLE
@@ -155,10 +186,7 @@ public class CameraController : MonoBehaviour
         ExcludeLayerIfExists("TransparentFX");
         ExcludeLayerIfExists("Ignore Raycast");
 
-        // Force-include world geometry so the floor always blocks the camera.
-        IncludeLayerIfExists("Environment");
-        IncludeLayerIfExists("Default");
-        IncludeLayerIfExists("Ground");
+        collisionMask = BuildSolidCameraMask();
     }
 
     private void IncludeLayerIfExists(string layerName)
@@ -203,8 +231,11 @@ public class CameraController : MonoBehaviour
         if (!IsFinite(transform.position) || Vector3.Distance(transform.position, desiredPos) > 30f)
             transform.position = desiredPos;
         else
-            transform.position = Vector3.Lerp(transform.position, desiredPos,
-                                              smoothSpeed * Time.deltaTime);
+            transform.position = Vector3.SmoothDamp(
+                transform.position,
+                desiredPos,
+                ref _positionVelocity,
+                1f / Mathf.Max(1f, smoothSpeed));
 
         UpdateFieldOfView();
 
@@ -217,13 +248,13 @@ public class CameraController : MonoBehaviour
     // ════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// SphereCasts from chest height toward the desired camera position.
-    /// If the cast hits a wall the camera is pulled in. Eases back out when clear.
+    /// SphereCasts from neck/head height toward the desired camera position.
+    /// If world geometry is between the player and camera, the camera is pulled
+    /// to the hit distance with padding so it never enters the mesh.
     /// </summary>
     private Vector3 ResolveCollision(Vector3 desiredPos, Quaternion orbitRot, Vector3 lookTarget, Vector3 currentOffset)
     {
-        Vector3 fallbackCastOrigin = target.position + Vector3.up * 1.2f;
-        Vector3 castOrigin = Vector3.Lerp(fallbackCastOrigin, lookTarget, 0.85f);
+        Vector3 castOrigin = GetCollisionCastOrigin();
         Vector3 castDir    = desiredPos - castOrigin;
         float   castDist   = castDir.magnitude;
         if (castDist <= 0.001f)
@@ -231,36 +262,60 @@ public class CameraController : MonoBehaviour
 
         castDir /= castDist;
 
-        float targetDist = castDist;
+        if (_currentDistance <= 0.001f)
+            _currentDistance = castDist;
 
-        if (Physics.SphereCast(castOrigin, collisionRadius, castDir,
-                               out RaycastHit hit, castDist,
-                               collisionMask, QueryTriggerInteraction.Ignore))
-        {
-            targetDist = Mathf.Max(hit.distance - wallPadding, minDistance);
-        }
-        else if (Physics.Linecast(castOrigin, desiredPos, out RaycastHit lineHit,
-                                  collisionMask, QueryTriggerInteraction.Ignore))
-        {
-            // Linecast fallback catches thin walls the SphereCast misses.
-            targetDist = Mathf.Max(lineHit.distance - wallPadding, minDistance);
-        }
-
-        // ── Smooth in both directions — no more instant snap ─────────────────
-        // Old code snapped the camera inward instantly (= jerky zoom).
-        // New behaviour:
-        //   • Wall detected   → lerp at pullInSpeed (fast, ~20 f/s) so the
-        //     camera closes the gap before clipping but the motion is smooth.
-        //   • Wall cleared    → lerp at recoverySpeed (slow, ~8 f/s) so the
-        //     camera eases back out without a visible pop.
-        float blendSpeed = targetDist < _currentDistance ? pullInSpeed : recoverySpeed;
-        _currentDistance = Mathf.Lerp(_currentDistance, targetDist,
-                                       blendSpeed * Time.deltaTime);
+        float targetDist = FindNearestCollisionDistance(castOrigin, castDir, castDist);
+        float smoothTime = targetDist < _currentDistance ? pullInSpeed : recoverySmoothTime;
+        _currentDistance = Mathf.SmoothDamp(
+            _currentDistance,
+            targetDist,
+            ref _distanceVelocity,
+            Mathf.Max(0.001f, smoothTime));
 
         // Rebuild position along the same orbit direction at the clamped distance
-        Vector3 offsetDir = (orbitRot * currentOffset).normalized;
+        Vector3 offsetDir = castDir;
         Vector3 resolved = castOrigin + offsetDir * _currentDistance;
+        _closeSpaceActive = _currentDistance <= closeDistanceFailsafe;
+        if (_closeSpaceActive)
+            resolved += Vector3.up * closeSpaceHeightBoost;
+
         return EnforceGroundFloor(resolved);
+    }
+
+    private Vector3 GetCollisionCastOrigin()
+    {
+        if (target == null)
+            return transform.position;
+
+        return target.position + Vector3.up * Mathf.Max(1.45f, lookHeight);
+    }
+
+    private float FindNearestCollisionDistance(Vector3 origin, Vector3 direction, float desiredDistance)
+    {
+        float nearest = desiredDistance;
+        RaycastHit[] hits = Physics.SphereCastAll(
+            origin,
+            collisionRadius,
+            direction,
+            desiredDistance,
+            collisionMask,
+            QueryTriggerInteraction.Ignore);
+
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider col = hits[i].collider;
+            if (col == null)
+                continue;
+            if (target != null && col.transform.IsChildOf(target))
+                continue;
+            if (!IsSolidCameraLayer(col.gameObject.layer))
+                continue;
+
+            nearest = Mathf.Min(nearest, Mathf.Max(hits[i].distance - wallPadding, minDistance));
+        }
+
+        return nearest;
     }
 
     /// <summary>
@@ -293,10 +348,7 @@ public class CameraController : MonoBehaviour
     {
         if (target == null) return transform.position + transform.forward * 5f;
 
-        Transform resolvedBone = ResolveLookBone(target);
-        Vector3 rawTarget = resolvedBone != null
-            ? resolvedBone.TransformPoint(lookTargetLocalOffset)
-            : target.position + Vector3.up * lookHeight;
+        Vector3 rawTarget = target.position + Vector3.up * lookHeight + target.TransformVector(lookTargetLocalOffset);
 
         if (!_lookTargetInitialized)
         {
@@ -446,9 +498,24 @@ public class CameraController : MonoBehaviour
         Camera cam = GetComponent<Camera>();
         if (cam == null) return;
 
-        // Zoom disabled — always use the default field of view.
+        float targetFov = _closeSpaceActive ? closeSpaceFieldOfView : defaultFieldOfView;
         cam.fieldOfView = immediate
-            ? defaultFieldOfView
-            : Mathf.Lerp(cam.fieldOfView, defaultFieldOfView, 10f * Time.deltaTime);
+            ? targetFov
+            : Mathf.SmoothDamp(cam.fieldOfView, targetFov, ref _fieldOfViewVelocity, 0.12f);
+    }
+
+    private static LayerMask BuildSolidCameraMask()
+    {
+        int mask = 0;
+        int environment = LayerMask.NameToLayer("Environment");
+        if (environment >= 0) mask |= 1 << environment;
+        mask |= 1 << 0; // Default
+        return mask;
+    }
+
+    private static bool IsSolidCameraLayer(int layer)
+    {
+        int environment = LayerMask.NameToLayer("Environment");
+        return layer == 0 || (environment >= 0 && layer == environment);
     }
 }

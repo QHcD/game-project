@@ -11,20 +11,34 @@ public class MatchStatsManager : MonoBehaviour
 
     public struct CombatantSnapshot
     {
-        public string Id;
-        public string DisplayName;
-        public int Kills;
-        public bool IsPlayer;
-        public bool IsAlive;
+        public string    Id;
+        public string    DisplayName;
+        public int       Kills;
+        public int       Deaths;
+        public int       Score;
+        public bool      IsPlayer;
+        public bool      IsAlive;
+        /// <summary>
+        /// Live world transform of the combatant (player root or enemy root).
+        /// May be null after the entity has been destroyed (e.g. enemy
+        /// pooled out of the scene). The end-match cinematic uses this to
+        /// orbit the camera around the top three.
+        /// </summary>
+        public Transform Transform;
     }
 
     private sealed class CombatantData
     {
-        public string Id;
-        public string DisplayName;
-        public int Kills;
-        public bool IsPlayer;
-        public bool IsAlive;
+        public string    Id;
+        public string    DisplayName;
+        public int       Kills;
+        public int       Deaths;
+        public bool      IsPlayer;
+        public bool      IsAlive;
+        public Transform Transform;
+
+        /// <summary>Score is derived: 100 per kill, -25 per death (floor 0).</summary>
+        public int Score => Mathf.Max(0, Kills * 100 - Deaths * 25);
     }
 
     public static MatchStatsManager Instance { get; private set; }
@@ -69,7 +83,7 @@ public class MatchStatsManager : MonoBehaviour
         NotifyStatsChanged();
     }
 
-    public void RegisterCombatant(string id, string displayName, bool isPlayer)
+    public void RegisterCombatant(string id, string displayName, bool isPlayer, Transform transform = null)
     {
         if (string.IsNullOrWhiteSpace(id))
             return;
@@ -84,8 +98,9 @@ public class MatchStatsManager : MonoBehaviour
         }
 
         combatant.DisplayName = string.IsNullOrWhiteSpace(displayName) ? (isPlayer ? "PLAYER" : "COMBATANT") : displayName.ToUpperInvariant();
-        combatant.IsPlayer = isPlayer;
-        combatant.IsAlive = true;
+        combatant.IsPlayer  = isPlayer;
+        combatant.IsAlive   = true;
+        if (transform != null) combatant.Transform = transform;
         NotifyStatsChanged();
     }
 
@@ -96,8 +111,14 @@ public class MatchStatsManager : MonoBehaviour
 
         if (_combatants.TryGetValue(id, out CombatantData combatant))
         {
-            combatant.IsAlive = false;
-            NotifyStatsChanged();
+            // Only count the *first* elimination — re-registering the same
+            // id (e.g. respawn) would otherwise double-count the death.
+            if (combatant.IsAlive)
+            {
+                combatant.Deaths += 1;
+                combatant.IsAlive = false;
+                NotifyStatsChanged();
+            }
         }
     }
 
@@ -120,16 +141,20 @@ public class MatchStatsManager : MonoBehaviour
 
         return _combatants.Values
             .OrderByDescending(entry => entry.Kills)
+            .ThenBy(entry => entry.Deaths)
             .ThenByDescending(entry => entry.IsPlayer)
             .ThenBy(entry => entry.DisplayName)
             .Take(count)
             .Select(entry => new CombatantSnapshot
             {
-                Id = entry.Id,
+                Id          = entry.Id,
                 DisplayName = entry.DisplayName,
-                Kills = entry.Kills,
-                IsPlayer = entry.IsPlayer,
-                IsAlive = entry.IsAlive
+                Kills       = entry.Kills,
+                Deaths      = entry.Deaths,
+                Score       = entry.Score,
+                IsPlayer    = entry.IsPlayer,
+                IsAlive     = entry.IsAlive,
+                Transform   = entry.Transform,
             })
             .ToArray();
     }

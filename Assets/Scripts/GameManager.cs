@@ -95,6 +95,7 @@ public class GameManager : MonoBehaviour
     // ── Runtime state ────────────────────────────────────────────────────────
     public int   currentLevel        = 1;
     public int   score               = 0;
+    public int   killCount           = 0;
     public int   enemiesRemaining    = 0;
     public string difficulty         = "Normal";
     public bool  playerTookDamage    = false;
@@ -106,11 +107,33 @@ public class GameManager : MonoBehaviour
     public int totalEnemiesSpawned   = 0;
     public int enemiesKilledThisLevel = 0;
 
+    // ── Custom Match (set by the Custom Match menu) ──────────────────────────
+    // When IsCustomMatch is true, GetEnemyCount/LevelTimeLimitSeconds and the
+    // active difficulty switch over to these per-session overrides instead of
+    // the persisted PlayerPrefs values.
+    public bool   isCustomMatch          = false;
+    public int    customEnemyCount       = 12;
+    public int    customMatchTimeSeconds = 300;
+    public string customDifficulty       = "Normal";
+
+    public const int DefaultEnemyCount      = 25;
+    public const int CustomEnemyMin         = 1;
+    public const int CustomEnemyMax         = 25;
+    public const int CustomMatchTimeMin     = 60;   // 1 minute
+    public const int CustomMatchTimeMax     = 1800; // 30 minutes (defensive cap)
+
     [SerializeField] private float victoryDelaySeconds = 2.5f;
     [SerializeField] private float loadingScreenMinSeconds = 5.5f;
 
     private bool _levelCompleteTriggered = false;
     private Coroutine _sceneLoadRoutine;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetStaticsForPlayMode()
+    {
+        Instance = null;
+        PendingMenuScreen = MenuScreen.MainMenu;
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     //  STRICT SINGLETON — "Destroyer" Pattern
@@ -120,18 +143,15 @@ public class GameManager : MonoBehaviour
     // ════════════════════════════════════════════════════════════════════════
     void Awake()
     {
-        // ── Guard 1: singleton check ────────────────────────────────────────
         if (Instance != null && Instance != this)
         {
             Debug.LogWarning($"[GameManager] Duplicate destroyed: \"{gameObject.name}\". Only one GameManager allowed.");
-            DestroyImmediate(this.gameObject);
+            DestroyImmediate(gameObject);
             return;
         }
 
-        // ── Guard 2: sweep every sibling Awake for same-type components ────────
-        // Handles the case where multiple GameManagers authored into the same
-        // scene fire Awake() in undefined order before any had a chance to
-        // register as Instance. This catches all of them.
+        Instance = this;
+
         if (Application.isPlaying)
         {
             GameManager[] all = Object.FindObjectsByType<GameManager>(FindObjectsSortMode.None);
@@ -143,14 +163,17 @@ public class GameManager : MonoBehaviour
                     DestroyImmediate(all[i].gameObject);
                 }
             }
+
+            DontDestroyOnLoad(gameObject);
         }
 
-        // ── Promote to singleton ────────────────────────────────────────────
-        Instance = this;
-        if (Application.isPlaying)
-            DontDestroyOnLoad(gameObject);
-
         LoadPersistedSettings();
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this)
+            Instance = null;
     }
 
     private void LoadPersistedSettings()
@@ -192,12 +215,13 @@ public class GameManager : MonoBehaviour
         if (!active.name.Equals("GameScene")) return;
         if (_levelCompleteTriggered) return;
 
+        float timeLimit = LevelTimeLimitSeconds;
         levelTime += Time.deltaTime;
-        if (levelTime >= LevelTimeLimitSeconds)
+        if (levelTime >= timeLimit)
         {
-            levelTime = LevelTimeLimitSeconds;
+            levelTime = timeLimit;
             _levelCompleteTriggered = true;
-            GameOver();
+            ResolveTimedMatchWinner();
         }
     }
 
@@ -227,14 +251,8 @@ public class GameManager : MonoBehaviour
             agent.enabled = false;
             agent.enabled = true;
 
-            if (UnityEngine.AI.NavMesh.SamplePosition(
-                    enemies[i].transform.position,
-                    out UnityEngine.AI.NavMeshHit hit,
-                    8f,
-                    UnityEngine.AI.NavMesh.AllAreas))
-            {
-                agent.Warp(hit.position);
-            }
+            // Do not warp enemies during normal play. EnemyController only
+            // warps after a real out-of-map fall below Y = -5.
         }
 
         Debug.Log($"[GameManager] Level 6 agent refresh: rebound {enemies.Length} NavMeshAgent(s).");
@@ -243,17 +261,21 @@ public class GameManager : MonoBehaviour
     // ── Settings setters ─────────────────────────────────────────────────────
     public void SetDifficulty(string diff)
     {
-        string normalized = string.IsNullOrWhiteSpace(diff) ? "Normal" : diff.Trim();
-        if (normalized.Equals("easy", System.StringComparison.OrdinalIgnoreCase))
-            normalized = "Easy";
-        else if (normalized.Equals("hard", System.StringComparison.OrdinalIgnoreCase))
-            normalized = "Hard";
-        else
-            normalized = "Normal";
-
+        string normalized = NormalizeDifficulty(diff);
         difficulty = normalized;
         PlayerPrefs.SetString("Difficulty", normalized);
         PlayerPrefs.Save();
+    }
+
+    /// <summary>Canonicalises a difficulty string. Accepts Easy/Normal/Hard/Veteran.</summary>
+    private static string NormalizeDifficulty(string diff)
+    {
+        if (string.IsNullOrWhiteSpace(diff)) return "Normal";
+        string trimmed = diff.Trim();
+        if (trimmed.Equals("easy",    System.StringComparison.OrdinalIgnoreCase)) return "Easy";
+        if (trimmed.Equals("hard",    System.StringComparison.OrdinalIgnoreCase)) return "Hard";
+        if (trimmed.Equals("veteran", System.StringComparison.OrdinalIgnoreCase)) return "Veteran";
+        return "Normal";
     }
 
     public void SetSelectedMap(ArenaMap map)
@@ -293,8 +315,39 @@ public class GameManager : MonoBehaviour
     {
         Time.timeScale = 1f;
         score = 0;
+        // A "regular" run always clears any pending custom-match overrides
+        // — only StartCustomRun re-enables them.
+        isCustomMatch = false;
         if (MatchStatsManager.Instance != null)
             MatchStatsManager.Instance.ResetMatch();
+        if (SessionManager.Instance != null)
+            SessionManager.Instance.BeginMatch();
+        SetCurrentLevel(level);
+        PendingMenuScreen = MenuScreen.MainMenu;
+        BeginSceneLoad("GameScene");
+    }
+
+    /// <summary>
+    /// Begin a Custom Match using the values picked in the Custom Match menu.
+    /// </summary>
+    /// <param name="enemyCount">Number of enemies (1..25).</param>
+    /// <param name="matchTimeSeconds">Total match length in seconds (e.g. 120, 300, 600).</param>
+    /// <param name="difficultyLabel">"Easy", "Normal", or "Veteran".</param>
+    /// <param name="level">Which weapon level to play with (defaults to 1).</param>
+    public void StartCustomRun(int enemyCount, int matchTimeSeconds, string difficultyLabel, int level = 1)
+    {
+        Time.timeScale = 1f;
+        score = 0;
+
+        isCustomMatch          = true;
+        customEnemyCount       = Mathf.Clamp(enemyCount, CustomEnemyMin, CustomEnemyMax);
+        customMatchTimeSeconds = Mathf.Clamp(matchTimeSeconds, CustomMatchTimeMin, CustomMatchTimeMax);
+        customDifficulty       = NormalizeDifficulty(difficultyLabel);
+
+        if (MatchStatsManager.Instance != null)
+            MatchStatsManager.Instance.ResetMatch();
+        if (SessionManager.Instance != null)
+            SessionManager.Instance.BeginMatch();
         SetCurrentLevel(level);
         PendingMenuScreen = MenuScreen.MainMenu;
         BeginSceneLoad("GameScene");
@@ -320,29 +373,53 @@ public class GameManager : MonoBehaviour
         ResetLevelState();
     }
 
-    public const float LevelTimeLimitSeconds = 180f;
+    /// <summary>
+    /// Match length in seconds. Default match length is 5 minutes (300s).
+    /// In a Custom Match, the player picks 2/5/10 minutes via the menu and
+    /// we honour that instead.
+    /// </summary>
+    public float LevelTimeLimitSeconds
+        => isCustomMatch ? Mathf.Clamp(customMatchTimeSeconds, CustomMatchTimeMin, CustomMatchTimeMax) : 300f;
 
-    public int GetEnemyCount() => 25;
+    public int GetEnemyCount()
+        => isCustomMatch ? Mathf.Clamp(customEnemyCount, CustomEnemyMin, CustomEnemyMax) : DefaultEnemyCount;
+
+    /// <summary>Active difficulty string — Custom Match overrides the persisted Options value.</summary>
+    public string ActiveDifficulty => isCustomMatch ? NormalizeDifficulty(customDifficulty) : difficulty;
 
     public float GetEnemySpeed()
     {
         float baseSpeed = 1.85f + ((currentLevel - 1) * 0.045f);
-        switch (difficulty)
+        switch (ActiveDifficulty)
         {
-            case "Easy": return baseSpeed * 0.88f;
-            case "Hard": return baseSpeed * 1.05f;
-            default:     return baseSpeed;
+            case "Easy":    return baseSpeed * 0.88f;
+            case "Hard":    return baseSpeed * 1.05f;
+            case "Veteran": return baseSpeed * 1.18f;
+            default:        return baseSpeed;
         }
     }
 
     public float GetEnemyDamage()
     {
         float baseDamage = 7.5f + ((currentLevel - 1) * 0.45f);
-        switch (difficulty)
+        switch (ActiveDifficulty)
         {
-            case "Easy": return baseDamage * 0.82f;
-            case "Hard": return baseDamage * 1.15f;
-            default:     return baseDamage;
+            case "Easy":    return baseDamage * 0.82f;
+            case "Hard":    return baseDamage * 1.15f;
+            case "Veteran": return baseDamage * 1.40f;
+            default:        return baseDamage;
+        }
+    }
+
+    /// <summary>Multiplier applied to enemy max-HP. Veteran enemies tank more hits.</summary>
+    public float GetEnemyHealthMultiplier()
+    {
+        switch (ActiveDifficulty)
+        {
+            case "Easy":    return 0.85f;
+            case "Hard":    return 1.15f;
+            case "Veteran": return 1.45f;
+            default:        return 1.00f;
         }
     }
 
@@ -366,21 +443,23 @@ public class GameManager : MonoBehaviour
 
     public int GetPlayerHitsToKill()
     {
-        switch (difficulty)
+        switch (ActiveDifficulty)
         {
-            case "Easy": return 3;
-            case "Hard": return 7;
-            default:     return 5;
+            case "Easy":    return 3;
+            case "Hard":    return 7;
+            case "Veteran": return 9;
+            default:        return 5;
         }
     }
 
     public int GetEnemyHitsToKillByPlayer()
     {
-        switch (difficulty)
+        switch (ActiveDifficulty)
         {
-            case "Easy": return 3;
-            case "Hard": return 7;
-            default:     return 5;
+            case "Easy":    return 3;
+            case "Hard":    return 7;
+            case "Veteran": return 8;
+            default:        return 5;
         }
     }
 
@@ -400,6 +479,7 @@ public class GameManager : MonoBehaviour
 
             if (byPlayer)
             {
+                killCount++;
                 HUDManager.Instance.UpdateScore(score);
                 HUDManager.Instance.RegisterKill();
                 if (CombatUIManager.Instance != null) CombatUIManager.Instance.ShowKill();
@@ -444,8 +524,44 @@ public class GameManager : MonoBehaviour
         PlayerPrefs.SetInt("ContinueLevel", Mathf.Min(TotalLevels, currentLevel + 1));
         PlayerPrefs.Save();
 
+        // PRISM session — pay the +500 win bounty + advance Fast Win / Flawless
+        // / Match Wins challenges before transitioning to the menu.
+        if (SessionManager.Instance != null)
+            SessionManager.Instance.EndMatch(playerWon: true);
+
         PendingMenuScreen = MenuScreen.LevelComplete;
         SceneManager.LoadScene("MainMenu");
+    }
+
+    private void ResolveTimedMatchWinner()
+    {
+        int highestKillCount = killCount;
+        MatchStatsManager stats = MatchStatsManager.Instance;
+        bool playerWon;
+        if (stats == null)
+        {
+            playerWon = killCount > 0;
+        }
+        else
+        {
+            var leaders = stats.GetTopCombatants(32);
+            for (int i = 0; i < leaders.Count; i++)
+                highestKillCount = Mathf.Max(highestKillCount, leaders[i].Kills);
+            playerWon = killCount >= highestKillCount;
+        }
+
+        // Black Ops 3 "Winners Circle" sequence — slow-mo, podium orbit, victory
+        // pose, scoreboard. Hands back to LevelComplete/GameOver when the
+        // player picks Play Again or Main Menu.
+        EndMatchCinematic.Begin(playerWon, () =>
+        {
+            // The cinematic now drives Play Again / Main Menu directly via
+            // GameManager.ReplayCurrentLevel / GoToMainMenu, so this callback
+            // exists only as a safety net for cases where the cinematic ends
+            // without user input (e.g. forced abort).
+            if (playerWon) LevelComplete();
+            else           GameOver();
+        });
     }
 
     public void LoadNextLevel()
@@ -472,6 +588,13 @@ public class GameManager : MonoBehaviour
         Time.timeScale = 1f;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible   = true;
+
+        // Player lost — still award a tiny consolation credit drop so the
+        // economy never zero-sums after a hard match. EndMatch with
+        // playerWon=false also bumps the lifetimeMatchesPlayed counter.
+        if (SessionManager.Instance != null)
+            SessionManager.Instance.EndMatch(playerWon: false);
+
         PendingMenuScreen = MenuScreen.GameOver;
         SceneManager.LoadScene("MainMenu");
     }
@@ -481,6 +604,9 @@ public class GameManager : MonoBehaviour
         Time.timeScale = 1f;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible   = true;
+        // Custom matches are session-scoped; returning to the menu always
+        // ends them. If the player wants another, they re-pick it.
+        isCustomMatch     = false;
         PendingMenuScreen = MenuScreen.MainMenu;
         SceneManager.LoadScene("MainMenu");
     }
@@ -498,6 +624,7 @@ public class GameManager : MonoBehaviour
     private void ResetLevelState()
     {
         levelTime                = 0f;
+        killCount                = 0;
         playerTookDamage         = false;
         totalEnemiesSpawned      = 0;
         enemiesKilledThisLevel   = 0;

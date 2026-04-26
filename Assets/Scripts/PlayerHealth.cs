@@ -35,7 +35,12 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         timeSinceLastDamage = regenDelay + 1f; // Start fully healed, no regen needed
 
         if (MatchStatsManager.Instance != null)
-            MatchStatsManager.Instance.RegisterCombatant(MatchStatsManager.BuildCombatantId(this), "PLAYER", isPlayer: true);
+        {
+            // Use the persistent username from PlayerProfile so the player
+            // shows up under their real handle in the leaderboard / kill feed.
+            string label = PlayerProfile.HasUsername ? PlayerProfile.Username : "PLAYER";
+            MatchStatsManager.Instance.RegisterCombatant(MatchStatsManager.BuildCombatantId(this), label, isPlayer: true, transform: transform);
+        }
     }
 
     private void Update()
@@ -80,6 +85,11 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         timeSinceLastDamage = 0f;
         isRegenerating = false;
 
+        // Notify the persistent profile so the "Win without dying" challenge
+        // disqualifies the current match the moment we take any damage.
+        if (SessionManager.Instance != null)
+            SessionManager.Instance.OnPlayerTookDamage();
+
         if (HUDManager.Instance != null)
         {
             HUDManager.Instance.UpdateHealth(currentHealth, maxHealth);
@@ -114,6 +124,14 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         UnityEngine.AI.NavMeshAgent agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
         if (agent != null) agent.enabled = false;
+
+        Collider[] colliders = GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col != null && !col.isTrigger)
+                col.enabled = false;
+        }
 
         // Trigger ragdoll if the player rig has one wired up. Direction is
         // toward the last attacker so the body recoils naturally.

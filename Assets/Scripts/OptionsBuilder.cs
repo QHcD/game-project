@@ -18,6 +18,8 @@ public class OptionsBuilder : MonoBehaviour
     private TMP_Dropdown difficultyDropdown;
     private TMP_Dropdown perspectiveDropdown;
     private TMP_Dropdown controlDropdown;
+    private Slider      sensitivitySlider;
+    private TextMeshProUGUI sensitivityValueLabel;
 
     private void Start()
     {
@@ -83,20 +85,107 @@ public class OptionsBuilder : MonoBehaviour
         Outline outline = panelObject.AddComponent<Outline>();
         outline.effectColor = new Color(0.26f, 0.42f, 0.68f, 0.18f);
         outline.effectDistance = new Vector2(2f, -2f);
-        SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 460f), new Vector2(0f, -10f));
+        SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 540f), new Vector2(0f, -10f));
 
         difficultyDropdown = MakeDropdownRow(panel.transform, "DIFFICULTY:", new List<string>(difficultyOptions),
-            DifficultyIndex(), 6f, OnDifficultyChanged);
+            DifficultyIndex(), 80f, OnDifficultyChanged);
         perspectiveDropdown = MakeDropdownRow(panel.transform, "CAMERA VIEW:", new List<string>(perspectiveOptions),
-            PerspectiveIndex(), -74f, OnPerspectiveChanged);
+            PerspectiveIndex(), 4f, OnPerspectiveChanged);
         controlDropdown = MakeDropdownRow(panel.transform, "MOVE STYLE:", new List<string>(controlOptions),
-            ControlIndex(), -154f, OnControlChanged);
+            ControlIndex(), -72f, OnControlChanged);
+        sensitivitySlider = MakeSensitivityRow(panel.transform, -148f);
 
-        MakeInfoText(panel.transform, "Choose how intense the enemies are, how the camera follows you, and whether movement uses WASD or Arrow keys.",
-            new Vector2(0f, 120f), new Vector2(760f, 70f));
+        MakeInfoText(panel.transform, "Tune difficulty, camera view, movement scheme, and mouse sensitivity. Sensitivity 0 is very slow, 7 is very fast — the change takes effect immediately in-game.",
+            new Vector2(0f, -212f), new Vector2(820f, 70f));
 
-        MakePrismButton(canvasObject.transform, "RETURN", new Vector2(-150f, -305f), () => SceneManager.LoadScene("MainMenu"));
-        MakePrismButton(canvasObject.transform, "RESET", new Vector2(150f, -305f), ResetOptions);
+        Button returnBtn = MakePrismButton(canvasObject.transform, "RETURN", new Vector2(-150f, -340f), () => SceneManager.LoadScene("MainMenu"));
+        Button resetBtn  = MakePrismButton(canvasObject.transform, "RESET",  new Vector2(150f, -340f), ResetOptions);
+
+        // Wire arrow-key + Enter navigation across every interactable on this screen.
+        List<Selectable> nav = new List<Selectable>();
+        if (difficultyDropdown != null)  nav.Add(difficultyDropdown);
+        if (perspectiveDropdown != null) nav.Add(perspectiveDropdown);
+        if (controlDropdown != null)     nav.Add(controlDropdown);
+        if (sensitivitySlider != null)   nav.Add(sensitivitySlider);
+        if (returnBtn != null) nav.Add(returnBtn);
+        if (resetBtn != null)  nav.Add(resetBtn);
+        MenuKeyboardNavigator.AttachVertical(canvasObject, nav);
+    }
+
+    /// <summary>
+    /// Builds the Mouse Sensitivity row: a 0–7 slider that updates
+    /// <see cref="LookSensitivityRuntime"/> on change so the camera responds
+    /// the moment the player drags it.
+    /// </summary>
+    private Slider MakeSensitivityRow(Transform parent, float yPos)
+    {
+        GameObject row = CreateRow(parent, "Row_SENSITIVITY", yPos);
+        MakeText(row.transform, "MOUSE SENSITIVITY:", 25f, new Color(0.95f, 0.95f, 1f, 1f),
+            new Vector2(-210f, 0f), new Vector2(340f, 42f), false, TextAlignmentOptions.MidlineRight);
+
+        GameObject barObj = new GameObject("SensitivityBar");
+        barObj.transform.SetParent(row.transform, false);
+        Image barBg = barObj.AddComponent<Image>();
+        barBg.color = new Color(0.74f, 0.78f, 0.94f, 0.95f);
+        SetRect(barObj.GetComponent<RectTransform>(), new Vector2(310f, 18f), new Vector2(150f, 0f));
+
+        Slider slider = barObj.AddComponent<Slider>();
+        slider.direction = Slider.Direction.LeftToRight;
+        slider.minValue  = LookSensitivityRuntime.MinSlider;
+        slider.maxValue  = LookSensitivityRuntime.MaxSlider;
+        slider.wholeNumbers = false;
+
+        GameObject fillArea = new GameObject("FillArea");
+        fillArea.transform.SetParent(barObj.transform, false);
+        RectTransform fillAreaRect = fillArea.AddComponent<RectTransform>();
+        fillAreaRect.anchorMin = Vector2.zero;
+        fillAreaRect.anchorMax = Vector2.one;
+        fillAreaRect.offsetMin = Vector2.zero;
+        fillAreaRect.offsetMax = new Vector2(-18f, 0f);
+
+        GameObject fill = new GameObject("Fill");
+        fill.transform.SetParent(fillArea.transform, false);
+        Image fillImage = fill.AddComponent<Image>();
+        fillImage.color = new Color(0.30f, 0.55f, 1f, 1f);
+        RectTransform fillRect = fill.GetComponent<RectTransform>();
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = Vector2.one;
+        fillRect.offsetMin = fillRect.offsetMax = Vector2.zero;
+
+        GameObject handle = new GameObject("Handle");
+        handle.transform.SetParent(barObj.transform, false);
+        Image handleImage = handle.AddComponent<Image>();
+        handleImage.color = Color.white;
+        RectTransform handleRect = handle.GetComponent<RectTransform>();
+        handleRect.sizeDelta = new Vector2(18f, 30f);
+
+        slider.fillRect = fillRect;
+        slider.handleRect = handleRect;
+        slider.targetGraphic = handleImage;
+
+        // Live numeric readout on the right of the slider.
+        sensitivityValueLabel = MakeText(row.transform, "3.5", 22f, new Color(0.92f, 0.94f, 1f, 1f),
+            new Vector2(330f, 0f), new Vector2(60f, 42f), false, TextAlignmentOptions.Center);
+        sensitivityValueLabel.fontStyle = FontStyles.Bold;
+
+        // Initialise from PlayerPrefs and write changes through the runtime.
+        LookSensitivityRuntime.LoadFromPrefs();
+        slider.SetValueWithoutNotify(LookSensitivityRuntime.SliderValue);
+        UpdateSensitivityLabel(LookSensitivityRuntime.SliderValue);
+
+        slider.onValueChanged.AddListener(value =>
+        {
+            LookSensitivityRuntime.SetSliderValue(value, persist: true);
+            UpdateSensitivityLabel(value);
+        });
+
+        return slider;
+    }
+
+    private void UpdateSensitivityLabel(float sliderValue)
+    {
+        if (sensitivityValueLabel == null) return;
+        sensitivityValueLabel.text = sliderValue.ToString("0.0");
     }
 
     private int DifficultyIndex()
@@ -181,6 +270,13 @@ public class OptionsBuilder : MonoBehaviour
         {
             controlDropdown.SetValueWithoutNotify(0);
             controlDropdown.RefreshShownValue();
+        }
+
+        if (sensitivitySlider != null)
+        {
+            sensitivitySlider.SetValueWithoutNotify(LookSensitivityRuntime.DefaultSlider);
+            UpdateSensitivityLabel(LookSensitivityRuntime.DefaultSlider);
+            LookSensitivityRuntime.SetSliderValue(LookSensitivityRuntime.DefaultSlider, persist: true);
         }
 
         OnDifficultyChanged(1);
@@ -348,7 +444,7 @@ public class OptionsBuilder : MonoBehaviour
         return tmp;
     }
 
-    private void MakePrismButton(Transform parent, string label, Vector2 position, UnityEngine.Events.UnityAction action)
+    private Button MakePrismButton(Transform parent, string label, Vector2 position, UnityEngine.Events.UnityAction action)
     {
         Image buttonImage = new GameObject("Btn_" + label).AddComponent<Image>();
         buttonImage.transform.SetParent(parent, false);
@@ -360,11 +456,13 @@ public class OptionsBuilder : MonoBehaviour
         outline.effectDistance = new Vector2(2f, -2f);
 
         Button button = buttonImage.gameObject.AddComponent<Button>();
+        button.targetGraphic = buttonImage;
         button.onClick.AddListener(action);
 
         TextMeshProUGUI labelText = MakeText(buttonImage.transform, label, 24f, new Color(0.10f, 0.10f, 0.14f, 1f), Vector2.zero, new Vector2(190f, 58f), false, TextAlignmentOptions.Center);
         labelText.fontStyle = FontStyles.Bold;
         AttachHoverEffect(buttonImage.gameObject, labelText, buttonImage);
+        return button;
     }
 
     private void AttachHoverEffect(GameObject target, TextMeshProUGUI label, Image image)

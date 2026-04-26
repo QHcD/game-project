@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -26,11 +27,16 @@ public class HUDManager : MonoBehaviour
     public Slider healthBar;
 
     private float elapsed;
-    private float timeLimit = 120f;
+    private float timeLimit = 300f;
     private PlayerHealth playerHealth;
     private PlayerController playerController;
     private RawImage minimapImage;
     private RectTransform minimapArrow;
+    private RectTransform fullMapPlayerArrow;
+    private RectTransform minimapRootRect;
+    private RectTransform fullMapFrameRect;
+    private readonly List<RectTransform> enemyMinimapArrows = new List<RectTransform>();
+    private readonly List<RectTransform> enemyFullMapArrows = new List<RectTransform>();
     private Texture2D minimapCircleTexture;
     private GameObject fullMapOverlay;
     private RawImage fullMapImage;
@@ -119,7 +125,10 @@ public class HUDManager : MonoBehaviour
         if (MatchStatsManager.Instance != null && playerHealth != null)
         {
             string playerId = MatchStatsManager.BuildCombatantId(playerHealth);
-            MatchStatsManager.Instance.RegisterCombatant(playerId, "YOU", isPlayer: true);
+            // Use the persistent username (if the player has set one) so the
+            // leaderboard/feed shows their handle instead of a generic "YOU".
+            string playerLabel = PlayerProfile.HasUsername ? PlayerProfile.Username : "YOU";
+            MatchStatsManager.Instance.RegisterCombatant(playerId, playerLabel, isPlayer: true, transform: playerHealth.transform);
             MatchStatsManager.Instance.StatsChanged -= HandleMatchStatsChanged;
             MatchStatsManager.Instance.StatsChanged += HandleMatchStatsChanged;
         }
@@ -223,14 +232,6 @@ public class HUDManager : MonoBehaviour
 
         if (killCountText != null)
             killCountText.text = "KILLS  " + killCount;
-
-        // Mirror into MatchStatsManager so the leaderboard kill count
-        // stays in sync with the on-screen counter.
-        if (MatchStatsManager.Instance != null && playerHealth != null)
-        {
-            string playerId = MatchStatsManager.BuildCombatantId(playerHealth);
-            MatchStatsManager.Instance.RecordKill(playerId);
-        }
 
         // Live-refresh the leaderboard row (visible or not) so the sort
         // order updates the moment the kill is confirmed.
@@ -531,6 +532,7 @@ public class HUDManager : MonoBehaviour
         GameObject minimapRoot = CreateImage(canvasTransform, "MinimapRoot",
             new Color(0.10f, 0.08f, 0.05f, 0.82f),
             new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-130f, 128f), new Vector2(188f, 188f));
+        minimapRootRect = minimapRoot.GetComponent<RectTransform>();
         Image minimapRootImage = minimapRoot.GetComponent<Image>();
         minimapRootImage.sprite = GetOrCreateCircleSprite();
         minimapRootImage.type = Image.Type.Simple;
@@ -558,10 +560,14 @@ public class HUDManager : MonoBehaviour
         minimapImage.color = Color.white;
 
         GameObject arrowObject = CreateImage(minimapRoot.transform, "PlayerArrow",
-            new Color(1f, 0.96f, 0.92f, 1f),
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(22f, 28f));
-        arrowObject.GetComponent<Image>().sprite = GetOrCreateTriangleSprite();
+            new Color(0.25f, 1f, 0.35f, 1f),
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(34f, 42f));
+        Image playerArrowImage = arrowObject.GetComponent<Image>();
+        playerArrowImage.sprite = GetOrCreateTriangleSprite();
+        playerArrowImage.color = new Color(0.25f, 1f, 0.35f, 1f);
         minimapArrow = arrowObject.GetComponent<RectTransform>();
+        minimapArrow.sizeDelta = new Vector2(40f, 50f);
+        EnsureEnemyArrowPool(minimapRoot.transform, enemyMinimapArrows, "EnemyMiniArrow_", 24f);
     }
 
     private void EnsureFullMapOverlay(Transform canvasTransform)
@@ -572,12 +578,13 @@ public class HUDManager : MonoBehaviour
             fullMapOverlay = new GameObject("FullMapOverlay");
             fullMapOverlay.transform.SetParent(canvasTransform, false);
             Image backdrop = fullMapOverlay.AddComponent<Image>();
-            backdrop.color = new Color(0.02f, 0.04f, 0.08f, 0.88f);
+            backdrop.color = new Color(0.02f, 0.04f, 0.08f, 0.68f);
             Stretch(fullMapOverlay.GetComponent<RectTransform>());
 
             GameObject frame = CreateImage(fullMapOverlay.transform, "FullMapFrame",
                 new Color(0.08f, 0.12f, 0.18f, 0.96f),
                 new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(1040f, 760f));
+            fullMapFrameRect = frame.GetComponent<RectTransform>();
             frame.AddComponent<Outline>().effectColor = new Color(0.32f, 0.78f, 1f, 0.24f);
 
             GameObject mapImageObject = new GameObject("FullMapImage");
@@ -595,12 +602,32 @@ public class HUDManager : MonoBehaviour
                 24f, FontStyles.Bold, TextAlignmentOptions.Center);
             fullMapHintText.text = "TAB  TOGGLE FULL MAP";
             fullMapHintText.color = new Color(0.76f, 0.90f, 1f, 0.92f);
+
+            GameObject fullPlayerArrow = CreateImage(frame.transform, "FullMapPlayerArrow",
+                new Color(0.25f, 1f, 0.35f, 1f),
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(42f, 54f));
+            fullPlayerArrow.GetComponent<Image>().sprite = GetOrCreateTriangleSprite();
+            fullMapPlayerArrow = fullPlayerArrow.GetComponent<RectTransform>();
         }
         else
         {
+            fullMapFrameRect = fullMapOverlay.transform.Find("FullMapFrame")?.GetComponent<RectTransform>();
             fullMapImage = fullMapOverlay.transform.Find("FullMapFrame/FullMapImage")?.GetComponent<RawImage>();
             fullMapHintText = fullMapOverlay.transform.Find("FullMapFrame/FullMapHint")?.GetComponent<TextMeshProUGUI>();
+            fullMapPlayerArrow = fullMapOverlay.transform.Find("FullMapFrame/FullMapPlayerArrow")?.GetComponent<RectTransform>();
         }
+
+        Transform frameTransform = fullMapFrameRect != null ? fullMapFrameRect.transform : null;
+        if (frameTransform != null && fullMapPlayerArrow == null)
+        {
+            GameObject fullPlayerArrow = CreateImage(frameTransform, "FullMapPlayerArrow",
+                new Color(0.25f, 1f, 0.35f, 1f),
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(42f, 54f));
+            fullPlayerArrow.GetComponent<Image>().sprite = GetOrCreateTriangleSprite();
+            fullMapPlayerArrow = fullPlayerArrow.GetComponent<RectTransform>();
+        }
+        if (frameTransform != null)
+            EnsureEnemyArrowPool(frameTransform, enemyFullMapArrows, "EnemyFullMapArrow_", 34f);
 
         fullMapOverlay.SetActive(false);
     }
@@ -726,6 +753,92 @@ public class HUDManager : MonoBehaviour
 
         if (minimapArrow != null)
             minimapArrow.gameObject.SetActive(!isFullMapVisible);
+
+        UpdateMapArrows(minimap);
+    }
+
+    private const int MaxEnemyMapArrows = 32;
+
+    private void EnsureEnemyArrowPool(Transform parent, List<RectTransform> pool, string prefix, float size)
+    {
+        if (parent == null || pool == null) return;
+
+        for (int i = pool.Count; i < MaxEnemyMapArrows; i++)
+        {
+            GameObject arrow = CreateImage(parent, prefix + i,
+                new Color(1f, 0.18f, 0.16f, 0.95f),
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(size, size * 1.25f));
+            arrow.GetComponent<Image>().sprite = GetOrCreateTriangleSprite();
+            arrow.SetActive(false);
+            pool.Add(arrow.GetComponent<RectTransform>());
+        }
+    }
+
+    private void UpdateMapArrows(MinimapCameraFollow minimap)
+    {
+        if (minimap == null || playerController == null)
+            return;
+
+        EnemyController[] enemies = FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        UpdateFullMapPlayerArrow(minimap);
+        UpdateEnemyArrowPool(enemyMinimapArrows, enemies, minimap, minimapRootRect, false);
+        UpdateEnemyArrowPool(enemyFullMapArrows, enemies, minimap, fullMapFrameRect, true);
+    }
+
+    private void UpdateFullMapPlayerArrow(MinimapCameraFollow minimap)
+    {
+        if (fullMapPlayerArrow == null || fullMapFrameRect == null || playerController == null)
+            return;
+
+        Camera mapCamera = minimap.GetComponent<Camera>();
+        if (mapCamera == null)
+            return;
+
+        float halfSize = Mathf.Min(fullMapFrameRect.rect.width, fullMapFrameRect.rect.height) * 0.5f;
+        Vector2 pos = WorldToMapPosition(playerController.transform.position, minimap.transform.position, mapCamera.orthographicSize, halfSize);
+        fullMapPlayerArrow.anchoredPosition = pos;
+        fullMapPlayerArrow.localEulerAngles = new Vector3(0f, 0f, -playerController.transform.eulerAngles.y);
+        fullMapPlayerArrow.gameObject.SetActive(isFullMapVisible);
+    }
+
+    private void UpdateEnemyArrowPool(List<RectTransform> pool, EnemyController[] enemies, MinimapCameraFollow minimap, RectTransform mapRect, bool fullMap)
+    {
+        if (pool == null || mapRect == null)
+            return;
+
+        Camera mapCamera = minimap.GetComponent<Camera>();
+        if (mapCamera == null)
+            return;
+
+        float halfSize = Mathf.Min(mapRect.rect.width, mapRect.rect.height) * 0.5f;
+        int used = 0;
+
+        for (int i = 0; i < enemies.Length && used < pool.Count; i++)
+        {
+            EnemyController enemy = enemies[i];
+            if (enemy == null || !enemy.IsAlive)
+                continue;
+
+            RectTransform arrow = pool[used++];
+            Vector2 pos = WorldToMapPosition(enemy.transform.position, minimap.transform.position, mapCamera.orthographicSize, halfSize);
+            bool inside = pos.sqrMagnitude <= halfSize * halfSize;
+            arrow.gameObject.SetActive(inside && (fullMap ? isFullMapVisible : !isFullMapVisible));
+            if (!inside) continue;
+
+            arrow.anchoredPosition = pos;
+            arrow.localEulerAngles = new Vector3(0f, 0f, -enemy.transform.eulerAngles.y);
+        }
+
+        for (int i = used; i < pool.Count; i++)
+            if (pool[i] != null) pool[i].gameObject.SetActive(false);
+    }
+
+    private static Vector2 WorldToMapPosition(Vector3 world, Vector3 mapCenter, float orthographicSize, float halfSize)
+    {
+        float worldRadius = Mathf.Max(1f, orthographicSize);
+        float x = (world.x - mapCenter.x) / worldRadius * halfSize;
+        float y = (world.z - mapCenter.z) / worldRadius * halfSize;
+        return new Vector2(x, y);
     }
 
     private void HandleOverlayInput()
@@ -733,16 +846,18 @@ public class HUDManager : MonoBehaviour
         if (Keyboard.current == null)
             return;
 
-        if (Keyboard.current.tabKey.wasPressedThisFrame)
-            ToggleFullMap();
+        SetFullMapVisible(Keyboard.current.tabKey.isPressed);
 
         if (Keyboard.current.capsLockKey.wasPressedThisFrame)
             ToggleScoreboard();
     }
 
-    private void ToggleFullMap()
+    private void SetFullMapVisible(bool visible)
     {
-        isFullMapVisible = !isFullMapVisible;
+        if (isFullMapVisible == visible)
+            return;
+
+        isFullMapVisible = visible;
         if (fullMapOverlay != null)
             fullMapOverlay.SetActive(isFullMapVisible);
 
@@ -794,7 +909,7 @@ public class HUDManager : MonoBehaviour
             MatchStatsManager.CombatantSnapshot entry = entries[i];
             row.NameText.text = $"{i + 1}. {entry.DisplayName}";
             row.KillsText.text = entry.Kills.ToString();
-            row.StatusText.text = entry.IsAlive ? "ALIVE" : "OUT";
+            row.StatusText.text = entry.IsAlive ? "ALIVE" : "DEAD";
             ApplyScoreboardRowStyle(row, entry.IsPlayer, entry.IsAlive, false);
         }
     }

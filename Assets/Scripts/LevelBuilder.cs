@@ -15,6 +15,7 @@ public class LevelBuilder : MonoBehaviour
     private const string ArenaRootName      = "UrbanArenaRoot";
     private const string EnemyRootName      = "EnemiesRoot";
     private const string MinimapCameraName  = "MinimapCamera";
+    private const string RuntimeThirdPersonCameraName = "RuntimeThirdPersonCamera";
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
     private bool _navMeshReady;
@@ -170,6 +171,9 @@ public class LevelBuilder : MonoBehaviour
     {
         if (Application.isPlaying)
             return;
+
+        CleanupDuplicateGameManagersInEditor();
+        CleanupDuplicateRuntimeThirdPersonCamerasInEditor();
 
         double now = EditorApplication.timeSinceStartup;
         if (!force && now - _lastEditorPreviewTime < 0.5d)
@@ -554,6 +558,8 @@ public class LevelBuilder : MonoBehaviour
         foreach (Renderer rend in mapInstance.GetComponentsInChildren<Renderer>(true))
             rend.enabled = true;
 
+        RemoveUnwantedMapProps(mapInstance.transform);
+
         // ── Remove cameras / audio listeners that compete with ours ────────
         foreach (Camera embeddedCam in mapInstance.GetComponentsInChildren<Camera>(true))
         {
@@ -590,6 +596,34 @@ public class LevelBuilder : MonoBehaviour
         }
 
         Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
+    }
+
+    private static void RemoveUnwantedMapProps(Transform mapRoot)
+    {
+        if (mapRoot == null) return;
+
+        var toRemove = new System.Collections.Generic.List<GameObject>();
+        foreach (Transform child in mapRoot.GetComponentsInChildren<Transform>(true))
+        {
+            if (child == null || child == mapRoot) continue;
+            string n = child.name.ToLowerInvariant();
+
+            bool redBuilding = n.Contains("redbuilding") || n.Contains("red_building") || n.Contains("red building");
+            bool car = n == "car" || n.StartsWith("car_") || n.Contains(" car ");
+            bool woodenBoxes = n.Contains("woodenboxes") || n.Contains("wooden_boxes") || n.Contains("wooden_box") || n.Contains("wooden boxes");
+
+            if (redBuilding || car || woodenBoxes)
+                toRemove.Add(child.gameObject);
+        }
+
+        for (int i = 0; i < toRemove.Count; i++)
+        {
+            if (toRemove[i] != null)
+                toRemove[i].SetActive(false);
+        }
+
+        if (toRemove.Count > 0)
+            Debug.Log($"[LevelBuilder] Hid {toRemove.Count} unwanted map prop(s): Car, WoodenBoxes, and RedBuilding only.");
     }
 
     /// <summary>Scales the map so its largest horizontal dimension equals targetSize.</summary>
@@ -678,6 +712,7 @@ public class LevelBuilder : MonoBehaviour
             new Vector3(-15f, 0.01f, -20f),
             new Vector3( 15f, 0.01f, -20f)
         };
+        Shuffle(spawnPoints);
 
         for (int i = 0; i < enemyCount; i++)
         {
@@ -719,7 +754,7 @@ public class LevelBuilder : MonoBehaviour
             }
 
             enemyObject.tag = "Enemy";
-            SetLayerRecursive(enemyObject, LayerMask.NameToLayer("Character"));
+            SetLayerRecursive(enemyObject, ResolveHittableLayer());
 
             // Find an open-air spawn point first and move the object there
             // before adding NavMeshAgent, otherwise Unity warns if the object
@@ -954,12 +989,91 @@ public class LevelBuilder : MonoBehaviour
             child.gameObject.layer = layer;
     }
 
+    private static int ResolveHittableLayer()
+    {
+        int layer = LayerMask.NameToLayer("Hittable");
+        if (layer < 0) layer = LayerMask.NameToLayer("Character");
+        return layer;
+    }
+
     private static void EnsureGameManager()
     {
+#if UNITY_EDITOR
+        if (!Application.isPlaying)
+        {
+            CleanupDuplicateGameManagersInEditor();
+            CleanupDuplicateRuntimeThirdPersonCamerasInEditor();
+            return;
+        }
+#endif
+
         if (GameManager.Instance != null) return;
+
+        GameManager existing = FindFirstObjectByType<GameManager>();
+        if (existing != null) return;
+
         GameObject managerObject = new GameObject("GameManager");
         managerObject.AddComponent<GameManager>();
     }
+
+#if UNITY_EDITOR
+    private static void CleanupDuplicateGameManagersInEditor()
+    {
+        if (Application.isPlaying)
+            return;
+
+        GameManager[] managers = Object.FindObjectsByType<GameManager>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.InstanceID);
+
+        if (managers.Length <= 1)
+            return;
+
+        for (int i = managers.Length - 1; i >= 1; i--)
+        {
+            if (managers[i] != null)
+                DestroyObjectSafe(managers[i].gameObject);
+        }
+
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+        Debug.Log($"[LevelBuilder] Removed {managers.Length - 1} duplicate GameManager object(s) from the editor scene.");
+    }
+
+    private static void CleanupDuplicateRuntimeThirdPersonCamerasInEditor()
+    {
+        if (Application.isPlaying)
+            return;
+
+        Camera[] cameras = Object.FindObjectsByType<Camera>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.InstanceID);
+
+        int kept = 0;
+        int removed = 0;
+
+        for (int i = 0; i < cameras.Length; i++)
+        {
+            Camera camera = cameras[i];
+            if (camera == null || camera.gameObject.name != RuntimeThirdPersonCameraName)
+                continue;
+
+            if (kept == 0)
+            {
+                kept++;
+                continue;
+            }
+
+            DestroyObjectSafe(camera.gameObject);
+            removed++;
+        }
+
+        if (removed <= 0)
+            return;
+
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+        Debug.Log($"[LevelBuilder] Removed {removed} duplicate RuntimeThirdPersonCamera object(s) from the editor scene.");
+    }
+#endif
 
     private static Transform GetOrCreateRoot(string objectName)
     {
@@ -1015,8 +1129,8 @@ public class LevelBuilder : MonoBehaviour
         if (!playerController.gameObject.CompareTag("Player"))
             playerController.gameObject.tag = "Player";
 
-        // Assign the "Character" layer so OverlapSphere-based FFA detection works
-        SetLayerRecursive(playerController.gameObject, LayerMask.NameToLayer("Character"));
+        // Assign the Hittable layer so deterministic melee never scans scenery.
+        SetLayerRecursive(playerController.gameObject, ResolveHittableLayer());
 
         // ── CharacterController must be DISABLED to set transform.position ──
         // Handled cleanly by PlayerController.TeleportTo
@@ -1026,7 +1140,7 @@ public class LevelBuilder : MonoBehaviour
         // Try many candidate positions spread across the arena. For each one,
         // check NavMesh AND verify there's open sky above (no roof/wall).
         Vector3 safeSpawn = _navMeshReady
-            ? FindOpenSpawnPoint(SafeFallbackSpawn)
+            ? FindRandomOpenSpawnPoint(SafeFallbackSpawn)
             : SafeFallbackSpawn;
         Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn}");
 
@@ -1308,7 +1422,7 @@ public class LevelBuilder : MonoBehaviour
     ///   2) Has open sky above it (no roof/geometry)
     ///   3) Has enough horizontal clearance (no walls within 1m)
     /// </summary>
-    private static Vector3 FindOpenSpawnPoint(Vector3 fallback)
+    private static Vector3 FindRandomOpenSpawnPoint(Vector3 fallback)
     {
         if (!NavMesh.SamplePosition(fallback, out _, 6f, NavMesh.AllAreas))
             return SafeFallbackSpawn;
@@ -1338,6 +1452,7 @@ public class LevelBuilder : MonoBehaviour
             new Vector3(  0f, 0f, -35f),
             new Vector3(  0f, 0f,  35f),
         };
+        Shuffle(candidates);
 
         foreach (Vector3 candidate in candidates)
         {
@@ -1354,6 +1469,11 @@ public class LevelBuilder : MonoBehaviour
             return lastHit.position + Vector3.up * 0.1f;
 
         return SafeFallbackSpawn;
+    }
+
+    private static Vector3 FindOpenSpawnPoint(Vector3 fallback)
+    {
+        return FindRandomOpenSpawnPoint(fallback);
     }
 
     /// <summary>
@@ -1399,19 +1519,17 @@ public class LevelBuilder : MonoBehaviour
     /// </summary>
     private static Vector3 FindOpenEnemySpawn(Vector3 preferred, int index)
     {
-        // Try the preferred position first
-        if (IsOpenSpawnPoint(preferred, out Vector3 pos))
-            return pos;
-
         // Try offsets from the preferred position
         Vector3[] offsets =
         {
+            Vector3.zero,
             new Vector3( 2f, 0f,  0f), new Vector3(-2f, 0f,  0f),
             new Vector3( 0f, 0f,  2f), new Vector3( 0f, 0f, -2f),
             new Vector3( 4f, 0f,  0f), new Vector3(-4f, 0f,  0f),
             new Vector3( 0f, 0f,  4f), new Vector3( 0f, 0f, -4f),
             new Vector3( 3f, 0f,  3f), new Vector3(-3f, 0f, -3f),
         };
+        Shuffle(offsets);
 
         foreach (Vector3 offset in offsets)
         {
@@ -1442,8 +1560,7 @@ public class LevelBuilder : MonoBehaviour
         }
 
         // Nothing found at any radius — return with a small upward offset so
-        // the agent sits just above the terrain and gets a second chance via
-        // the EnemyController's TryRecoverAgentOnNavMesh at runtime.
+        // the agent sits just above the terrain.
         return new Vector3(preferred.x, preferred.y + 0.2f, preferred.z);
     }
 
@@ -1458,7 +1575,7 @@ public class LevelBuilder : MonoBehaviour
         }
 
         // 1. Disable agent before moving — avoids "Stop can only be called
-        //    on an active agent" and the stale-position warp bug.
+        //    on an active agent".
         agent.enabled = false;
         target.position = spawnPosition;
 
@@ -1469,16 +1586,27 @@ public class LevelBuilder : MonoBehaviour
             {
                 target.position = hit.position;
                 agent.enabled   = true;
-                agent.Warp(hit.position);
                 return;
             }
         }
 
         // 3. Position is genuinely off every baked NavMesh surface.
-        //    Leave agent disabled — EnemyController.TryRecoverAgentOnNavMesh
-        //    will retry at runtime once the NavMesh finishes loading.
+        //    Leave agent disabled; runtime recovery only teleports enemies that
+        //    actually fall out of the world.
         Debug.LogWarning($"[LevelBuilder] Could not snap enemy to NavMesh near {spawnPosition}. " +
                          "Agent left disabled; EnemyController will retry at runtime.");
+    }
+
+    private static void Shuffle<T>(T[] values)
+    {
+        if (values == null) return;
+        for (int i = values.Length - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            T temp = values[i];
+            values[i] = values[j];
+            values[j] = temp;
+        }
     }
 
     private static T EnsureComponent<T>(GameObject target) where T : Component
@@ -1540,7 +1668,7 @@ public class LevelBuilder : MonoBehaviour
 
     /// <summary>
     /// Walks every renderer under <paramref name="root"/>, snaps anything that
-    /// looks like a floor onto the Environment layer, marks it static, and
+    /// looks like a floor or wall onto the Environment layer, marks it static, and
     /// neutralises stray Rigidbodies that were causing the floor to drift.
     /// </summary>
     public void StabilizeGround(Transform root)
@@ -1555,11 +1683,13 @@ public class LevelBuilder : MonoBehaviour
             if (r == null) continue;
             GameObject go = r.gameObject;
             string n = go.name.ToLowerInvariant();
-            bool looksLikeFloor =
+            bool looksLikeEnvironment =
                 n.Contains("floor") || n.Contains("ground") ||
-                n.Contains("plane") || n.Contains("terrain");
+                n.Contains("plane") || n.Contains("terrain") ||
+                n.Contains("wall") || n.Contains("ceiling") ||
+                n.Contains("concrete") || n.Contains("road");
 
-            if (!looksLikeFloor) continue;
+            if (!looksLikeEnvironment) continue;
 
             // Layer
             if (envLayer >= 0) SetLayerRecursively(go, envLayer);
@@ -1580,7 +1710,7 @@ public class LevelBuilder : MonoBehaviour
                     go.AddComponent<BoxCollider>();
             }
 
-            // Rigidbody — floor must never move. Prefer to remove; if other
+            // Rigidbody — environment must never move. Prefer to remove; if other
             // scripts depend on it, force-kinematic.
             Rigidbody rb = go.GetComponent<Rigidbody>();
             if (rb != null)

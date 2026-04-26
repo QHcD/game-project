@@ -17,11 +17,17 @@ public class WeaponHitbox : MonoBehaviour
     [Tooltip("Damage dealt per hit. Auto-set from PlayerController if 0.")]
     public int damage = 0;
 
+    [Tooltip("Radius checked around the weapon tip during each active swing.")]
+    public float overlapRadius = 0.85f;
+
     [Tooltip("Prevents the same enemy from being hit multiple times in one swing.")]
     private System.Collections.Generic.HashSet<int> hitThisSwing = new System.Collections.Generic.HashSet<int>();
 
+    private static readonly Collider[] OverlapHits = new Collider[32];
+
     private BoxCollider hitboxCollider;
     private bool isActive;
+    private GameObject ownerRoot;
 
     private void Awake()
     {
@@ -42,6 +48,7 @@ public class WeaponHitbox : MonoBehaviour
         // Start disabled — only active during swing
         hitboxCollider.enabled = false;
         isActive = false;
+        ownerRoot = ResolveOwnerRoot();
     }
 
     /// <summary>
@@ -49,10 +56,12 @@ public class WeaponHitbox : MonoBehaviour
     /// </summary>
     public void EnableHitbox()
     {
+        ownerRoot = ResolveOwnerRoot();
         hitThisSwing.Clear();
         isActive = true;
         if (hitboxCollider != null)
             hitboxCollider.enabled = true;
+        DealOverlapSphereDamage();
     }
 
     /// <summary>
@@ -66,32 +75,79 @@ public class WeaponHitbox : MonoBehaviour
         hitThisSwing.Clear();
     }
 
+    private void Update()
+    {
+        if (!isActive)
+            return;
+
+        DealOverlapSphereDamage();
+    }
+
     private void OnTriggerEnter(Collider other)
     {
         if (!isActive) return;
         if (hitboxCollider == null || !hitboxCollider.enabled) return;
 
-        int id = other.gameObject.GetInstanceID();
-        if (hitThisSwing.Contains(id)) return;
+        TryDamageCollider(other);
+    }
 
-        // ── IDamageable path (player, enemy, or any future damageable) ──────
+    private void DealOverlapSphereDamage()
+    {
+        Vector3 tip = GetWeaponTipWorldPosition();
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            tip,
+            Mathf.Max(0.1f, overlapRadius),
+            OverlapHits,
+            ~0,
+            QueryTriggerInteraction.Collide);
+
+        for (int i = 0; i < hitCount; i++)
+            TryDamageCollider(OverlapHits[i]);
+    }
+
+    private bool TryDamageCollider(Collider other)
+    {
+        if (other == null)
+            return false;
+
         IDamageable target = other.GetComponentInParent<IDamageable>();
-        if (target == null || target.gameObject == transform.root.gameObject) return;
-        if (!target.IsAlive) return;
+        GameObject resolvedOwner = ownerRoot != null ? ownerRoot : ResolveOwnerRoot();
+        if (target == null || target.gameObject == resolvedOwner) return false;
+        if (!target.IsAlive) return false;
 
-        // Phantom-damage guard: verify a real physical overlap with the collider
-        // before applying damage. Trigger events can fire from far-away colliders
-        // when scaled-up roots momentarily overlap on enable.
-        if (!Physics.ComputePenetration(
-                hitboxCollider, hitboxCollider.transform.position, hitboxCollider.transform.rotation,
-                other,           other.transform.position,           other.transform.rotation,
-                out _, out _))
-            return;
+        int id = target.gameObject.GetInstanceID();
+        if (hitThisSwing.Contains(id)) return false;
 
         int dmg = damage > 0 ? damage : 25;
-        target.ReceiveDamage(dmg, transform.root.gameObject);
+        target.ReceiveDamage(dmg, resolvedOwner);
         hitThisSwing.Add(id);
-        return;
+        return true;
+    }
+
+    private Vector3 GetWeaponTipWorldPosition()
+    {
+        if (hitboxCollider == null)
+            return transform.position;
+
+        Vector3 localTip = hitboxCollider.center + Vector3.forward * (hitboxCollider.size.z * 0.5f);
+        return hitboxCollider.transform.TransformPoint(localTip);
+    }
+
+    private GameObject ResolveOwnerRoot()
+    {
+        PlayerHealth player = GetComponentInParent<PlayerHealth>();
+        if (player != null) return player.gameObject;
+
+        PlayerController playerController = GetComponentInParent<PlayerController>();
+        if (playerController != null) return playerController.gameObject;
+
+        EnemyController enemy = GetComponentInParent<EnemyController>();
+        if (enemy != null) return enemy.gameObject;
+
+        IDamageable damageable = GetComponentInParent<IDamageable>();
+        if (damageable != null) return damageable.gameObject;
+
+        return transform.root != null ? transform.root.gameObject : gameObject;
     }
 
 }

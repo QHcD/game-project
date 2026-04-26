@@ -15,6 +15,12 @@ public class PlayerController : MonoBehaviour
 {
     private const string WeaponSocketName = "__PlayerWeaponSocket";
     private const string ChainsawSocketName = "__PlayerChainsawSocket";
+    private const string RuntimeThirdPersonCameraName = "RuntimeThirdPersonCamera";
+    private const float ThirdPersonMinPitch = -12f;
+    private const float ThirdPersonMaxPitch = 45f;
+    private const float ThirdPersonInitialPitch = 8f;
+    private const float ForcedSeparationDistance = 1.0f;
+    private const float MeleeImpactRadius = 0.78f;
     private const string PrefKeySicklePos = "Grip.Player.L13.Sickle.Pos";
     private const string PrefKeySickleEuler = "Grip.Player.L13.Sickle.Euler";
     private const string PrefKeySawPos = "Grip.Player.L12.Saw.Pos";
@@ -28,6 +34,14 @@ public class PlayerController : MonoBehaviour
     private static readonly Vector3 DefaultLevel12SawGripLocalEuler = WeaponLoadoutCatalog.ChainsawPlayerLocalEuler;
     private static readonly Vector3 PlayerChainsawGripLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
     private static readonly Vector3 PlayerChainsawGripLocalEuler = new Vector3(-177.177f, -175.886f, 88.481f);
+    // Tuned grip pose for the procedurally-attached katana. The previous
+    // values placed the hilt against the *forearm* (wrist bone with a tiny
+    // forward push). Pushing further along the bone's local +Z + nudging up
+    // along +Y plants the grip squarely in the palm. The Euler rotation
+    // realigns the blade so it points outward like a sheathed-then-drawn
+    // weapon instead of laying flush along the arm.
+    private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(0.075f, 0.020f, 0.115f);
+    private static readonly Vector3 PlayerKatanaGripLocalEuler    = new Vector3(0f, 90f, 0f);
 
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
@@ -41,10 +55,10 @@ public class PlayerController : MonoBehaviour
     public float sprintMultiplier = 1.37f;
 
     [Tooltip("Gravity acceleration (negative value).")]
-    public float gravity = -25f;
+    public float gravity = -22f;
 
-    [Tooltip("Maximum jump height in units.")]
-    public float jumpHeight = 1.8f;
+    [Tooltip("Maximum jump height in units. Tuned to a natural human-scale hop instead of the previous heroic launch.")]
+    public float jumpHeight = 1.05f;
 
     [Header("Animation")]
     [Tooltip("Animator controller for the spawned third-person body.")]
@@ -77,7 +91,22 @@ public class PlayerController : MonoBehaviour
     public float thrusterForwardBoost = 5.8f;
     public float thrusterCooldown = 0.8f;
     public float crouchBodyYOffset = -0.28f;
+    // Crawl/prone uses a tiny lift (model rotated 90° so it lies flat) — the
+    // big -0.62 offset used to bury the legs in the floor; we keep it here for
+    // any legacy callers but the live code now uses proneCrawlBodyYOffset.
     public float proneBodyYOffset = -0.62f;
+
+    [Header("Black Ops 3 Maneuvers")]
+    [Tooltip("Vertical hop applied at the start of a flip (Z key).")]
+    public float flipVerticalImpulse = 6.5f;
+    [Tooltip("Forward boost applied at the start of a flip (Z key).")]
+    public float flipForwardBoost = 7.5f;
+    [Tooltip("How long the flip rotation animation plays (seconds).")]
+    public float flipDuration = 0.65f;
+    [Tooltip("Cooldown between flips (seconds).")]
+    public float flipCooldown = 1.1f;
+    [Tooltip("Body Y offset while crawling — tiny because the body lies flat.")]
+    public float proneCrawlBodyYOffset = -0.05f;
 
     [Header("Camera")]
     [Tooltip("First-person camera reference.")]
@@ -193,13 +222,20 @@ public class PlayerController : MonoBehaviour
     private bool isProne;
     private bool isSliding;
     private bool isMantling;
+    private bool isFlipping;
+    private bool sprintToggled; // Latched by tapping C — like CoD/BO3 sprint hold-to-toggle.
     private float slideTimer;
     private float slideCooldownTimer;
     private float thrusterCooldownTimer;
+    private float flipCooldownTimer;
     private float targetControllerHeight = 1.8f;
     private Vector3 targetControllerCenter = new Vector3(0f, 0.92f, 0f);
     private Coroutine mantleCoroutine;
+    private Coroutine flipCoroutine;
     private Vector3 thirdPersonBodyBaseLocalPosition;
+    // Cached so prone-rotation and flip-rotation can return the body to its
+    // original facing exactly without drifting after each maneuver.
+    private Quaternion thirdPersonBodyBaseLocalRotation = Quaternion.identity;
     private const float InputSmoothing = 10f;
 
     // Camera
@@ -238,6 +274,8 @@ public class PlayerController : MonoBehaviour
     [HideInInspector] public GameObject equippedWeaponObject;
     private int equippedWeaponLevel = -1;
     private bool weaponAttachInProgress;
+    private WeaponHitbox equippedWeaponHitbox;
+    private Coroutine weaponHitboxRoutine;
     private bool gripTuningMode;
 
     private Transform firstPersonWeaponSlot;
@@ -278,11 +316,10 @@ public class PlayerController : MonoBehaviour
         // settings and cannot be created at runtime).
         EnemyController.EnsureCharacterLayerCollision();
 
-        // Prefer the dedicated "Player" layer when defined; fall back to the
-        // existing "Character" layer otherwise.
-        int targetLayer = LayerMask.NameToLayer("Player");
+        // Hittable is the single melee query layer. Runtime damage never scans scenery.
+        int targetLayer = LayerMask.NameToLayer("Hittable");
         if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Character");
-        if (targetLayer >= 0) gameObject.layer = targetLayer;
+        if (targetLayer >= 0) SetLayerRecursive(gameObject, targetLayer);
 
         controller  = GetComponent<CharacterController>();
         audioSource = GetComponent<AudioSource>();
@@ -315,7 +352,7 @@ public class PlayerController : MonoBehaviour
         CacheFirstPersonWeaponSlot();
 
         firstPersonRenderers = GetComponentsInChildren<Renderer>(true);
-        resolvedAttackMask   = attackLayer == 0 ? ~0 : attackLayer;
+        resolvedAttackMask   = ResolveHittableMask();
 
         foreach (Animator childAnimator in GetComponentsInChildren<Animator>(true))
             childAnimator.applyRootMotion = false;
@@ -323,6 +360,11 @@ public class PlayerController : MonoBehaviour
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible   = false;
         LoadSavedGripOverrides();
+
+        // Refresh the runtime mouse sensitivity multiplier from PlayerPrefs
+        // each time a player spawns. Guarantees the Options-menu slider value
+        // applies to the very first frame of mouse-look in GameScene.
+        LookSensitivityRuntime.LoadFromPrefs();
     }
 
     private void Start()
@@ -339,12 +381,15 @@ public class PlayerController : MonoBehaviour
         transform.position = startPos;
         transform.rotation = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
         cameraYaw = transform.eulerAngles.y;
+        cameraPitch = ThirdPersonInitialPitch;
         if (controller != null) controller.enabled = true;
         verticalVelocity.y = -2f;
 
         // ── 2. Spawn the third-person body ──
         ApplyPerspectivePreference();
         EnsureThirdPersonBody();
+        if (thirdPersonBody != null)
+            SetLayerRecursive(thirdPersonBody, gameObject.layer);
 
         // ── 3. Acquire the body animator and bind the intended player controller ──
         animator = null;
@@ -435,10 +480,18 @@ public class PlayerController : MonoBehaviour
 
         isGrounded = controller.isGrounded;
 
+        // End-match cinematic freezes player input — the Winners-Circle
+        // sequence runs entirely on its own camera, and any input we sample
+        // here would also fight the slow-motion timeScale.
+        if (EndMatchCinematic.GameplayLocked)
+        {
+            UpdateAnimatorParameters();
+            return;
+        }
+
         ReadInput();
         HandleActionInput();
         ApplyMovement();
-        ApplySeparationPush();
         ApplyLook();
         // UpdateCameraZoom removed — zoom is permanently disabled.
         UpdateHeadBob();
@@ -446,6 +499,11 @@ public class PlayerController : MonoBehaviour
         UpdateCombatState();
         UpdateAnimatorParameters();
         HandleWeaponGripDebugTuning();
+    }
+
+    private void FixedUpdate()
+    {
+        ApplySeparationPush();
     }
 
     private void LateUpdate()
@@ -473,19 +531,30 @@ public class PlayerController : MonoBehaviour
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
                 TryThrusterJumpOrQueueNormalJump();
 
+            // ─── Black Ops 3 maneuver layout ─────────────────────────────────
+            //   Z = FLIP   (combat flip — short hop + forward boost + 360° pitch)
+            //   X = SLIDE  (power slide along the ground while moving)
+            //   C = SPRINT (toggle a permanent sprint until you release W)
+            //   V = CRAWL  (toggle prone — body lies flat instead of digging in)
             if (Keyboard.current.zKey.wasPressedThisFrame)
-                ToggleProne();
+                TryStartFlip();
 
             if (Keyboard.current.xKey.wasPressedThisFrame)
-                ToggleCrouch();
-
-            if (Keyboard.current.cKey.wasPressedThisFrame)
                 TryStartSlide();
 
-            if (Keyboard.current.vKey.wasPressedThisFrame)
-                TryMantle();
+            if (Keyboard.current.cKey.wasPressedThisFrame)
+                ToggleSprintLock();
 
-            // V-key perspective toggle removed — game is third-person only.
+            if (Keyboard.current.vKey.wasPressedThisFrame)
+                ToggleCrawl();
+
+            // Optional auxiliaries kept on Left Control / Left Alt so existing
+            // muscle memory still resolves to the right action.
+            if (Keyboard.current.leftCtrlKey.wasPressedThisFrame)
+                ToggleCrouch();
+
+            if (Keyboard.current.leftAltKey.wasPressedThisFrame)
+                TryMantle();
         }
 
         if (Gamepad.current != null && Gamepad.current.buttonSouth.wasPressedThisFrame)
@@ -517,18 +586,17 @@ public class PlayerController : MonoBehaviour
     // spawn overlap, knockback, or simultaneous melee lunges. Walls / props
     // are ignored — we only push against other characters.
 
-    private static readonly Collider[] _separationBuffer = new Collider[8];
+    private static readonly Collider[] _separationBuffer = new Collider[24];
 
     private void ApplySeparationPush()
     {
         if (controller == null || !controller.enabled) return;
 
         Vector3 worldCenter = transform.TransformPoint(controller.center);
-        float   selfRadius  = controller.radius;
-        float   probe       = selfRadius + 0.1f;
+        float   probe       = ForcedSeparationDistance;
 
         int hitCount = Physics.OverlapSphereNonAlloc(
-            worldCenter, probe, _separationBuffer, ~0, QueryTriggerInteraction.Ignore);
+            worldCenter, probe, _separationBuffer, ResolveHittableMask(), QueryTriggerInteraction.Ignore);
         if (hitCount == 0) return;
 
         Vector3 push = Vector3.zero;
@@ -557,15 +625,18 @@ public class PlayerController : MonoBehaviour
                 d = 0.01f;
             }
 
-            float overlap = Mathf.Max(0f, (selfRadius + 0.45f) - d);
+            float overlap = Mathf.Max(0f, ForcedSeparationDistance - d);
             if (overlap > 0f)
                 push += (delta / d) * overlap;
         }
 
-        // Half-overlap each frame — both actors push on their own update,
-        // so the gap closes in 2-3 frames without a visible snap.
         if (push.sqrMagnitude > 1e-6f)
-            controller.Move(push * 0.5f);
+        {
+            controller.enabled = false;
+            transform.position += Vector3.ClampMagnitude(push, ForcedSeparationDistance);
+            controller.enabled = true;
+            Physics.SyncTransforms();
+        }
     }
 
     private void ApplyMovement()
@@ -575,19 +646,38 @@ public class PlayerController : MonoBehaviour
 
         Vector3 frameStartPosition = transform.position;
 
-        isSprinting = Keyboard.current != null
-                   && Keyboard.current.leftShiftKey.isPressed
-                   && moveInputSmoothed.y > 0.1f;
+        // CoD/BO3-style sprint resolution:
+        //   • Hold LeftShift → sprint (legacy behaviour).
+        //   • Tap C         → latch sprint until W is released or C is tapped again.
+        // Either way you must be moving forward (y > 0.1) for sprint to apply.
+        bool shiftHeld   = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
+        bool wantSprint  = (shiftHeld || sprintToggled) && moveInputSmoothed.y > 0.1f;
+        if (sprintToggled && moveInputSmoothed.y <= 0.05f)
+            sprintToggled = false; // Auto-cancel toggle when you stop moving forward.
+
+        // Sliding / prone / crouch all force sprint off so you can't sprint
+        // through a slide or while lying flat.
+        if (isSliding || isProne)
+            wantSprint = false;
+
+        isSprinting = wantSprint;
 
         float targetSpeed    = isSprinting ? moveSpeed * sprintMultiplier : moveSpeed;
         if (isSliding) targetSpeed *= slideSpeedMultiplier;
         else if (isProne) targetSpeed *= proneSpeedMultiplier;
         else if (isCrouching) targetSpeed *= crouchSpeedMultiplier;
-        Vector3 inputDir     = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
-        Vector3 targetVelocity = transform.TransformDirection(inputDir) * targetSpeed;
 
-        float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
-        horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
+        // Flip preserves the boost velocity assigned by TryStartFlip — we
+        // don't let WASD accelerate it (so the spin reads cleanly), but
+        // gravity below still ticks normally so the player lands.
+        if (!isFlipping)
+        {
+            Vector3 inputDir     = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
+            Vector3 targetVelocity = transform.TransformDirection(inputDir) * targetSpeed;
+
+            float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
+            horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
+        }
 
         controller.Move(horizontalVelocity * Time.deltaTime);
 
@@ -623,7 +713,9 @@ public class PlayerController : MonoBehaviour
 
         wasMoving = actualHorizontalVelocity.sqrMagnitude > 0.01f;
 
-        if (isThirdPersonActive && thirdPersonBody != null)
+        // While flipping, the FlipRoutine owns the body's local rotation —
+        // skip the world-yaw snap so the spin isn't immediately overwritten.
+        if (isThirdPersonActive && thirdPersonBody != null && !isFlipping)
         {
             Vector3 moveFlat = actualHorizontalVelocity;
             if (moveFlat.sqrMagnitude > 0.01f)
@@ -693,15 +785,23 @@ public class PlayerController : MonoBehaviour
         Camera cam = ActiveCamera;
         if (cam == null) return;
 
-        float mouseX = lookInput.x * sensitivity * Time.deltaTime;
-        float mouseY = lookInput.y * sensitivity * Time.deltaTime;
+        // Mouse-look responsiveness is now driven by the camera's
+        // RotationSpeed property, which combines the designer-tuned base
+        // rotation speed with the live Options-menu sensitivity multiplier
+        // (0–7 slider → 0.20×–2.20×). Falls back to the local sensitivity
+        // value if the CameraController hasn't initialized yet.
+        float rotSpeed = (CameraController.Instance != null)
+            ? CameraController.Instance.RotationSpeed
+            : sensitivity * 100f * LookSensitivityRuntime.LookMultiplier;
+        // Convert deg/sec back into the per-mouse-unit input scale we used
+        // before so existing input.lookInput numbers continue to feel right.
+        float perUnit = rotSpeed * 0.01f;
+        float mouseX = lookInput.x * perUnit * Time.deltaTime;
+        float mouseY = lookInput.y * perUnit * Time.deltaTime;
 
         cameraPitch -= mouseY;
-        // Clamped to (-20, 80) so the camera never orbits below the player's
-        // feet (which would reveal the underside of the map). The upper bound
-        // stays at +80 to allow a steep top-down view without flipping past
-        // vertical and inducing gimbal lock.
-        cameraPitch  = Mathf.Clamp(cameraPitch, -20f, 80f);
+        // Keep the third-person camera in a grounded shooter range.
+        cameraPitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
 
         // First-person camera is permanently disabled — no pitch update needed.
 
@@ -732,11 +832,8 @@ public class PlayerController : MonoBehaviour
         cameraKickCurrent = Mathf.Lerp(cameraKickCurrent, cameraKickTarget, 18f * Time.deltaTime);
         cameraKickTarget  = Mathf.Lerp(cameraKickTarget, 0f, 14f * Time.deltaTime);
         cameraPitch += cameraKickCurrent * Time.deltaTime;
-        // Clamped to (-20, 80) so the camera never orbits below the player's
-        // feet (which would reveal the underside of the map). The upper bound
-        // stays at +80 to allow a steep top-down view without flipping past
-        // vertical and inducing gimbal lock.
-        cameraPitch  = Mathf.Clamp(cameraPitch, -20f, 80f);
+        // Keep camera kick inside the same grounded shooter range.
+        cameraPitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -774,21 +871,41 @@ public class PlayerController : MonoBehaviour
             audioSource.PlayOneShot(swordSwing, AudioSettingsRuntime.ScaledSfx(1f));
         }
 
-        // ── Weapon callback (visuals / VFX only) ─────────────────────────────
-        // NOTE: The physical WeaponHitbox trigger collider is intentionally
-        // NEVER enabled from the player. All damage is routed through
-        // AttackMelee() which performs a strict single-target overlap/sweep
-        // query against real colliders.
-        // Enabling the trigger hitbox here caused massive AoE "Bluetooth"
-        // damage on large weapons (Baseball Bat, Axe) in levels 4/7/9.
+        if (weaponHitboxRoutine != null)
+            StopCoroutine(weaponHitboxRoutine);
+
         if (equippedWeaponObject != null)
         {
             WeaponBase weapon = equippedWeaponObject.GetComponent<WeaponBase>();
             if (weapon != null) weapon.Attack();
+
+            // Drive the per-weapon "alive" animation (e.g. Nunchucks open
+            // + spin during the swing window). The animator handles its
+            // own timing relative to attackSpeed/attackDelay.
+            WeaponLiveAnimator live = equippedWeaponObject.GetComponent<WeaponLiveAnimator>();
+            if (live != null) live.PlayAttack(attackSpeed, attackDelay);
         }
 
+        if (equippedWeaponHitbox != null)
+            equippedWeaponHitbox.DisableHitbox();
+
         CancelInvoke(nameof(AttackRaycast));
-        Invoke(nameof(AttackRaycast), attackDelay);
+        AttackRaycast();
+    }
+
+    private System.Collections.IEnumerator PlayerWeaponHitboxWindowRoutine()
+    {
+        equippedWeaponHitbox.DisableHitbox();
+
+        if (attackDelay > 0f)
+            yield return new WaitForSeconds(attackDelay);
+
+        equippedWeaponHitbox.EnableHitbox();
+
+        yield return new WaitForSeconds(0.22f);
+
+        equippedWeaponHitbox.DisableHitbox();
+        weaponHitboxRoutine = null;
     }
 
     private void UpdateCombatState()
@@ -825,16 +942,99 @@ public class PlayerController : MonoBehaviour
         }
     }
 
-    private void ToggleProne()
+    /// <summary>
+    /// Black Ops 3 style "Crawl" (prone). Toggles the lying-flat stance.
+    /// Visually the body is rotated 90° forward so the legs no longer punch
+    /// through the ground, and the controller height shrinks to <see cref="proneHeight"/>.
+    /// </summary>
+    private void ToggleCrawl()
     {
-        if (isMantling) return;
+        if (isMantling || isFlipping) return;
         isProne = !isProne;
-        if (isProne) isCrouching = false;
+        if (isProne)
+        {
+            isCrouching   = false;
+            isSliding     = false;
+            sprintToggled = false; // Can't sprint while crawling.
+        }
+    }
+
+    // Kept for backwards-compat with any callers that still hit the old name.
+    private void ToggleProne() => ToggleCrawl();
+
+    /// <summary>Toggle the sprint lock (CoD/BO3 style — tap C to keep sprinting).</summary>
+    private void ToggleSprintLock()
+    {
+        if (isProne || isSliding || isMantling || isFlipping) return;
+        sprintToggled = !sprintToggled;
+    }
+
+    /// <summary>
+    /// Performs a Black Ops 3 style combat flip — a short upward hop with a
+    /// forward boost and a full pitched 360° rotation on the body mesh. Cannot
+    /// chain into another flip until <see cref="flipCooldown"/> elapses.
+    /// </summary>
+    private void TryStartFlip()
+    {
+        if (isMantling || isSliding || isFlipping) return;
+        if (flipCooldownTimer > 0f) return;
+        if (controller == null || !controller.enabled) return;
+
+        // Cancel any conflicting stance — you can't flip while crawling.
+        isProne     = false;
+        isCrouching = false;
+
+        // Forward direction in world space — falls back to the player's
+        // facing if there's no input on the WASD axes.
+        Vector3 inputDir = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
+        Vector3 forward  = inputDir.sqrMagnitude > 0.05f
+            ? transform.TransformDirection(inputDir.normalized)
+            : transform.forward;
+        forward.y = 0f;
+        if (forward.sqrMagnitude < 0.001f) forward = transform.forward;
+
+        verticalVelocity.y = Mathf.Sqrt(Mathf.Max(0.01f, flipVerticalImpulse) * -2f * gravity);
+        horizontalVelocity = forward.normalized * flipForwardBoost;
+        flipCooldownTimer  = flipCooldown;
+
+        if (flipCoroutine != null) StopCoroutine(flipCoroutine);
+        flipCoroutine = StartCoroutine(FlipRoutine(forward));
+    }
+
+    private System.Collections.IEnumerator FlipRoutine(Vector3 worldForward)
+    {
+        isFlipping = true;
+        jumpRequested = false;
+
+        // Reference axis to rotate around (always perpendicular to the
+        // world-up + forward plane so the spin reads as a clean front flip).
+        // We rotate the body's *local* X axis through 360° over the duration.
+        Quaternion baseLocal = thirdPersonBodyBaseLocalRotation;
+
+        float elapsed  = 0f;
+        float duration = Mathf.Max(0.15f, flipDuration);
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t  = Mathf.Clamp01(elapsed / duration);
+            // Smooth ease so the spin feels weighty rather than linear.
+            float ease = Mathf.Sin(t * Mathf.PI * 0.5f);
+            float angle = ease * 360f;
+            if (thirdPersonBody != null)
+                thirdPersonBody.transform.localRotation = baseLocal * Quaternion.AngleAxis(angle, Vector3.right);
+            yield return null;
+        }
+
+        if (thirdPersonBody != null)
+            thirdPersonBody.transform.localRotation = baseLocal;
+
+        isFlipping = false;
+        flipCoroutine = null;
     }
 
     private void TryStartSlide()
     {
-        if (isMantling || isProne || isSliding) return;
+        if (isMantling || isProne || isSliding || isFlipping) return;
         if (!isGrounded) return;
         if (slideCooldownTimer > 0f) return;
         if (moveInputSmoothed.sqrMagnitude < 0.1f) return;
@@ -855,7 +1055,7 @@ public class PlayerController : MonoBehaviour
 
     private void TryThrusterJumpOrQueueNormalJump()
     {
-        if (isProne || isSliding || isMantling)
+        if (isProne || isSliding || isMantling || isFlipping)
             return;
 
         bool wantsThruster = Keyboard.current != null
@@ -946,6 +1146,9 @@ public class PlayerController : MonoBehaviour
         if (thrusterCooldownTimer > 0f)
             thrusterCooldownTimer -= Time.deltaTime;
 
+        if (flipCooldownTimer > 0f)
+            flipCooldownTimer -= Time.deltaTime;
+
         if (isSliding)
         {
             slideTimer -= Time.deltaTime;
@@ -973,16 +1176,34 @@ public class PlayerController : MonoBehaviour
         controller.center = Vector3.Lerp(controller.center, targetControllerCenter, stanceTransitionSpeed * Time.deltaTime);
         controller.stepOffset = controller.height > 1.6f ? 0.5f : 0.05f;
 
+        // While the FlipRoutine is animating the body, leave its rotation alone
+        // so we don't fight it for the local rotation slot.
+        if (isFlipping) return;
+
         if (thirdPersonBody != null)
         {
+            // Crawl uses a tiny lift (the legs no longer need to be buried in
+            // the floor — we rotate the model 90° forward instead). Crouch /
+            // slide keep their existing offset.
             float desiredOffsetY = 0f;
-            if (isProne) desiredOffsetY = proneBodyYOffset;
+            if (isProne) desiredOffsetY = proneCrawlBodyYOffset;
             else if (isCrouching || isSliding) desiredOffsetY = crouchBodyYOffset;
 
             Vector3 desiredPos = thirdPersonBodyBaseLocalPosition + new Vector3(0f, desiredOffsetY, 0f);
             thirdPersonBody.transform.localPosition = Vector3.Lerp(
                 thirdPersonBody.transform.localPosition,
                 desiredPos,
+                stanceTransitionSpeed * Time.deltaTime);
+
+            // Rotate the model 90° forward when crawling so it actually lies
+            // flat instead of standing inside a half-height capsule. All other
+            // stances reset to the cached base rotation (set at body spawn).
+            Quaternion desiredRot = isProne
+                ? thirdPersonBodyBaseLocalRotation * Quaternion.Euler(-90f, 0f, 0f)
+                : thirdPersonBodyBaseLocalRotation;
+            thirdPersonBody.transform.localRotation = Quaternion.Slerp(
+                thirdPersonBody.transform.localRotation,
+                desiredRot,
                 stanceTransitionSpeed * Time.deltaTime);
         }
     }
@@ -1011,13 +1232,8 @@ public class PlayerController : MonoBehaviour
 
     private void AttackMelee()
     {
-        // ════════════════════════════════════════════════════════════════════
-        //  STRICT SINGLE-TARGET MELEE
-        //  • Non-alloc OverlapCapsule based on actual colliders, not target pivots
-        //  • Point-blank overlaps are valid hits even when already intersecting
-        //  • Forward-cone filter still prevents "behind the player" hits
-        //  • Damages EXACTLY ONE enemy per swing (the closest valid target)
-        // ════════════════════════════════════════════════════════════════════
+        // Deterministic melee: one non-alloc sphere at the weapon impact point,
+        // restricted to the Hittable layer only.
 
         Vector3 playerCenter = transform.position + Vector3.up * 1.0f;
 
@@ -1033,19 +1249,73 @@ public class PlayerController : MonoBehaviour
         // latest positions before resolving the attack.
         Physics.SyncTransforms();
 
-        if (TryFindBestMeleeTarget(playerCenter, forwardFlat, out Transform bestTarget, out Vector3 hitPoint))
+        Vector3 impactPoint = GetMeleeImpactPoint(playerCenter, forwardFlat);
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            impactPoint,
+            MeleeImpactRadius,
+            meleeOverlapHits,
+            ResolveHittableMask(),
+            QueryTriggerInteraction.Ignore);
+
+        Transform bestTarget = null;
+        Vector3 bestHitPoint = impactPoint;
+        float bestDistanceSqr = float.PositiveInfinity;
+
+        for (int i = 0; i < hitCount; i++)
         {
-            if (TryDamageTarget(bestTarget, attackDamage))
+            Collider hit = meleeOverlapHits[i];
+            if (hit == null) continue;
+            if (hit.transform == transform || hit.transform.IsChildOf(transform)) continue;
+
+            Transform damageRoot = GetDamageTargetTransform(hit.transform);
+            if (damageRoot == null) continue;
+
+            Vector3 closest = hit.ClosestPoint(impactPoint);
+            Vector3 toTarget = closest - playerCenter;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude > attackDistance * attackDistance) continue;
+            if (toTarget.sqrMagnitude > 0.0001f && Vector3.Angle(forwardFlat, toTarget.normalized) > MeleeHitAngle)
+                continue;
+
+            float d2 = (closest - impactPoint).sqrMagnitude;
+            if (d2 < bestDistanceSqr)
             {
-                ApplyHitReaction(bestTarget, forwardFlat);
-                HitTarget(hitPoint);
+                bestDistanceSqr = d2;
+                bestTarget = damageRoot;
+                bestHitPoint = closest;
             }
-            return;
         }
 
-        // No overlap candidate was valid — try a narrow forward sweep so thin
-        // targets at the edge of the knife still connect cleanly.
-        TryPrecisionSweepFallback(playerCenter, forwardFlat);
+        if (bestTarget != null && TryDamageTarget(bestTarget, attackDamage))
+        {
+            ApplyHitReaction(bestTarget, forwardFlat);
+            HitTarget(bestHitPoint);
+        }
+    }
+
+    private Vector3 GetMeleeImpactPoint(Vector3 playerCenter, Vector3 forwardFlat)
+    {
+        if (equippedWeaponObject != null)
+        {
+            Renderer[] renderers = equippedWeaponObject.GetComponentsInChildren<Renderer>(true);
+            Bounds bounds = new Bounds(equippedWeaponObject.transform.position, Vector3.zero);
+            bool hasBounds = false;
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                if (renderers[i] == null || !renderers[i].enabled) continue;
+                if (!hasBounds) { bounds = renderers[i].bounds; hasBounds = true; }
+                else bounds.Encapsulate(renderers[i].bounds);
+            }
+
+            if (hasBounds)
+            {
+                Vector3 weaponPoint = bounds.center + forwardFlat * Mathf.Min(attackDistance * 0.45f, bounds.extents.magnitude);
+                weaponPoint.y = Mathf.Clamp(weaponPoint.y, playerCenter.y - 0.35f, playerCenter.y + 0.45f);
+                return weaponPoint;
+            }
+        }
+
+        return playerCenter + forwardFlat * Mathf.Clamp(attackDistance * 0.65f, 0.75f, attackDistance);
     }
 
     private bool TryFindBestMeleeTarget(Vector3 playerCenter, Vector3 forwardFlat,
@@ -1513,22 +1783,32 @@ public class PlayerController : MonoBehaviour
         if (runtimeThirdPersonCamera != null)
         {
             thirdPersonCam = runtimeThirdPersonCamera;
+            ApplyThirdPersonCameraSettings(runtimeThirdPersonCamera.GetComponent<CameraController>(), runtimeThirdPersonCamera);
             return;
         }
 
-        CameraController existingFollow = Object.FindFirstObjectByType<CameraController>();
-        if (existingFollow != null)
+        CameraController[] existingFollows = Object.FindObjectsByType<CameraController>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.InstanceID);
+
+        for (int i = 0; i < existingFollows.Length; i++)
         {
+            CameraController existingFollow = existingFollows[i];
+            if (existingFollow == null)
+                continue;
+
             runtimeThirdPersonCamera = existingFollow.GetComponent<Camera>();
             if (runtimeThirdPersonCamera != null)
             {
                 thirdPersonCam = runtimeThirdPersonCamera;
                 existingFollow.target = transform;
+                ApplyThirdPersonCameraSettings(existingFollow, runtimeThirdPersonCamera);
+                DestroyDuplicateThirdPersonCameras(existingFollows, i);
                 return;
             }
         }
 
-        GameObject camObj = new GameObject("RuntimeThirdPersonCamera");
+        GameObject camObj = new GameObject(RuntimeThirdPersonCameraName);
         runtimeThirdPersonCamera = camObj.AddComponent<Camera>();
 
         // Borrow settings from the first-person camera if it still exists,
@@ -1554,16 +1834,54 @@ public class PlayerController : MonoBehaviour
         CameraController follow = camObj.AddComponent<CameraController>();
         if (follow != null)
         {
-            follow.target           = transform;
-            follow.offset           = new Vector3(0.8f, 2.8f, -7.0f);  // Safe startup view of player + arena
-            follow.smoothSpeed      = 14f;
-            follow.lookHeight       = 1.4f;
-            follow.enableCollision  = false;
-            follow.defaultFieldOfView = runtimeThirdPersonCamera.fieldOfView;
-            follow.lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
+            ApplyThirdPersonCameraSettings(follow, runtimeThirdPersonCamera);
         }
 
         thirdPersonCam = runtimeThirdPersonCamera;
+    }
+
+    private void ApplyThirdPersonCameraSettings(CameraController follow, Camera cam)
+    {
+        if (follow == null) return;
+
+        follow.target = transform;
+        follow.offset = new Vector3(0.45f, 1.45f, -4.65f);
+        follow.smoothSpeed = 20f;
+        follow.lookHeight = 1.55f;
+        follow.lookTargetLocalOffset = Vector3.zero;
+        follow.minPitch = ThirdPersonMinPitch;
+        follow.maxPitch = ThirdPersonMaxPitch;
+        follow.pitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
+        follow.enableCollision = true;
+        follow.minDistance = 0.35f;
+        follow.minHeightAboveGround = 0.55f;
+        follow.collisionRadius = 0.2f;
+        follow.wallPadding = 0.16f;
+        follow.pullInSpeed = 0.035f;
+        follow.recoverySmoothTime = 0.12f;
+        follow.closeDistanceFailsafe = 0.5f;
+        follow.closeSpaceHeightBoost = 0.35f;
+        follow.closeSpaceFieldOfView = 76f;
+        follow.defaultFieldOfView = 68f;
+
+        if (cam != null)
+        {
+            cam.fieldOfView = 68f;
+            cam.nearClipPlane = 0.03f;
+        }
+    }
+
+    private static void DestroyDuplicateThirdPersonCameras(CameraController[] controllers, int keepIndex)
+    {
+        for (int i = controllers.Length - 1; i >= 0; i--)
+        {
+            if (i == keepIndex || controllers[i] == null)
+                continue;
+
+            GameObject cameraObject = controllers[i].gameObject;
+            if (cameraObject != null && cameraObject.name == RuntimeThirdPersonCameraName)
+                Destroy(cameraObject);
+        }
     }
 
     private void SetFirstPersonRenderersVisible(bool visible)
@@ -1597,6 +1915,7 @@ public class PlayerController : MonoBehaviour
             thirdPersonBody.transform.localPosition = Vector3.zero;
             thirdPersonBody.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
             thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
+            thirdPersonBodyBaseLocalRotation = thirdPersonBody.transform.localRotation;
             NormalizeBodyScale(thirdPersonBody, 1.8f);
 
             Animator roninAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
@@ -1621,6 +1940,7 @@ public class PlayerController : MonoBehaviour
             thirdPersonBody.transform.localPosition = Vector3.zero;
             thirdPersonBody.transform.localRotation = Quaternion.identity;
             thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
+            thirdPersonBodyBaseLocalRotation = thirdPersonBody.transform.localRotation;
             NormalizeBodyScale(thirdPersonBody, 1.8f);
 
             Animator bodyAnimator = thirdPersonBody.GetComponentInChildren<Animator>(true);
@@ -1645,6 +1965,7 @@ public class PlayerController : MonoBehaviour
             thirdPersonBody.transform.localPosition = Vector3.zero;
             thirdPersonBody.transform.localRotation = Quaternion.identity;
             thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
+            thirdPersonBodyBaseLocalRotation = thirdPersonBody.transform.localRotation;
             thirdPersonBody.transform.localScale    = new Vector3(0.92f, 0.92f, 0.92f);
 
             HideKnightWeaponProp(thirdPersonBody);
@@ -1667,6 +1988,7 @@ public class PlayerController : MonoBehaviour
         thirdPersonBody.transform.SetParent(transform, false);
         thirdPersonBody.transform.localPosition = Vector3.zero;
         thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
+        thirdPersonBodyBaseLocalRotation = thirdPersonBody.transform.localRotation;
     }
 
     private void ApplySkinMaterial(GameObject body)
@@ -1898,11 +2220,32 @@ public class PlayerController : MonoBehaviour
         if (thirdPersonBody != null)
             EnsureAnimationEventSink(thirdPersonBody);
 
+        // Solid jet-black operator silhouette — strong contrast against the
+        // varied enemy roster, reads clean from every angle, and matches the
+        // dark-side aesthetic the user requested. The minimap arrow stays
+        // bright green so player identity is still obvious on the map even
+        // though the character itself is black.
+        Color playerStandoutColor = new Color(0.04f, 0.04f, 0.05f, 1f);
         foreach (SkinnedMeshRenderer smr in GetComponentsInChildren<SkinnedMeshRenderer>(true))
         {
             if (smr == null) continue;
-            smr.material = material;
+            Material instance = new Material(material);
+            ApplyReadableTint(instance, playerStandoutColor, 0.92f);
+            smr.material = instance;
         }
+    }
+
+    private static void ApplyReadableTint(Material mat, Color tint, float strength)
+    {
+        if (mat == null) return;
+
+        Color baseColor = Color.white;
+        if (mat.HasProperty("_BaseColor")) baseColor = mat.GetColor("_BaseColor");
+        else if (mat.HasProperty("_Color")) baseColor = mat.GetColor("_Color");
+
+        Color mixed = Color.Lerp(baseColor, tint, Mathf.Clamp01(strength));
+        if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", mixed);
+        if (mat.HasProperty("_Color")) mat.SetColor("_Color", mixed);
     }
 
     private void HideKnightWeaponProp(GameObject knight)
@@ -1919,6 +2262,20 @@ public class PlayerController : MonoBehaviour
     {
         level = Mathf.Max(1, level);
 
+        // ── Store override ──────────────────────────────────────────────────
+        // If the player has unlocked + equipped a weapon in the PRSIM Store
+        // (e.g. Nunchucks), that override completely supersedes the level's
+        // default weapon. We swap to the store weapon's underlying level
+        // index so the procedural mesh + base damage curve are correct, then
+        // apply the per-weapon damage/attack-speed multipliers on top.
+        WeaponDefinition storeWeapon = null;
+        if (SessionManager.Instance != null)
+        {
+            storeWeapon = SessionManager.Instance.EquippedWeapon;
+            if (storeWeapon != null && storeWeapon.Id != "default")
+                level = storeWeapon.LevelIndex;
+        }
+
         if (GameManager.Instance != null)
         {
             equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
@@ -1931,6 +2288,17 @@ public class PlayerController : MonoBehaviour
             equippedWeaponName = "Combat Knife";
         }
 
+        // Apply the store weapon's per-weapon stat multipliers.
+        if (storeWeapon != null && storeWeapon.Id != "default")
+        {
+            equippedWeaponName = storeWeapon.Name;
+            attackDamage       = Mathf.Max(1, Mathf.RoundToInt(attackDamage * storeWeapon.DamageMul));
+            attackSpeed       *= storeWeapon.AttackSpeedMul;
+            // Faster weapons get a proportionally shorter recovery so the
+            // anim/hitbox windows stay in sync.
+            attackDelay        = Mathf.Clamp(attackDelay / storeWeapon.AttackSpeedMul, 0.12f, 1.0f);
+        }
+
         if (thirdPersonBody != null)
         {
             if (isThirdPersonActive)
@@ -1941,7 +2309,52 @@ public class PlayerController : MonoBehaviour
             SetupWeaponIK();
         }
 
+        // Tint the freshly-attached weapon with whatever skin the player has
+        // equipped in the PRISM Store. Idempotent — re-applying with the same
+        // colour is a no-op.
+        ApplyEquippedKatanaSkin();
+
+        // Wire the per-weapon "alive" feel — Nunchucks open + spin during the
+        // attack window, lighter weapons get a small follow-through, etc.
+        ApplyWeaponLiveAnimation(storeWeapon);
+
         // RefreshFirstPersonWeaponModel removed — third-person only.
+    }
+
+    /// <summary>
+    /// Attaches a <see cref="WeaponLiveAnimator"/> to the equipped weapon so it
+    /// animates in sync with attacks. Different store weapons get different
+    /// presets — Nunchucks chain-spin, Hammer gets a heavy windup, etc.
+    /// </summary>
+    private void ApplyWeaponLiveAnimation(WeaponDefinition def)
+    {
+        if (equippedWeaponObject == null) return;
+        WeaponLiveAnimator live = equippedWeaponObject.GetComponent<WeaponLiveAnimator>();
+        if (live == null) live = equippedWeaponObject.AddComponent<WeaponLiveAnimator>();
+        live.Configure(def);
+    }
+
+    /// <summary>
+    /// Re-tints every renderer on the equipped weapon object with the colour
+    /// of the PRISM-store skin currently equipped on the player profile.
+    /// </summary>
+    public void ApplyEquippedKatanaSkin()
+    {
+        if (equippedWeaponObject == null) return;
+        if (SessionManager.Instance == null) return;
+
+        Color tint = SessionManager.Instance.EquippedSkinColor;
+        Renderer[] renderers = equippedWeaponObject.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (r == null || r.sharedMaterial == null) continue;
+            // Use the per-renderer instance so we don't bleed the colour into
+            // every weapon ever spawned from the same prefab.
+            Material instance = new Material(r.sharedMaterial);
+            ApplyReadableTint(instance, tint, 0.85f);
+            r.material = instance;
+        }
     }
 
     private void SetupWeaponIK()
@@ -2050,6 +2463,7 @@ public class PlayerController : MonoBehaviour
             equippedWeaponObject = null;
             equippedWeaponLevel = -1;
         }
+        equippedWeaponHitbox = null;
 
         WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
 
@@ -2063,6 +2477,7 @@ public class PlayerController : MonoBehaviour
             Transform fallbackSocket = GetOrCreateWeaponSocket(fallbackBone);
             equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackSocket, loadout);
             equippedWeaponLevel = level;
+            equippedWeaponHitbox = equippedWeaponObject != null ? equippedWeaponObject.GetComponent<WeaponHitbox>() : null;
             weaponAttachInProgress = false;
             return;
         }
@@ -2134,6 +2549,7 @@ public class PlayerController : MonoBehaviour
         }
 
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
+        ApplyKatanaGripFix(level, prefab, weapon.transform);
 
         Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
                   $"targetSize={finalTargetSize} extent={weaponExtent} " +
@@ -2168,6 +2584,8 @@ public class PlayerController : MonoBehaviour
         WeaponHitbox hitbox = weapon.GetComponent<WeaponHitbox>();
         if (hitbox == null) hitbox = weapon.AddComponent<WeaponHitbox>();
         hitbox.damage = attackDamage;
+        hitbox.DisableHitbox();
+        equippedWeaponHitbox = hitbox;
 
         // ── 12. Visibility fix (URP) ─────────────────────────────────────────
         if (weapon.GetComponent<WeaponVisibilityFix>() == null)
@@ -2208,6 +2626,29 @@ public class PlayerController : MonoBehaviour
 
         weaponRoot.localPosition = PlayerChainsawGripLocalPosition;
         weaponRoot.localRotation = Quaternion.Euler(PlayerChainsawGripLocalEuler);
+    }
+
+    private static void ApplyKatanaGripFix(int level, GameObject prefab, Transform weaponRoot)
+    {
+        if (weaponRoot == null) return;
+        string prefabName = prefab != null ? prefab.name.ToLowerInvariant() : string.Empty;
+        if (level != 2 && !prefabName.Contains("katana"))
+            return;
+
+        // Pin the hilt into the palm with a wrist-aligned rotation so the
+        // blade extends forward of the fingertips instead of riding the
+        // forearm.
+        weaponRoot.localPosition = PlayerKatanaGripLocalPosition;
+        weaponRoot.localRotation = Quaternion.Euler(PlayerKatanaGripLocalEuler);
+    }
+
+    private static int ResolveHittableMask()
+    {
+        int hittable = LayerMask.NameToLayer("Hittable");
+        if (hittable >= 0) return 1 << hittable;
+
+        int character = LayerMask.NameToLayer("Character");
+        return character >= 0 ? 1 << character : ~0;
     }
 
     // Resolves the player right-hand bone using explicit names first, then the

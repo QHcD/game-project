@@ -16,10 +16,15 @@ public class ActorHealth : MonoBehaviour, IDamageable
     [SerializeField] private float destroyDelay = 3f;
     [SerializeField] private Animator animator;
     [SerializeField] private string deathTrigger = "Die";
+    [SerializeField] private Color hitFlashColor = new Color(1f, 0.25f, 0.25f, 1f);
+    [SerializeField] private float hitFlashDuration = 0.12f;
 
     public bool IsAlive => currentHealth > 0f;
 
     private bool _isDead;
+    private Renderer[] _renderers;
+    private Color[] _originalColors;
+    private Coroutine _flashRoutine;
 
     private void Awake()
     {
@@ -29,6 +34,14 @@ public class ActorHealth : MonoBehaviour, IDamageable
 
         if (animator == null)
             animator = GetComponentInChildren<Animator>();
+
+        _renderers = GetComponentsInChildren<Renderer>(true);
+        _originalColors = new Color[_renderers.Length];
+        for (int i = 0; i < _renderers.Length; i++)
+        {
+            if (_renderers[i] == null || _renderers[i].material == null) continue;
+            _originalColors[i] = GetMaterialColor(_renderers[i].material);
+        }
     }
 
     public void TakeDamage(float damage)
@@ -37,6 +50,7 @@ public class ActorHealth : MonoBehaviour, IDamageable
             return;
 
         currentHealth = Mathf.Max(0f, currentHealth - Mathf.Abs(damage));
+        FlashDamage();
 
         if (currentHealth <= 0f)
             Die();
@@ -66,6 +80,10 @@ public class ActorHealth : MonoBehaviour, IDamageable
         if (agent != null)
             agent.enabled = false;
 
+        RagdollController ragdoll = GetComponent<RagdollController>();
+        if (ragdoll != null)
+            ragdoll.EnableRagdoll(Vector3.back);
+
         Collider[] colliders = GetComponentsInChildren<Collider>();
         for (int i = 0; i < colliders.Length; i++)
         {
@@ -79,5 +97,48 @@ public class ActorHealth : MonoBehaviour, IDamageable
 
         if (destroyOnDeath)
             Destroy(gameObject, destroyDelay);
+    }
+
+    private void FlashDamage()
+    {
+        if (!isActiveAndEnabled || _renderers == null || _renderers.Length == 0)
+            return;
+
+        if (_flashRoutine != null)
+            StopCoroutine(_flashRoutine);
+        _flashRoutine = StartCoroutine(FlashRoutine());
+    }
+
+    private System.Collections.IEnumerator FlashRoutine()
+    {
+        for (int i = 0; i < _renderers.Length; i++)
+        {
+            if (_renderers[i] == null || _renderers[i].material == null) continue;
+            SetMaterialColor(_renderers[i].material, hitFlashColor);
+        }
+
+        yield return new WaitForSeconds(hitFlashDuration);
+
+        for (int i = 0; i < _renderers.Length; i++)
+        {
+            if (_renderers[i] == null || _renderers[i].material == null) continue;
+            if (i < _originalColors.Length)
+                SetMaterialColor(_renderers[i].material, _originalColors[i]);
+        }
+
+        _flashRoutine = null;
+    }
+
+    private static Color GetMaterialColor(Material mat)
+    {
+        if (mat.HasProperty("_BaseColor")) return mat.GetColor("_BaseColor");
+        if (mat.HasProperty("_Color")) return mat.GetColor("_Color");
+        return Color.white;
+    }
+
+    private static void SetMaterialColor(Material mat, Color color)
+    {
+        if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", color);
+        if (mat.HasProperty("_Color")) mat.SetColor("_Color", color);
     }
 }

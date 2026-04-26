@@ -13,7 +13,7 @@ using UnityEngine;
 /// a one-shot environmental script for arena entrances and level gates.
 /// </summary>
 [DisallowMultipleComponent]
-public class DoorController : MonoBehaviour
+public class DoorController : MonoBehaviour, IInteractable
 {
     [Header("Swing")]
     [Tooltip("Degrees to rotate around the Y axis. Positive = clockwise from above.")]
@@ -35,9 +35,17 @@ public class DoorController : MonoBehaviour
     [Tooltip("Tag the entering object must have. Leave empty to accept any rigidbody.")]
     public string playerTag = "Player";
 
+    [Header("Interaction (Raycast / [E])")]
+    [Tooltip("If true, the player can press [E] while looking at this door to toggle it open/closed.")]
+    public bool interactiveToggle = true;
+
+    [Tooltip("Prompt label shown by the player's interaction reticle.")]
+    public string interactionPrompt = "OPEN DOOR";
+
     private Quaternion _closedRot;
     private Quaternion _openRot;
     private bool       _hasOpened;
+    private bool       _isOpen;
     private Coroutine  _swingRoutine;
 
     private void Awake()
@@ -65,12 +73,44 @@ public class DoorController : MonoBehaviour
     /// </summary>
     public void Open()
     {
-        if (_hasOpened) return;
+        if (_hasOpened && _isOpen) return;
         _hasOpened = true;
+        _isOpen    = true;
 
         if (_swingRoutine != null) StopCoroutine(_swingRoutine);
         _swingRoutine = StartCoroutine(SwingDoor(_openRot));
     }
+
+    /// <summary>
+    /// Swings the door back to its closed rotation. Used by the player
+    /// interaction system so [E] toggles the door instead of being a one-way
+    /// open. Idempotent: no-ops if the door is already closed.
+    /// </summary>
+    public void Close()
+    {
+        if (!_isOpen) return;
+        _isOpen = false;
+
+        if (_swingRoutine != null) StopCoroutine(_swingRoutine);
+        _swingRoutine = StartCoroutine(SwingDoor(_closedRot));
+    }
+
+    /// <summary>
+    /// Toggles the door open/closed. The default action when the player
+    /// presses [E] while looking at the door.
+    /// </summary>
+    public void Toggle()
+    {
+        if (_isOpen) Close();
+        else         Open();
+    }
+
+    // ── IInteractable ───────────────────────────────────────────────────────
+    string IInteractable.GetPrompt() => interactiveToggle
+        ? (_isOpen ? "CLOSE DOOR" : interactionPrompt)
+        : string.Empty;
+    void   IInteractable.Interact(GameObject by) { if (interactiveToggle) Toggle(); }
+    bool   IInteractable.CanInteract           => interactiveToggle;
 
     private IEnumerator SwingDoor(Quaternion targetRot)
     {
