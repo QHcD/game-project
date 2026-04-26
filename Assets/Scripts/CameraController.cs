@@ -114,6 +114,19 @@ public class CameraController : MonoBehaviour
     //  LIFECYCLE
     // ════════════════════════════════════════════════════════════════════════
 
+    public static CameraController Instance { get; private set; }
+
+    private void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Debug.LogWarning($"[CameraController] Duplicate destroyed: \"{gameObject.name}\". Only one CameraController allowed.");
+            DestroyImmediate(this.gameObject);
+            return;
+        }
+        Instance = this;
+    }
+
     private void Start()
     {
         // Force near-clip to 0.01 so the camera never renders the inside of

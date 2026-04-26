@@ -3,16 +3,13 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Singleton game-state manager.
+/// STRICT SINGLETON — "Destroyer" Pattern.
+/// In Awake(), if an instance already exists, this immediately calls
+/// DestroyImmediate(gameObject) and returns, guaranteeing only ONE
+/// GameManager exists globally across all 16 levels.
 ///
-/// Fix (Issue #5 — Victory Condition):
-///   • Added totalEnemiesSpawned + enemiesKilledThisLevel counters.
-///   • InitializeEnemyCount() is called by LevelBuilder AFTER all enemies are
-///     placed so the baseline is always correct.
-///   • EnemyKilled() now only triggers LevelComplete when the kill count
-///     MATCHES the number that were actually spawned (not just when
-///     enemiesRemaining hits zero, which could fire prematurely if the
-///     counter was never initialised).
+/// This eliminates the hierarchy flood of duplicate GameManagers that
+/// was causing extreme lag, frozen AI, and broken physics.
 /// </summary>
 public class GameManager : MonoBehaviour
 {
@@ -42,7 +39,7 @@ public class GameManager : MonoBehaviour
         ArrowKeys
     }
 
-    public static GameManager Instance;
+    public static GameManager Instance { get; private set; }
     public static MenuScreen PendingMenuScreen { get; private set; } = MenuScreen.MainMenu;
 
     public const int TotalLevels = 16;
@@ -53,7 +50,6 @@ public class GameManager : MonoBehaviour
         UltimateMelee
     }
 
-    // Levels 1-16: all melee progression.
     private static readonly string[] LevelWeaponNames = {
         "Tactical Knife", "Katana", "Shovel", "Baseball Bat", "Nunchucks",
         "Wrench", "Crowbar", "Hammer", "Axe", "Spear",
@@ -107,45 +103,63 @@ public class GameManager : MonoBehaviour
     public PerspectiveMode perspectiveMode  = PerspectiveMode.ThirdPerson;
     public MovementScheme  movementScheme   = MovementScheme.Wasd;
 
-    // ── Enemy tracking for correct victory condition (Issue #5) ─────────────
-    /// <summary>How many enemies were spawned this level (set by LevelBuilder).</summary>
     public int totalEnemiesSpawned   = 0;
-    /// <summary>How many enemies have been killed this level (all sources).</summary>
     public int enemiesKilledThisLevel = 0;
 
-    // ── Victory delay ────────────────────────────────────────────────────────
-    /// <summary>
-    /// Seconds to wait after the last enemy dies before loading the next scene.
-    /// Gives the player time to watch the final enemy fall. Tweak in Inspector.
-    /// </summary>
     [SerializeField] private float victoryDelaySeconds = 2.5f;
     [SerializeField] private float loadingScreenMinSeconds = 5.5f;
 
-    /// <summary>Guards against LevelComplete being triggered more than once per level.</summary>
     private bool _levelCompleteTriggered = false;
     private Coroutine _sceneLoadRoutine;
 
-    // ── Lifecycle ────────────────────────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
+    //  STRICT SINGLETON — "Destroyer" Pattern
+    //  CRITICAL: Any duplicate GameManager (prefab leftover, scene copy, or
+    //  AddComponent call) is IMMEDIATELY destroyed. This is the one fix that
+    //  eliminates the hierarchy flood, the lag, and the frozen AI.
+    // ════════════════════════════════════════════════════════════════════════
     void Awake()
     {
-        if (Instance == null)
+        // ── Guard 1: singleton check ────────────────────────────────────────
+        if (Instance != null && Instance != this)
         {
-            Instance = this;
-            if (Application.isPlaying)
-                DontDestroyOnLoad(gameObject);
-            difficulty      = PlayerPrefs.GetString("Difficulty", difficulty);
-            selectedMap     = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", (int)selectedMap), 0, 1);
-            perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)perspectiveMode), 0, 1);
-            movementScheme  = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", (int)movementScheme), 0, 1);
-            currentLevel    = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
+            Debug.LogWarning($"[GameManager] Duplicate destroyed: \"{gameObject.name}\". Only one GameManager allowed.");
+            DestroyImmediate(this.gameObject);
+            return;
         }
-        else
+
+        // ── Guard 2: sweep every sibling Awake for same-type components ────────
+        // Handles the case where multiple GameManagers authored into the same
+        // scene fire Awake() in undefined order before any had a chance to
+        // register as Instance. This catches all of them.
+        if (Application.isPlaying)
         {
-            if (Application.isPlaying)
-                Destroy(gameObject);
-            else
-                DestroyImmediate(gameObject);
+            GameManager[] all = Object.FindObjectsByType<GameManager>(FindObjectsSortMode.None);
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i] != null && all[i] != this)
+                {
+                    Debug.LogWarning($"[GameManager] Sibling duplicate destroyed: \"{all[i].gameObject.name}\".");
+                    DestroyImmediate(all[i].gameObject);
+                }
+            }
         }
+
+        // ── Promote to singleton ────────────────────────────────────────────
+        Instance = this;
+        if (Application.isPlaying)
+            DontDestroyOnLoad(gameObject);
+
+        LoadPersistedSettings();
+    }
+
+    private void LoadPersistedSettings()
+    {
+        difficulty      = PlayerPrefs.GetString("Difficulty", difficulty);
+        selectedMap     = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", (int)selectedMap), 0, 1);
+        perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)perspectiveMode), 0, 1);
+        movementScheme  = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", (int)movementScheme), 0, 1);
+        currentLevel    = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
     }
 
     private void OnEnable()
@@ -166,6 +180,9 @@ public class GameManager : MonoBehaviour
             return;
 
         StartCoroutine(RefreshEnemyCountNextFrame());
+
+        if (currentLevel == 6)
+            StartCoroutine(RefreshLevel6Agents());
     }
 
     private void Update()
@@ -186,12 +203,41 @@ public class GameManager : MonoBehaviour
 
     private IEnumerator RefreshEnemyCountNextFrame()
     {
-        // Let LevelBuilder finish spawning for this frame first.
         yield return null;
 
         EnemyController[] enemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
         if (enemies != null && enemies.Length > 0 && totalEnemiesSpawned <= 0)
             InitializeEnemyCount(enemies.Length);
+    }
+
+    private IEnumerator RefreshLevel6Agents()
+    {
+        yield return null;
+        yield return null;
+
+        EnemyController[] enemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        if (enemies == null) yield break;
+
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            if (enemies[i] == null) continue;
+            UnityEngine.AI.NavMeshAgent agent = enemies[i].GetComponent<UnityEngine.AI.NavMeshAgent>();
+            if (agent == null) continue;
+
+            agent.enabled = false;
+            agent.enabled = true;
+
+            if (UnityEngine.AI.NavMesh.SamplePosition(
+                    enemies[i].transform.position,
+                    out UnityEngine.AI.NavMeshHit hit,
+                    8f,
+                    UnityEngine.AI.NavMesh.AllAreas))
+            {
+                agent.Warp(hit.position);
+            }
+        }
+
+        Debug.Log($"[GameManager] Level 6 agent refresh: rebound {enemies.Length} NavMeshAgent(s).");
     }
 
     // ── Settings setters ─────────────────────────────────────────────────────
@@ -239,14 +285,10 @@ public class GameManager : MonoBehaviour
     public int GetContinueLevel()
         => Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
 
-    /// <summary>
-    /// Returns true if the player has never started a run before (no save data exists).
-    /// Used by the main menu to show "START" instead of "CONTINUE".
-    /// </summary>
     public bool IsNewPlayer()
         => !PlayerPrefs.HasKey("ContinueLevel") && !PlayerPrefs.HasKey("UnlockedLevels");
 
-    // ── Game flow ─────────────────────────────────────────────────────────────
+    // ── Game flow ─────────────────────────────────────────────���───────────────
     public void StartRun(int level = 1)
     {
         Time.timeScale = 1f;
@@ -278,14 +320,9 @@ public class GameManager : MonoBehaviour
         ResetLevelState();
     }
 
-    // ── Enemy helpers ─────────────────────────────────────────────────────────
     public const float LevelTimeLimitSeconds = 180f;
 
-    public int GetEnemyCount()
-    {
-        // 25 combatants per arena. Difficulty scales speed/damage, not headcount.
-        return 25;
-    }
+    public int GetEnemyCount() => 25;
 
     public float GetEnemySpeed()
     {
@@ -309,7 +346,6 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    // ── Weapon helpers ────────────────────────────────────────────────────────
     public string  GetWeaponNameForLevel(int level)         => LevelWeaponNames[Mathf.Clamp(level - 1, 0, LevelWeaponNames.Length - 1)];
     public float   GetWeaponDamageForLevel(int level)       => LevelWeaponDamage[Mathf.Clamp(level - 1, 0, LevelWeaponDamage.Length - 1)];
     public float   GetWeaponRangeForLevel(int level)        => LevelWeaponRange[Mathf.Clamp(level - 1, 0, LevelWeaponRange.Length - 1)];
@@ -317,19 +353,8 @@ public class GameManager : MonoBehaviour
     public WeaponType GetWeaponTypeForLevel(int level)      => LevelWeaponTypes[Mathf.Clamp(level - 1, 0, LevelWeaponTypes.Length - 1)];
     public float   GetWeaponExplosionRadiusForLevel(int level) => LevelWeaponExplosionRadius[Mathf.Clamp(level - 1, 0, LevelWeaponExplosionRadius.Length - 1)];
 
-    // ── Score ────────────────────────────────────────────────────────────────
     public void AddScore(int points) { score += points; }
 
-    // ════════════════════════════════════════════════════════════════════════
-    //  ENEMY TRACKING — Issue #5
-    // ════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// Called by LevelBuilder AFTER all enemies are placed.
-    /// Establishes the authoritative baseline for this level so that
-    /// EnemyKilled() fires LevelComplete only when the LAST of these
-    /// exact enemies is eliminated.
-    /// </summary>
     public void InitializeEnemyCount(int count)
     {
         totalEnemiesSpawned    = count;
@@ -339,13 +364,6 @@ public class GameManager : MonoBehaviour
         Debug.Log($"[GameManager] InitializeEnemyCount: {count} enemies registered for this level.");
     }
 
-    /// <summary>
-    /// Called by EnemyController.Die().
-    /// byPlayer = true  → score + kill-feed update.
-    /// Victory fires only when every spawned enemy has been eliminated
-    /// (kills >= totalEnemiesSpawned), preventing premature level-complete
-    /// if counters were in an uninitialized state.
-    /// </summary>
     public int GetPlayerHitsToKill()
     {
         switch (difficulty)
@@ -397,10 +415,6 @@ public class GameManager : MonoBehaviour
 
         Debug.Log($"[GameManager] EnemyKilled: {enemiesKilledThisLevel}/{totalEnemiesSpawned} killed, {enemiesRemaining} remaining.");
 
-        // ── Victory condition: LAST enemy eliminated (Issue #5) ──
-        // Guard: totalEnemiesSpawned > 0  — prevents firing before level loads.
-        // Guard: enemiesKilledThisLevel >= totalEnemiesSpawned — ALL must die.
-        // Guard: _levelCompleteTriggered  — prevents double-fire if called twice.
         if (totalEnemiesSpawned > 0
             && enemiesKilledThisLevel >= totalEnemiesSpawned
             && !_levelCompleteTriggered)
@@ -411,17 +425,9 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    // ── Level transitions ─────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Waits <see cref="victoryDelaySeconds"/> so the player can watch the last
-    /// enemy fall, then saves progress and loads the main-menu scene.
-    /// </summary>
     private IEnumerator LevelCompleteDelayed()
     {
-        // Let the enemy death animation play out — cursor stays locked while we wait.
         yield return new WaitForSeconds(victoryDelaySeconds);
-
         LevelComplete();
     }
 
@@ -496,7 +502,7 @@ public class GameManager : MonoBehaviour
         totalEnemiesSpawned      = 0;
         enemiesKilledThisLevel   = 0;
         enemiesRemaining         = 0;
-        _levelCompleteTriggered  = false;   // ← allow the next level to trigger
+        _levelCompleteTriggered  = false;
     }
 
     private void BeginSceneLoad(string sceneName)
@@ -544,14 +550,6 @@ public class GameManager : MonoBehaviour
         while (!op.isDone)
             yield return null;
 
-        // ── Gameplay-ready gate ─────────────────────────────────────────────
-        // Hold the loading overlay up until the scene has actually settled:
-        //  • player exists,
-        //  • player is grounded (not mid-air during the spawn drop),
-        //  • camera has had at least one LateUpdate to snap onto the target,
-        //  • LevelBuilder has registered the spawned enemy count.
-        // Without this gate the camera briefly reveals a tilted, half-built
-        // scene with the player floating mid-fall.
         const float maxReadyWait = 4f;
         float readyStart = Time.unscaledTime;
         while (Time.unscaledTime - readyStart < maxReadyWait)
@@ -561,7 +559,6 @@ public class GameManager : MonoBehaviour
             yield return null;
         }
 
-        // Two extra frames so the camera's LateUpdate runs and locks on.
         yield return null;
         yield return null;
 
@@ -578,7 +575,6 @@ public class GameManager : MonoBehaviour
         GameObject player = GameObject.FindWithTag("Player");
         if (player == null) return false;
 
-        // Player must be at rest on the ground (not mid-fall during spawn drop).
         if (Physics.Raycast(player.transform.position + Vector3.up * 0.5f,
                             Vector3.down, out RaycastHit groundHit, 3f,
                             ~0, QueryTriggerInteraction.Ignore))
