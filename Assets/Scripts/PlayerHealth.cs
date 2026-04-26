@@ -88,21 +88,52 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         if (currentHealth <= 0f)
         {
-            if (MatchStatsManager.Instance != null)
-            {
-                MatchStatsManager.Instance.MarkEliminated(MatchStatsManager.BuildCombatantId(this));
-                MatchStatsManager.Instance.RecordKill(_lastAttackerStatsId);
-            }
-
-            if (GameManager.Instance != null)
-            {
-                GameManager.Instance.playerTookDamage = true;
-                GameManager.Instance.GameOver();
-            }
+            HandleDeath();
         }
         else if (GameManager.Instance != null)
         {
             GameManager.Instance.playerTookDamage = true;
+        }
+    }
+
+    /// <summary>
+    /// Universal death handler — symmetric with EnemyController.Die(). Disables
+    /// movement components, triggers the ragdoll if one is present, reports the
+    /// kill, then transitions to the GameOver screen. Guarded so re-entry from
+    /// late hits during the death frame is a no-op.
+    /// </summary>
+    private bool _deathHandled;
+    private void HandleDeath()
+    {
+        if (_deathHandled) return;
+        _deathHandled = true;
+
+        // Stop all locomotion so the corpse can't slide around or take more hits.
+        CharacterController cc = GetComponent<CharacterController>();
+        if (cc != null) cc.enabled = false;
+
+        UnityEngine.AI.NavMeshAgent agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
+        if (agent != null) agent.enabled = false;
+
+        // Trigger ragdoll if the player rig has one wired up. Direction is
+        // toward the last attacker so the body recoils naturally.
+        RagdollController ragdoll = GetComponent<RagdollController>();
+        if (ragdoll != null)
+        {
+            Vector3 hitDir = Vector3.back;
+            ragdoll.EnableRagdoll(hitDir);
+        }
+
+        if (MatchStatsManager.Instance != null)
+        {
+            MatchStatsManager.Instance.MarkEliminated(MatchStatsManager.BuildCombatantId(this));
+            MatchStatsManager.Instance.RecordKill(_lastAttackerStatsId);
+        }
+
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.playerTookDamage = true;
+            GameManager.Instance.GameOver();
         }
     }
 

@@ -272,6 +272,18 @@ public class PlayerController : MonoBehaviour
 
     private void Awake()
     {
+        // Force the project-wide layer collision matrix to allow Player ↔
+        // Enemies overlap so the manual separation push below sees them. The
+        // helper handles missing layers gracefully (layers are project-level
+        // settings and cannot be created at runtime).
+        EnemyController.EnsureCharacterLayerCollision();
+
+        // Prefer the dedicated "Player" layer when defined; fall back to the
+        // existing "Character" layer otherwise.
+        int targetLayer = LayerMask.NameToLayer("Player");
+        if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Character");
+        if (targetLayer >= 0) gameObject.layer = targetLayer;
+
         controller  = GetComponent<CharacterController>();
         audioSource = GetComponent<AudioSource>();
 
@@ -281,7 +293,8 @@ public class PlayerController : MonoBehaviour
             controller.radius          = 0.4f;
             controller.center          = new Vector3(0f, 0.92f, 0f);
             controller.skinWidth       = 0.04f;
-            controller.stepOffset      = 0.25f;
+            controller.stepOffset      = 0.5f;
+            controller.slopeLimit      = 45f;
             controller.minMoveDistance  = 0f;
             targetControllerHeight = controller.height;
             targetControllerCenter = controller.center;
@@ -425,6 +438,7 @@ public class PlayerController : MonoBehaviour
         ReadInput();
         HandleActionInput();
         ApplyMovement();
+        ApplySeparationPush();
         ApplyLook();
         // UpdateCameraZoom removed — zoom is permanently disabled.
         UpdateHeadBob();
@@ -496,6 +510,63 @@ public class PlayerController : MonoBehaviour
     // ════════════════════════════════════════════════════════════════════════
     //  MOVEMENT
     // ════════════════════════════════════════════════════════════════════════
+
+    // ── Separation (Anti-Stacking) ───────────────────────────────────────────
+    // Push the player out of any overlapping IDamageable actor so the
+    // CharacterController never merges into a kinematic enemy capsule after
+    // spawn overlap, knockback, or simultaneous melee lunges. Walls / props
+    // are ignored — we only push against other characters.
+
+    private static readonly Collider[] _separationBuffer = new Collider[8];
+
+    private void ApplySeparationPush()
+    {
+        if (controller == null || !controller.enabled) return;
+
+        Vector3 worldCenter = transform.TransformPoint(controller.center);
+        float   selfRadius  = controller.radius;
+        float   probe       = selfRadius + 0.1f;
+
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            worldCenter, probe, _separationBuffer, ~0, QueryTriggerInteraction.Ignore);
+        if (hitCount == 0) return;
+
+        Vector3 push = Vector3.zero;
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider other = _separationBuffer[i];
+            if (other == null) continue;
+            if (other.transform == transform) continue;
+            if (other.transform.IsChildOf(transform)) continue;
+
+            IDamageable dmg = other.GetComponentInParent<IDamageable>();
+            if (dmg == null) continue; // not a character
+
+            Vector3 delta = transform.position - other.transform.position;
+            delta.y = 0f;
+            float d = delta.magnitude;
+
+            // Coincident actors — emit a deterministic-ish nudge so two stacked
+            // statues separate rather than oscillating.
+            if (d < 0.001f)
+            {
+                delta = new Vector3(transform.position.x - other.transform.position.x + 0.01f,
+                                    0f,
+                                    transform.position.z - other.transform.position.z + 0.01f);
+                delta = delta.sqrMagnitude > 0f ? delta.normalized : Vector3.right;
+                d = 0.01f;
+            }
+
+            float overlap = Mathf.Max(0f, (selfRadius + 0.45f) - d);
+            if (overlap > 0f)
+                push += (delta / d) * overlap;
+        }
+
+        // Half-overlap each frame — both actors push on their own update,
+        // so the gap closes in 2-3 frames without a visible snap.
+        if (push.sqrMagnitude > 1e-6f)
+            controller.Move(push * 0.5f);
+    }
 
     private void ApplyMovement()
     {
@@ -900,7 +971,7 @@ public class PlayerController : MonoBehaviour
 
         controller.height = Mathf.Lerp(controller.height, targetControllerHeight, stanceTransitionSpeed * Time.deltaTime);
         controller.center = Vector3.Lerp(controller.center, targetControllerCenter, stanceTransitionSpeed * Time.deltaTime);
-        controller.stepOffset = controller.height > 1.6f ? 0.25f : 0.05f;
+        controller.stepOffset = controller.height > 1.6f ? 0.5f : 0.05f;
 
         if (thirdPersonBody != null)
         {
@@ -1445,6 +1516,18 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
+        CameraController existingFollow = Object.FindFirstObjectByType<CameraController>();
+        if (existingFollow != null)
+        {
+            runtimeThirdPersonCamera = existingFollow.GetComponent<Camera>();
+            if (runtimeThirdPersonCamera != null)
+            {
+                thirdPersonCam = runtimeThirdPersonCamera;
+                existingFollow.target = transform;
+                return;
+            }
+        }
+
         GameObject camObj = new GameObject("RuntimeThirdPersonCamera");
         runtimeThirdPersonCamera = camObj.AddComponent<Camera>();
 
@@ -1469,13 +1552,16 @@ public class PlayerController : MonoBehaviour
         camObj.AddComponent<AudioListener>();
 
         CameraController follow = camObj.AddComponent<CameraController>();
-        follow.target           = transform;
-        follow.offset           = new Vector3(0.8f, 2.8f, -7.0f);  // Safe startup view of player + arena
-        follow.smoothSpeed      = 14f;
-        follow.lookHeight       = 1.4f;
-        follow.enableCollision  = false;
-        follow.defaultFieldOfView = runtimeThirdPersonCamera.fieldOfView;
-        follow.lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
+        if (follow != null)
+        {
+            follow.target           = transform;
+            follow.offset           = new Vector3(0.8f, 2.8f, -7.0f);  // Safe startup view of player + arena
+            follow.smoothSpeed      = 14f;
+            follow.lookHeight       = 1.4f;
+            follow.enableCollision  = false;
+            follow.defaultFieldOfView = runtimeThirdPersonCamera.fieldOfView;
+            follow.lookTargetLocalOffset = new Vector3(0f, 0.08f, 0f);
+        }
 
         thirdPersonCam = runtimeThirdPersonCamera;
     }

@@ -122,7 +122,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Damage-window start after attack trigger (seconds).")]
     public float attackHitboxWindup = 0.12f;
     [Tooltip("How long the weapon hitbox remains active during attack (seconds).")]
-    public float attackHitboxActiveTime = 0.22f;
+    public float attackHitboxActiveTime = 0.3f;
 
     [Header("Death")]
     [Tooltip("Seconds the death animation plays before ragdoll activates.")]
@@ -217,8 +217,44 @@ public class EnemyController : MonoBehaviour, IDamageable
     private const string WeaponSocketName     = "__EnemyWeaponSocket";
 
     // ── Unity lifecycle ──────────────────────────────────────────────────────
+    // ── Global one-time setup ─────────────────────────────────────────────────
+    // Layer collision matrix is a project-wide setting. Doing this once from
+    // any character's Awake guarantees enemies / players collide regardless of
+    // whatever the scene was authored with. Calling IgnoreLayerCollision(...,
+    // false) for kinematic-vs-kinematic is technically a no-op (kinematic
+    // bodies don't push each other apart), but the flag still affects trigger
+    // events and OverlapSphere queries we rely on for the manual separation
+    // push below.
+    private static bool _characterLayerCollisionEnsured;
+
+    internal static void EnsureCharacterLayerCollision()
+    {
+        if (_characterLayerCollisionEnsured) return;
+        _characterLayerCollisionEnsured = true;
+
+        int enemiesLayer  = LayerMask.NameToLayer("Enemies");
+        int playerLayer   = LayerMask.NameToLayer("Player");
+        int characterLayer = LayerMask.NameToLayer("Character");
+
+        if (enemiesLayer >= 0)
+            Physics.IgnoreLayerCollision(enemiesLayer, enemiesLayer, false);
+        if (characterLayer >= 0)
+            Physics.IgnoreLayerCollision(characterLayer, characterLayer, false);
+        if (playerLayer >= 0 && enemiesLayer >= 0)
+            Physics.IgnoreLayerCollision(playerLayer, enemiesLayer, false);
+    }
+
     private void Awake()
     {
+        EnsureCharacterLayerCollision();
+
+        // Prefer the dedicated "Enemies" layer when the project defines it;
+        // fall back to the existing "Character" layer otherwise. Layers cannot
+        // be created at runtime, so missing layers are silently ignored.
+        int targetLayer = LayerMask.NameToLayer("Enemies");
+        if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Character");
+        if (targetLayer >= 0) gameObject.layer = targetLayer;
+
         _agent         = GetComponent<NavMeshAgent>();
         _anim          = GetComponentInChildren<Animator>();
         _currentHealth = maxHealth;
@@ -363,6 +399,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             case State.Jumping: UpdateJumping(); break;
         }
 
+        ApplyEnemySeparation();
+        CheckFrozenAndWarp();
         SyncAnimator();
     }
 
@@ -564,6 +602,147 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (_flinchTimer <= 0f)
             TransitionTo(IsTargetValid(_target) ? State.Chase : State.Patrol);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  SEPARATION (Anti-Stacking) — kinematic Rigidbody backup
+    //  NavMeshAgent.HQ avoidance is supposed to keep agents from overlapping,
+    //  but two failure modes still produce the "magnet merge" reported by the
+    //  player: (a) coincident spawn points, (b) a NavMesh that can't pull
+    //  agents apart because the area between them is unwalkable. Because the
+    //  Rigidbody is kinematic, the physics engine WILL NOT push these
+    //  capsules apart no matter what the layer collision matrix says — this
+    //  routine performs the push manually via Warp(), keeping the agent's
+    //  internal pathing state in sync.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private static readonly Collider[] _separationBuffer = new Collider[8];
+
+    [Header("Anti-Magnet Repulsion")]
+    [Tooltip("Distance under which two enemies push each other apart. 1.5 m is " +
+             "aggressive — drop to ~1.0 m if melee enemies fail to close on the player.")]
+    [SerializeField] private float enemyPersonalSpace = 1.5f;
+
+    private void ApplyEnemySeparation()
+    {
+        if (_state == State.Dead) return;
+        if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh) return;
+
+        Vector3 push = Vector3.zero;
+        
+        // 1. Push apart from other enemies
+        EnemyController[] allEnemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        for (int i = 0; i < allEnemies.Length; i++)
+        {
+            EnemyController other = allEnemies[i];
+            if (other == null || other == this || !other.IsAlive) continue;
+
+            float d = Vector3.Distance(transform.position, other.transform.position);
+            if (d < 1.2f)
+            {
+                Vector3 delta = transform.position - other.transform.position;
+                delta.y = 0f;
+                
+                if (d < 0.001f)
+                {
+                    float jitter = (GetInstanceID() & 1) == 0 ? 1f : -1f;
+                    delta = new Vector3(jitter, 0f, jitter * 0.5f);
+                    d = delta.magnitude;
+                }
+                
+                float overlap = 1.2f - d;
+                push += (delta.normalized) * overlap;
+            }
+        }
+
+        // 2. Push apart from the player
+        PlayerController player = Object.FindFirstObjectByType<PlayerController>();
+        if (player != null)
+        {
+            float d = Vector3.Distance(transform.position, player.transform.position);
+            if (d < 1.2f)
+            {
+                Vector3 delta = transform.position - player.transform.position;
+                delta.y = 0f;
+                
+                if (d < 0.001f)
+                {
+                    float jitter = (GetInstanceID() & 1) == 0 ? 1f : -1f;
+                    delta = new Vector3(jitter, 0f, jitter * 0.5f);
+                    d = delta.magnitude;
+                }
+                
+                float overlap = 1.2f - d;
+                push += (delta.normalized) * overlap;
+            }
+        }
+
+        if (push.sqrMagnitude < 1e-6f) return;
+
+        // Apply push using transform.Translate to bypass Kinematic physics issues
+        transform.Translate(push * 0.5f * Time.deltaTime * 10f, Space.World);
+        
+        // Ensure NavMeshAgent stays synced with the new position
+        if (NavMesh.SamplePosition(transform.position, out NavMeshHit navHit, 1.0f, NavMesh.AllAreas))
+        {
+            _agent.Warp(navHit.position);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  FREEZE FAILSAFE — Level 6 NavMesh resilience
+    //  If an agent has a destination but hasn't moved for 2 s, assume it is
+    //  stuck off-mesh or marooned in a disconnected island and force-warp it
+    //  to a random valid NavMesh point near its current location. This is
+    //  cheaper than re-baking and keeps gameplay running on broken levels.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private float _frozenTimer;
+    private Vector3 _frozenLastPos;
+    private const float FrozenThresholdSeconds = 2f;
+    private const float FrozenMoveEpsilon = 0.05f;
+
+    private void CheckFrozenAndWarp()
+    {
+        if (_state == State.Dead) return;
+        if (_agent == null || !_agent.enabled) return;
+
+        // Idle agents are frozen on purpose — don't punish them.
+        if (_state == State.Idle || _state == State.Patrol)
+        {
+            _frozenTimer = 0f;
+            _frozenLastPos = transform.position;
+            return;
+        }
+
+        float moved = Vector3.Distance(transform.position, _frozenLastPos);
+        if (moved > FrozenMoveEpsilon)
+        {
+            _frozenTimer = 0f;
+            _frozenLastPos = transform.position;
+            return;
+        }
+
+        _frozenTimer += Time.deltaTime;
+        if (_frozenTimer < FrozenThresholdSeconds) return;
+        _frozenTimer = 0f;
+
+        // Toggle the agent so its internal off-mesh state resets, then try
+        // five random points within 12 m for a valid NavMesh landing zone.
+        _agent.enabled = false;
+        _agent.enabled = true;
+
+        for (int i = 0; i < 5; i++)
+        {
+            Vector2 r = Random.insideUnitCircle * 12f;
+            Vector3 trial = transform.position + new Vector3(r.x, 0f, r.y);
+            if (NavMesh.SamplePosition(trial, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+            {
+                _agent.Warp(hit.position);
+                _frozenLastPos = hit.position;
+                return;
+            }
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════

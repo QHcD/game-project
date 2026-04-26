@@ -17,6 +17,7 @@ public class LevelSetup : MonoBehaviour
             EnsurePlayer();
             EnsureCamera();
             EnsureGroundVisible();
+            StabilizeEnvironment();
             ForceFallbackSpawnIfNeeded();
             TryInitializeOptionalAISystems();
         }
@@ -138,6 +139,87 @@ public class LevelSetup : MonoBehaviour
         }
 
         Debug.LogWarning("[LevelSetup] No ground renderer found; created VisibleGround_Fallback.");
+    }
+
+    /// <summary>
+    /// Walk every "Map" / "Environment" / "Level" root and:
+    ///   • Destroy non-kinematic Rigidbodies on geometry (floors and walls
+    ///     must not fall under gravity once the scene starts).
+    ///   • Re-assign every collidable child to the "Environment" layer so the
+    ///     camera SphereCast mask in CameraController catches them as
+    ///     wall/floor blockers.
+    /// IDamageable actors (player, enemies) parented under these roots are
+    /// preserved untouched so their physics aren't broken.
+    /// </summary>
+    private void StabilizeEnvironment()
+    {
+        string[] rootNames = { "Map", "Environment", "Level", "World", "Geometry", "Arena" };
+        int envLayer = LayerMask.NameToLayer("Environment");
+        int mapLayer = LayerMask.NameToLayer("Map");
+
+        // Pass 1: by-name root scan — catches scenes where geometry is grouped
+        // under a recognisable parent but not yet on a dedicated layer.
+        for (int i = 0; i < rootNames.Length; i++)
+        {
+            GameObject root = GameObject.Find(rootNames[i]);
+            if (root == null) continue;
+            StabilizeHierarchy(root.transform, envLayer);
+        }
+
+        // Pass 2: by-layer scan — catches loose geometry that isn't grouped
+        // under any known root but is already on Map/Environment.
+        if (envLayer >= 0 || mapLayer >= 0)
+            StabilizeByLayer(envLayer, mapLayer);
+    }
+
+    private void StabilizeByLayer(int envLayer, int mapLayer)
+    {
+        Collider[] all = Object.FindObjectsByType<Collider>(FindObjectsSortMode.None);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Collider col = all[i];
+            if (col == null) continue;
+            int layer = col.gameObject.layer;
+            if (layer != envLayer && layer != mapLayer) continue;
+            if (col.GetComponentInParent<IDamageable>() != null) continue;
+
+            Rigidbody rb = col.attachedRigidbody;
+            if (rb != null && !rb.isKinematic
+                && rb.GetComponentInParent<IDamageable>() == null)
+            {
+                Destroy(rb);
+            }
+
+            if (envLayer >= 0)
+                col.gameObject.layer = envLayer;
+        }
+    }
+
+    private void StabilizeHierarchy(Transform root, int envLayer)
+    {
+        if (root == null) return;
+
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col == null) continue;
+
+            // Never touch characters — they own their own physics setup.
+            if (col.GetComponentInParent<IDamageable>() != null) continue;
+
+            // Strip the body so the floor / walls don't fall when the scene
+            // starts. Kinematic bodies (moving platforms etc.) are preserved.
+            Rigidbody rb = col.attachedRigidbody;
+            if (rb != null && !rb.isKinematic
+                && rb.GetComponentInParent<IDamageable>() == null)
+            {
+                Destroy(rb);
+            }
+
+            if (envLayer >= 0)
+                col.gameObject.layer = envLayer;
+        }
     }
 
     private void TryInitializeOptionalAISystems()
