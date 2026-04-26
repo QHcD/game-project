@@ -125,12 +125,51 @@ public class SettingsBuilder : MonoBehaviour
         musicSlider = MakeSliderRow(panel.transform, "MUSIC VOLUME:", 75f, AudioSettingsRuntime.MusicKey, null);
         sfxSlider = MakeSliderRow(panel.transform, "SFX VOLUME:", 0f, AudioSettingsRuntime.SfxKey, null);
 
-        resolutionDropdown = MakeDropdownRow(panel.transform, "RESOLUTION:", BuildResolutionLabels(), currentResIndex, -80f, OnResolutionChanged);
-        graphicsDropdown = MakeDropdownRow(panel.transform, "GRAPHICS:", new List<string>(graphicsOptions), currentGraphicsIndex, -155f, OnGraphicsChanged);
-        fullscreenToggle = MakeFullscreenRow(panel.transform, -230f);
+        // Resolution + Graphics share a single centered row so the two
+        // dropdowns are visually aligned next to each other.
+        BuildResolutionAndGraphicsRow(panel.transform, -90f);
+        fullscreenToggle = MakeFullscreenRow(panel.transform, -180f);
 
-        MakePrismButton(canvasObj.transform, "RETURN", new Vector2(-150f, -325f), () => SceneManager.LoadScene("MainMenu"));
-        MakePrismButton(canvasObj.transform, "RESET", new Vector2(150f, -325f), ResetSettings);
+        Button returnBtn = MakePrismButton(canvasObj.transform, "RETURN", new Vector2(-150f, -325f), () => SceneManager.LoadScene("MainMenu"));
+        Button resetBtn  = MakePrismButton(canvasObj.transform, "RESET",  new Vector2(150f, -325f), ResetSettings);
+
+        // Keyboard nav across all interactables on this screen.
+        List<Selectable> nav = new List<Selectable>();
+        if (masterSlider != null)        nav.Add(masterSlider);
+        if (musicSlider != null)         nav.Add(musicSlider);
+        if (sfxSlider != null)           nav.Add(sfxSlider);
+        if (resolutionDropdown != null)  nav.Add(resolutionDropdown);
+        if (graphicsDropdown != null)    nav.Add(graphicsDropdown);
+        if (fullscreenToggle != null)    nav.Add(fullscreenToggle);
+        if (returnBtn != null) nav.Add(returnBtn);
+        if (resetBtn != null)  nav.Add(resetBtn);
+        MenuKeyboardNavigator.AttachVertical(canvasObj, nav);
+    }
+
+    /// <summary>
+    /// Builds a single horizontally-balanced row containing both the
+    /// Resolution and Graphics dropdowns, centered under the central panel.
+    /// Each dropdown lives in its own labelled column inside the row so the
+    /// two captions and the two pickers are perfectly aligned on one line.
+    /// </summary>
+    void BuildResolutionAndGraphicsRow(Transform parent, float yPos)
+    {
+        GameObject row = CreateRow(parent, "Row_DISPLAY", yPos);
+        SetRect(row.GetComponent<RectTransform>(), new Vector2(900f, 60f), new Vector2(0f, yPos));
+
+        // Left column: RESOLUTION
+        MakeText(row.transform, "RESOLUTION:", 24, new Color(0.95f, 0.95f, 1f, 1f),
+            new Vector2(-280f, 0f), new Vector2(220f, 42f), false, TextAlignmentOptions.MidlineRight);
+        resolutionDropdown = CreateDropdown(row.transform, BuildResolutionLabels(), currentResIndex,
+            new Vector2(-60f, 0f), OnResolutionChanged);
+        SetRect(resolutionDropdown.GetComponent<RectTransform>(), new Vector2(220f, 52f), new Vector2(-60f, 0f));
+
+        // Right column: GRAPHICS
+        MakeText(row.transform, "GRAPHICS:", 24, new Color(0.95f, 0.95f, 1f, 1f),
+            new Vector2(110f, 0f), new Vector2(160f, 42f), false, TextAlignmentOptions.MidlineRight);
+        graphicsDropdown = CreateDropdown(row.transform, new List<string>(graphicsOptions), currentGraphicsIndex,
+            new Vector2(280f, 0f), OnGraphicsChanged);
+        SetRect(graphicsDropdown.GetComponent<RectTransform>(), new Vector2(180f, 52f), new Vector2(280f, 0f));
     }
 
     List<string> BuildResolutionLabels()
@@ -446,7 +485,7 @@ public class SettingsBuilder : MonoBehaviour
         return tmp;
     }
 
-    void MakePrismButton(Transform parent, string label, Vector2 pos, UnityEngine.Events.UnityAction action)
+    Button MakePrismButton(Transform parent, string label, Vector2 pos, UnityEngine.Events.UnityAction action)
     {
         Image buttonImage = new GameObject("Btn_" + label).AddComponent<Image>();
         buttonImage.transform.SetParent(parent, false);
@@ -465,6 +504,7 @@ public class SettingsBuilder : MonoBehaviour
         labelText.fontSize = 24f;
         labelText.color = new Color(0.10f, 0.10f, 0.14f, 1f);
         AttachHoverEffect(buttonImage.gameObject, labelText, buttonImage);
+        return button;
     }
 
     void AttachHoverEffect(GameObject target, TextMeshProUGUI label, Image image)

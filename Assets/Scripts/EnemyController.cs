@@ -25,10 +25,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     private const string PrefKeySawEuler = "Grip.Player.L12.Saw.Euler";
     // ── Tuning ──────────────────────────────────────────────────────────────
     [Header("Combat")]
-    public float detectionRadius  = 18f;
+    public float detectionRadius  = 80f;
     public float attackRadius     = 1.8f;
     public float attackDamage     = 10f;
-    public float attackCooldown   = 1.4f;
+    public float attackCooldown   = 0.65f;
     public int   maxHealth        = 60;
     [Tooltip("Hits with damage at or above this value trigger death-by-ragdoll even if health remains.")]
     public int   ragdollForceThreshold = 50;
@@ -47,23 +47,33 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     [Header("Flow Field Navigation")]
     [Tooltip("When enabled, chase movement follows the shared flow-field vectors instead of constantly pathing to target positions.")]
-    public bool useFlowFieldNavigation = true;
+    public bool useFlowFieldNavigation = false;
     [Tooltip("Distance ahead (in metres) used as a local steering destination from the current flow vector.")]
     public float flowFieldLookAhead = 1.35f;
     [Tooltip("How often to refresh local steering destination from flow field.")]
     public float flowFieldSteerInterval = 0.12f;
 
     [Header("Jump (Obstacle Avoidance)")]
-    [Tooltip("Height the enemy jumps when blocked (matches Player formula).")]
-    public float jumpHeight       = 1.8f;
-    [Tooltip("Gravity value (negative). Must match Player gravity for same arc.")]
-    public float gravity          = -25f;
+    [Tooltip("Height the enemy jumps when blocked. Tuned to a natural human-scale hop matching the Player.")]
+    public float jumpHeight       = 1.05f;
+    [Tooltip("Gravity value (negative). Mirrors PlayerController.gravity for matching arcs.")]
+    public float gravity          = -22f;
     [Tooltip("Horizontal distance ahead to check for obstacles.")]
     public float obstacleCheckDist = 1.6f;
     [Tooltip("How long the enemy must be stuck before attempting a jump.")]
     public float stuckTime        = 1.2f;
     [Tooltip("Velocity below this is considered 'stuck' even when path exists.")]
     public float stuckVelocityThreshold = 0.25f;
+
+    [Header("Black Ops 3 Maneuvers (Enemies)")]
+    [Tooltip("How often (seconds) the enemy may roll a combat maneuver (sprint/jump/slide/flip) while chasing.")]
+    public float maneuverRollInterval = 2.4f;
+    [Tooltip("Chance per roll that the enemy fires off a maneuver during chase (0..1).")]
+    [Range(0f, 1f)] public float maneuverChance = 0.32f;
+    [Tooltip("Forward boost applied during a closing slide.")]
+    public float maneuverSlideBoost = 6.5f;
+    [Tooltip("Forward boost applied during an evasive flip.")]
+    public float maneuverFlipBoost = 7.0f;
 
     [Header("Weapon")]
     public WeaponGripSystem weaponGripSystem;
@@ -89,16 +99,16 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Layer mask for valid targets (set to 'Character' layer).")]
     public LayerMask detectionMask = ~0;
     [Tooltip("Extended emergency scan radius so enemies stay aggressive and do not idle.")]
-    public float aggressiveScanRadius = 65f;
+    public float aggressiveScanRadius = 120f;
 
     [Tooltip("Seconds between target scans (coroutine-based for performance).")]
-    public float detectionInterval = 0.2f;
+    public float detectionInterval = 0.08f;
 
     [Header("Target Locking & LoS")]
     [Tooltip("How long (seconds) the AI commits to a target before considering switching.")]
-    public float targetLockDuration = 3.5f;
+    public float targetLockDuration = 0.15f;
     [Tooltip("A new candidate target must be this many metres closer than the current one to steal focus.")]
-    public float targetSwitchHysteresis = 2.0f;
+    public float targetSwitchHysteresis = 0f;
     [Tooltip("Extra metres added to attackRadius when deciding it is time to swing.")]
     public float attackRangePadding = 0.35f;
     [Tooltip("Extra metres beyond attack radius before the attacker breaks off to chase again (hysteresis).")]
@@ -111,8 +121,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float retaliationMemory = 6f;
 
     [Header("Separation (Anti-Stacking)")]
-    public float separationRadius   = 2.0f;
-    public float separationStrength = 5.0f;
+    public float separationRadius   = 1.0f;
+    public float separationStrength = 1.0f;
+    private const float MeleeImpactRadius = 0.78f;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -203,6 +214,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _flowFieldSteerTimer;
     private Coroutine _attackHitboxRoutine;
     private WeaponHitbox _equippedWeaponHitbox;
+    private float _destinationRefreshTimer;
+    private static readonly Collider[] _meleeHitBuffer = new Collider[32];
 
     // Position-delta velocity (same technique the PlayerController uses)
     private Vector3 _lastFramePosition;
@@ -215,6 +228,15 @@ public class EnemyController : MonoBehaviour, IDamageable
     private static readonly int HashHit       = Animator.StringToHash("Hit");
     private static readonly int HashGrounded  = Animator.StringToHash("IsGrounded");
     private const string WeaponSocketName     = "__EnemyWeaponSocket";
+    private static readonly Color[] EnemyTintPalette =
+    {
+        new Color(0.75f, 0.22f, 0.20f, 1f),
+        new Color(0.20f, 0.58f, 0.28f, 1f),
+        new Color(0.24f, 0.34f, 0.78f, 1f),
+        new Color(0.82f, 0.56f, 0.18f, 1f),
+        new Color(0.55f, 0.24f, 0.72f, 1f),
+        new Color(0.18f, 0.62f, 0.68f, 1f),
+    };
 
     // ── Unity lifecycle ──────────────────────────────────────────────────────
     // ── Global one-time setup ─────────────────────────────────────────────────
@@ -235,6 +257,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         int enemiesLayer  = LayerMask.NameToLayer("Enemies");
         int playerLayer   = LayerMask.NameToLayer("Player");
         int characterLayer = LayerMask.NameToLayer("Character");
+        int hittableLayer = LayerMask.NameToLayer("Hittable");
 
         if (enemiesLayer >= 0)
             Physics.IgnoreLayerCollision(enemiesLayer, enemiesLayer, false);
@@ -242,18 +265,18 @@ public class EnemyController : MonoBehaviour, IDamageable
             Physics.IgnoreLayerCollision(characterLayer, characterLayer, false);
         if (playerLayer >= 0 && enemiesLayer >= 0)
             Physics.IgnoreLayerCollision(playerLayer, enemiesLayer, false);
+        if (hittableLayer >= 0)
+            Physics.IgnoreLayerCollision(hittableLayer, hittableLayer, false);
     }
 
     private void Awake()
     {
         EnsureCharacterLayerCollision();
 
-        // Prefer the dedicated "Enemies" layer when the project defines it;
-        // fall back to the existing "Character" layer otherwise. Layers cannot
-        // be created at runtime, so missing layers are silently ignored.
-        int targetLayer = LayerMask.NameToLayer("Enemies");
+        // Hittable is the single deterministic melee query layer.
+        int targetLayer = LayerMask.NameToLayer("Hittable");
         if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Character");
-        if (targetLayer >= 0) gameObject.layer = targetLayer;
+        if (targetLayer >= 0) SetLayerRecursive(gameObject, targetLayer);
 
         _agent         = GetComponent<NavMeshAgent>();
         _anim          = GetComponentInChildren<Animator>();
@@ -319,27 +342,28 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
-        detectionInterval = Mathf.Max(0.1f, detectionInterval);
+        detectionInterval = Mathf.Clamp(detectionInterval, 0.05f, 0.2f);
+        detectionRadius = Mathf.Max(detectionRadius, 80f);
+        aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, 120f);
+        attackCooldown = Mathf.Min(attackCooldown, 0.65f);
+        targetLockDuration = Mathf.Min(targetLockDuration, 0.15f);
+        targetSwitchHysteresis = 0f;
 
         // LevelBuilder assigns maxHealth/chaseSpeed after AddComponent(), so
         // re-apply runtime state here once the spawner has finished tuning us.
+        // Veteran/Hard custom matches scale enemy HP to make survivability
+        // match the elevated damage/speed.
+        if (GameManager.Instance != null)
+        {
+            float healthMul = Mathf.Max(0.25f, GameManager.Instance.GetEnemyHealthMultiplier());
+            maxHealth = Mathf.Max(1, Mathf.RoundToInt(maxHealth * healthMul));
+        }
         _currentHealth = maxHealth;
         ConfigureAgent();
 
         _lastFramePosition = transform.position;
         EnsureProperMaterial(gameObject);
         AssignMaterial();
-
-        // ── Warp the agent onto the NavMesh ──────────────────────────────────
-        // Enemies that spawn even a centimetre off-mesh will refuse to move.
-        // Sample the nearest valid NavMesh point and warp the agent to it.
-        if (_agent != null && _agent.enabled)
-        {
-            if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 5f, NavMesh.AllAreas))
-                _agent.Warp(hit.position);
-            else
-                _agent.enabled = false;
-        }
 
         RegisterForMatchStats();
 
@@ -378,7 +402,18 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void Update()
     {
         if (_state == State.Dead) return;
-        TryRecoverAgentOnNavMesh();
+
+        // End-match cinematic — freeze AI: stop the agent in place, drop the
+        // animator into idle, but keep the visible mesh updated so the orbit
+        // camera sees a clean podium pose.
+        if (EndMatchCinematic.GameplayLocked)
+        {
+            if (_agent != null && _agent.enabled && !_agent.isStopped) _agent.isStopped = true;
+            SyncAnimator();
+            return;
+        }
+
+        RecoverOnlyIfOutOfMap();
 
         _attackTimer -= Time.deltaTime;
 
@@ -399,9 +434,13 @@ public class EnemyController : MonoBehaviour, IDamageable
             case State.Jumping: UpdateJumping(); break;
         }
 
-        ApplyEnemySeparation();
-        CheckFrozenAndWarp();
+        RecoverOnlyIfOutOfMap();
         SyncAnimator();
+    }
+
+    private void FixedUpdate()
+    {
+        ApplyEnemySeparation();
     }
 
     private void LateUpdate()
@@ -524,27 +563,31 @@ public class EnemyController : MonoBehaviour, IDamageable
             //   • pathPending guard removed: re-issuing SetDestination while a
             //     path is computing is safe on Unity 6 and overwrites the pending
             //     request with the fresher target position.
+            _destinationRefreshTimer -= Time.deltaTime;
+            bool refreshDestination = _destinationRefreshTimer <= 0f;
+
             if (useFlowFieldNavigation && FlowFieldManager.Instance != null)
             {
-                DriveChaseWithFlowField();
+                if (refreshDestination)
+                    DriveChaseWithFlowField();
             }
-            else
+            else if (refreshDestination)
             {
-                bool needsPath =
-                    !_agent.hasPath ||
-                    _agent.pathStatus == NavMeshPathStatus.PathInvalid ||
-                    (_agent.destination - _target.position).sqrMagnitude > 0.04f;
-
-                if (needsPath)
-                {
-                    bool setDirect = _agent.SetDestination(_target.position);
-                    if (!setDirect || _agent.pathStatus == NavMeshPathStatus.PathInvalid)
-                        TrySetDestinationNearTarget();
-                }
+                bool setDirect = _agent.SetDestination(_target.position);
+                if (!setDirect || _agent.pathStatus == NavMeshPathStatus.PathInvalid)
+                    TrySetDestinationNearTarget();
             }
+
+            if (refreshDestination)
+                _destinationRefreshTimer = 0.5f;
         }
 
         CheckAndJumpIfStuck();
+
+        // Black Ops 3 manoeuvre tick — gives enemies a small chance every
+        // <maneuverRollInterval> seconds to fire off a sprint, slide, jump or
+        // flip while chasing. Reuses the same physics as the player.
+        TickCombatManeuver();
     }
 
     private void UpdateAttack()
@@ -612,137 +655,84 @@ public class EnemyController : MonoBehaviour, IDamageable
     //  agents apart because the area between them is unwalkable. Because the
     //  Rigidbody is kinematic, the physics engine WILL NOT push these
     //  capsules apart no matter what the layer collision matrix says — this
-    //  routine performs the push manually via Warp(), keeping the agent's
-    //  internal pathing state in sync.
+    //  routine performs the push manually without teleporting the agent.
     // ════════════════════════════════════════════════════════════════════════
 
-    private static readonly Collider[] _separationBuffer = new Collider[8];
+    private static readonly Collider[] _separationBuffer = new Collider[24];
 
     [Header("Anti-Magnet Repulsion")]
-    [Tooltip("Distance under which two enemies push each other apart. 1.5 m is " +
-             "aggressive — drop to ~1.0 m if melee enemies fail to close on the player.")]
-    [SerializeField] private float enemyPersonalSpace = 1.5f;
+    [Tooltip("Distance under which two enemies push each other apart.")]
+    [SerializeField] private float enemyPersonalSpace = 1.0f;
 
     private void ApplyEnemySeparation()
     {
         if (_state == State.Dead) return;
-        if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh) return;
 
+        Vector3 origin = transform.position + Vector3.up * 0.9f;
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            origin,
+            Mathf.Max(0.1f, separationRadius),
+            _separationBuffer,
+            ResolveHittableMask(),
+            QueryTriggerInteraction.Ignore);
         Vector3 push = Vector3.zero;
-        
-        // 1. Push apart from other enemies
-        EnemyController[] allEnemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
-        for (int i = 0; i < allEnemies.Length; i++)
-        {
-            EnemyController other = allEnemies[i];
-            if (other == null || other == this || !other.IsAlive) continue;
 
-            float d = Vector3.Distance(transform.position, other.transform.position);
-            if (d < 1.2f)
-            {
-                Vector3 delta = transform.position - other.transform.position;
-                delta.y = 0f;
-                
-                if (d < 0.001f)
-                {
-                    float jitter = (GetInstanceID() & 1) == 0 ? 1f : -1f;
-                    delta = new Vector3(jitter, 0f, jitter * 0.5f);
-                    d = delta.magnitude;
-                }
-                
-                float overlap = 1.2f - d;
-                push += (delta.normalized) * overlap;
-            }
-        }
-
-        // 2. Push apart from the player
-        PlayerController player = Object.FindFirstObjectByType<PlayerController>();
-        if (player != null)
+        for (int i = 0; i < hitCount; i++)
         {
-            float d = Vector3.Distance(transform.position, player.transform.position);
-            if (d < 1.2f)
+            Collider other = _separationBuffer[i];
+            if (other == null) continue;
+            if (other.transform == transform || other.transform.IsChildOf(transform)) continue;
+
+            IDamageable damageable = other.GetComponentInParent<IDamageable>();
+            if (damageable == null || !damageable.IsAlive || damageable.gameObject == gameObject)
+                continue;
+
+            Vector3 delta = transform.position - damageable.transform.position;
+            delta.y = 0f;
+            float distance = delta.magnitude;
+
+            if (distance < 0.001f)
             {
-                Vector3 delta = transform.position - player.transform.position;
-                delta.y = 0f;
-                
-                if (d < 0.001f)
-                {
-                    float jitter = (GetInstanceID() & 1) == 0 ? 1f : -1f;
-                    delta = new Vector3(jitter, 0f, jitter * 0.5f);
-                    d = delta.magnitude;
-                }
-                
-                float overlap = 1.2f - d;
-                push += (delta.normalized) * overlap;
+                float jitter = GetInstanceID() < damageable.gameObject.GetInstanceID() ? 1f : -1f;
+                delta = new Vector3(jitter, 0f, jitter * 0.35f);
+                distance = delta.magnitude;
             }
+
+            float overlap = Mathf.Max(0f, separationRadius - distance);
+            if (overlap > 0f)
+                push += delta.normalized * overlap * Mathf.Max(0.1f, separationStrength);
         }
 
         if (push.sqrMagnitude < 1e-6f) return;
 
-        // Apply push using transform.Translate to bypass Kinematic physics issues
-        transform.Translate(push * 0.5f * Time.deltaTime * 10f, Space.World);
-        
-        // Ensure NavMeshAgent stays synced with the new position
-        if (NavMesh.SamplePosition(transform.position, out NavMeshHit navHit, 1.0f, NavMesh.AllAreas))
-        {
-            _agent.Warp(navHit.position);
-        }
+        Vector3 destination = transform.position + Vector3.ClampMagnitude(push, separationRadius);
+        if (_agent != null && _agent.enabled && _agent.isOnNavMesh)
+            _agent.Warp(destination);
+        else
+            transform.position = destination;
+
+        Physics.SyncTransforms();
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    //  FREEZE FAILSAFE — Level 6 NavMesh resilience
-    //  If an agent has a destination but hasn't moved for 2 s, assume it is
-    //  stuck off-mesh or marooned in a disconnected island and force-warp it
-    //  to a random valid NavMesh point near its current location. This is
-    //  cheaper than re-baking and keeps gameplay running on broken levels.
+    //  OUT-OF-MAP RECOVERY
+    //  Routine teleport recovery is disabled. The only allowed agent warp is
+    //  when an enemy has actually fallen below the world.
     // ════════════════════════════════════════════════════════════════════════
 
-    private float _frozenTimer;
     private Vector3 _frozenLastPos;
-    private const float FrozenThresholdSeconds = 2f;
-    private const float FrozenMoveEpsilon = 0.05f;
 
-    private void CheckFrozenAndWarp()
+    private void RecoverOnlyIfOutOfMap()
     {
         if (_state == State.Dead) return;
         if (_agent == null || !_agent.enabled) return;
-
-        // Idle agents are frozen on purpose — don't punish them.
-        if (_state == State.Idle || _state == State.Patrol)
+        if (transform.position.y < -5f)
         {
-            _frozenTimer = 0f;
-            _frozenLastPos = transform.position;
+            WarpToNearestNavMeshAfterFall();
             return;
         }
 
-        float moved = Vector3.Distance(transform.position, _frozenLastPos);
-        if (moved > FrozenMoveEpsilon)
-        {
-            _frozenTimer = 0f;
-            _frozenLastPos = transform.position;
-            return;
-        }
-
-        _frozenTimer += Time.deltaTime;
-        if (_frozenTimer < FrozenThresholdSeconds) return;
-        _frozenTimer = 0f;
-
-        // Toggle the agent so its internal off-mesh state resets, then try
-        // five random points within 12 m for a valid NavMesh landing zone.
-        _agent.enabled = false;
-        _agent.enabled = true;
-
-        for (int i = 0; i < 5; i++)
-        {
-            Vector2 r = Random.insideUnitCircle * 12f;
-            Vector3 trial = transform.position + new Vector3(r.x, 0f, r.y);
-            if (NavMesh.SamplePosition(trial, out NavMeshHit hit, 5f, NavMesh.AllAreas))
-            {
-                _agent.Warp(hit.position);
-                _frozenLastPos = hit.position;
-                return;
-            }
-        }
+        _frozenLastPos = transform.position;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -807,6 +797,90 @@ public class EnemyController : MonoBehaviour, IDamageable
         SetAnimatorBool(HashGrounded, false);
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    //  ENEMY BLACK OPS 3 MANOEUVRES
+    //  Adds the same four-button move vocabulary players use (Sprint / Slide /
+    //  Jump / Flip) to the AI. We can't actually press buttons on their behalf,
+    //  so the chase loop rolls a small chance every <maneuverRollInterval>
+    //  seconds and triggers one of these moves. They're cosmetic + tactical:
+    //    • Sprint → already handled by the dynamic chase speed up top.
+    //    • Slide  → short forward velocity boost when in mid-range distance.
+    //    • Jump   → small combat hop (re-uses TryJump).
+    //    • Flip   → evasive forward flip with vertical+forward impulse.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private float _maneuverTimer;
+
+    private void TickCombatManeuver()
+    {
+        if (_state != State.Chase) return;
+        if (!_isGrounded) return;
+        if (_target == null || _agent == null || !_agent.enabled) return;
+
+        _maneuverTimer -= Time.deltaTime;
+        if (_maneuverTimer > 0f) return;
+        _maneuverTimer = Mathf.Max(0.5f, maneuverRollInterval);
+
+        if (Random.value > Mathf.Clamp01(maneuverChance)) return;
+
+        float dist = Vector3.Distance(transform.position, _target.position);
+
+        // Pick a move that suits the current distance.
+        if (dist < 4.5f && Random.value < 0.55f)
+            DoManeuverFlip();   // Close range → evasive flip
+        else if (dist < 9f && Random.value < 0.6f)
+            DoManeuverSlide();  // Mid range → slide-close
+        else
+            TryJump();          // Long range → combat hop forward
+    }
+
+    private void DoManeuverSlide()
+    {
+        if (_target == null || _rb == null) return;
+        if (!_isGrounded) return;
+
+        Vector3 dir = (_target.position - transform.position);
+        dir.y = 0f;
+        if (dir.sqrMagnitude < 0.01f) dir = transform.forward;
+        dir.Normalize();
+
+        // Use the off-mesh physics path so we don't fight the agent.
+        _preJumpState = _state;
+        TransitionTo(State.Jumping);
+        if (_agent != null) _agent.enabled = false;
+        if (_controller != null) _controller.enabled = false;
+        _rb.isKinematic = false;
+
+        _rb.linearVelocity = new Vector3(dir.x * maneuverSlideBoost, 0.5f, dir.z * maneuverSlideBoost);
+        _isGrounded = false;
+        SetAnimatorBool(HashGrounded, false);
+    }
+
+    private void DoManeuverFlip()
+    {
+        if (_rb == null) return;
+        if (!_isGrounded) return;
+
+        Vector3 dir = transform.forward;
+        if (_target != null)
+        {
+            Vector3 to = _target.position - transform.position;
+            to.y = 0f;
+            if (to.sqrMagnitude > 0.01f) dir = to.normalized;
+        }
+
+        _preJumpState = _state;
+        TransitionTo(State.Jumping);
+        if (_agent != null) _agent.enabled = false;
+        if (_controller != null) _controller.enabled = false;
+        _rb.isKinematic = false;
+
+        float flipUp = Mathf.Sqrt(Mathf.Max(0.01f, jumpHeight) * -2f * gravity);
+        _rb.linearVelocity = new Vector3(dir.x * maneuverFlipBoost, flipUp, dir.z * maneuverFlipBoost);
+        _isGrounded = false;
+        SetAnimatorBool(HashGrounded, false);
+    }
+
     private void UpdateJumping()
     {
         // Apply manual gravity to the Rigidbody while airborne so the arc
@@ -830,11 +904,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
             // Re-hand control back to NavMeshAgent (which owns movement)
             if (_agent != null)
-            {
                 _agent.enabled = true;
-                if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 4f, NavMesh.AllAreas))
-                    _agent.Warp(hit.position);
-            }
             // NOTE: do NOT re-enable _controller — it would fight the agent
             // (the same hybrid that caused the original sluggish/jitter bug).
             SetAnimatorBool(HashGrounded, true);
@@ -849,26 +919,91 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         SetAnimatorTrigger(HashAttack);
 
-        if (_target == null) return;
-
         if (_attackHitboxRoutine != null)
-            StopCoroutine(_attackHitboxRoutine);
-        _attackHitboxRoutine = StartCoroutine(AttackHitboxWindowRoutine());
-
-        // Use IDamageable so we can hit player OR enemy without type-checking
-        if (_equippedWeaponHitbox != null)
-            return; // collider-driven damage path
-
-        IDamageable target = _target.GetComponentInParent<IDamageable>();
-        if (target != null && target.IsAlive)
         {
-            target.ReceiveDamage((int)attackDamage, gameObject);
-            return;
+            StopCoroutine(_attackHitboxRoutine);
+            _attackHitboxRoutine = null;
+        }
+        if (_equippedWeaponHitbox != null)
+            _equippedWeaponHitbox.DisableHitbox();
+
+        PerformDeterministicMeleeAttack();
+    }
+
+    private void PerformDeterministicMeleeAttack()
+    {
+        Vector3 forward = transform.forward;
+        forward.y = 0f;
+        if (forward.sqrMagnitude < 0.0001f) return;
+        forward.Normalize();
+
+        Vector3 center = transform.position + Vector3.up * 1.0f;
+        Vector3 impactPoint = GetWeaponImpactPoint(center, forward);
+        Physics.SyncTransforms();
+
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            impactPoint,
+            MeleeImpactRadius,
+            _meleeHitBuffer,
+            ResolveHittableMask(),
+            QueryTriggerInteraction.Ignore);
+
+        IDamageable bestTarget = null;
+        float bestDistanceSqr = float.PositiveInfinity;
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider hit = _meleeHitBuffer[i];
+            if (hit == null) continue;
+            if (hit.transform == transform || hit.transform.IsChildOf(transform)) continue;
+
+            IDamageable damageable = hit.GetComponentInParent<IDamageable>();
+            if (damageable == null || !damageable.IsAlive || damageable.gameObject == gameObject)
+                continue;
+
+            Vector3 closest = hit.ClosestPoint(impactPoint);
+            Vector3 toTarget = closest - center;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude > attackRadius * attackRadius) continue;
+            if (toTarget.sqrMagnitude > 0.0001f && Vector3.Dot(forward, toTarget.normalized) < 0.15f)
+                continue;
+
+            float d2 = (closest - impactPoint).sqrMagnitude;
+            if (d2 < bestDistanceSqr)
+            {
+                bestDistanceSqr = d2;
+                bestTarget = damageable;
+            }
         }
 
-        // Legacy fallback for Actor-based entities not yet using IDamageable
-        Actor actor = _target.GetComponentInParent<Actor>();
-        if (actor != null) actor.TakeDamage((int)attackDamage);
+        if (bestTarget != null)
+            bestTarget.ReceiveDamage(Mathf.RoundToInt(attackDamage), gameObject);
+    }
+
+    private Vector3 GetWeaponImpactPoint(Vector3 center, Vector3 forward)
+    {
+        if (equippedWeaponObject != null)
+        {
+            Renderer[] renderers = equippedWeaponObject.GetComponentsInChildren<Renderer>(true);
+            Bounds bounds = new Bounds(equippedWeaponObject.transform.position, Vector3.zero);
+            bool hasBounds = false;
+
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                if (renderers[i] == null || !renderers[i].enabled) continue;
+                if (!hasBounds) { bounds = renderers[i].bounds; hasBounds = true; }
+                else bounds.Encapsulate(renderers[i].bounds);
+            }
+
+            if (hasBounds)
+            {
+                Vector3 point = bounds.center + forward * Mathf.Min(attackRadius * 0.45f, bounds.extents.magnitude);
+                point.y = Mathf.Clamp(point.y, center.y - 0.35f, center.y + 0.45f);
+                return point;
+            }
+        }
+
+        return center + forward * Mathf.Clamp(attackRadius * 0.65f, 0.65f, attackRadius);
     }
 
     private void DriveChaseWithFlowField()
@@ -937,6 +1072,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_currentHealth <= 0)
         {
             _killedByPlayer = byPlayer;
+            DisableMovementAndCollisionForDeath();
             Die();
         }
     }
@@ -997,6 +1133,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void Die()
     {
         _state = State.Dead;
+        DisableMovementAndCollisionForDeath();
         CancelInvoke(nameof(EnableRagdoll));
         CancelInvoke(nameof(FreezeRagdoll));
         if (_attackHitboxRoutine != null)
@@ -1030,12 +1167,28 @@ public class EnemyController : MonoBehaviour, IDamageable
                 PlayerHealth player = FindFirstObjectByType<PlayerHealth>();
                 string playerId = MatchStatsManager.BuildCombatantId(player);
                 MatchStatsManager.Instance.RecordKill(playerId);
+
+                // PRISM credits + lifetime kill counter for the persistent
+                // session — pays the +10 bounty and ticks "Kill N Enemies"
+                // challenges via SessionManager.EvaluateChallenges(). The
+                // currently-equipped weapon is forwarded so Weapon Master
+                // challenges (e.g. "5 kills with Nunchucks") can advance.
+                if (SessionManager.Instance != null)
+                {
+                    string wid = SessionManager.Instance.EquippedWeaponId;
+                    SessionManager.Instance.OnPlayerKilledEnemy(wid);
+                }
+            }
+            else
+            {
+                EnemyController enemyKiller = _lastAttacker != null ? _lastAttacker.GetComponentInParent<EnemyController>() : null;
+                if (enemyKiller != null && enemyKiller != this)
+                    MatchStatsManager.Instance.RecordKill(MatchStatsManager.BuildCombatantId(enemyKiller));
             }
         }
 
         // Stop all navigation immediately
-        if (_rb != null)    _rb.isKinematic = true;
-        if (_controller != null) _controller.enabled = false;
+        if (_rb != null) _rb.isKinematic = true;
 
         // Disable main collider so living enemies don't trip over the corpse
         Collider mainCol = GetComponent<Collider>();
@@ -1055,6 +1208,32 @@ public class EnemyController : MonoBehaviour, IDamageable
             Destroy(gameObject, ragdollVisibleDuration);
     }
 
+    private void DisableMovementAndCollisionForDeath()
+    {
+        if (_attackHitboxRoutine != null)
+        {
+            StopCoroutine(_attackHitboxRoutine);
+            _attackHitboxRoutine = null;
+        }
+
+        if (_equippedWeaponHitbox != null)
+            _equippedWeaponHitbox.DisableHitbox();
+
+        if (_agent != null && _agent.enabled)
+        {
+            _agent.isStopped = true;
+            _agent.ResetPath();
+            _agent.enabled = false;
+        }
+
+        if (_controller != null)
+            _controller.enabled = false;
+
+        Collider mainCol = GetComponent<Collider>();
+        if (mainCol != null)
+            mainCol.enabled = false;
+    }
+
     private void RegisterForMatchStats()
     {
         if (MatchStatsManager.Instance == null)
@@ -1062,7 +1241,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         string combatantId = MatchStatsManager.BuildCombatantId(this);
         string displayName = gameObject.name.ToUpperInvariant();
-        MatchStatsManager.Instance.RegisterCombatant(combatantId, displayName, isPlayer: false);
+        // Pass the transform so the end-match cinematic can orbit around
+        // the actual enemy mesh (instead of guessing from a name match).
+        MatchStatsManager.Instance.RegisterCombatant(combatantId, displayName, isPlayer: false, transform: transform);
     }
 
     /// <summary>
@@ -1334,11 +1515,41 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Ensure AnimationEventSink is present to prevent CS0246 event-method errors
         EnsureAnimationEventSink();
 
+        Color tint = EnemyTintPalette[ResolveEnemyPaletteIndex() % EnemyTintPalette.Length];
         foreach (SkinnedMeshRenderer smr in GetComponentsInChildren<SkinnedMeshRenderer>(true))
         {
             if (smr == null) continue;
-            smr.material = material;
+            Material instance = new Material(material);
+            SetMaterialBaseColor(instance, Color.Lerp(GetMaterialBaseColor(instance), tint, 0.55f));
+            smr.material = instance;
         }
+
+        _renderers = GetComponentsInChildren<Renderer>(true);
+        _originalColors = new Color[_renderers.Length];
+        for (int i = 0; i < _renderers.Length; i++)
+        {
+            if (_renderers[i] == null || _renderers[i].material == null) continue;
+            _originalColors[i] = GetMaterialBaseColor(_renderers[i].material);
+        }
+    }
+
+    private int ResolveEnemyPaletteIndex()
+    {
+        string objectName = gameObject != null ? gameObject.name : string.Empty;
+        int parsed = 0;
+        bool foundDigit = false;
+
+        for (int i = 0; i < objectName.Length; i++)
+        {
+            char c = objectName[i];
+            if (c < '0' || c > '9')
+                continue;
+
+            foundDigit = true;
+            parsed = (parsed * 10) + (c - '0');
+        }
+
+        return foundDigit ? Mathf.Max(0, parsed - 1) : Mathf.Abs(GetInstanceID());
     }
 
     private bool HasAnimatorParameter(int hash)
@@ -1346,6 +1557,26 @@ public class EnemyController : MonoBehaviour, IDamageable
         return _anim != null
             && _animParameterHashes != null
             && _animParameterHashes.Contains(hash);
+    }
+
+    private static int ResolveHittableMask()
+    {
+        int hittable = LayerMask.NameToLayer("Hittable");
+        if (hittable >= 0) return 1 << hittable;
+
+        int character = LayerMask.NameToLayer("Character");
+        return character >= 0 ? 1 << character : ~0;
+    }
+
+    private static void SetLayerRecursive(GameObject root, int layer)
+    {
+        if (root == null || layer < 0) return;
+        Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < transforms.Length; i++)
+        {
+            if (transforms[i] != null)
+                transforms[i].gameObject.layer = layer;
+        }
     }
 
     private void SetAnimatorFloat(int hash, float value, float dampTime = 0f)
@@ -1524,6 +1755,7 @@ public class EnemyController : MonoBehaviour, IDamageable
                 // Re-engage the agent and immediately seed a destination so
                 // there is never a frame where the agent reports no path.
                 _agent.isStopped = false;
+                _destinationRefreshTimer = 0f;
                 if (IsTargetValid(_target))
                     _agent.SetDestination(_target.position);
                 break;
@@ -1605,67 +1837,22 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void EvaluateTargets()
     {
-        _targetLockTimer -= detectionInterval;
+        Transform candidate = FindFfaTarget(Mathf.Max(detectionRadius, aggressiveScanRadius));
 
-        bool currentValid = IsTargetValid(_target);
-
-        // ── 1. Retaliation priority ─────────────────────────────────────────
-        // If we were hit recently and the attacker is still a legal target,
-        // prefer them over the current focus (but still respect range).
-        bool attackerHot = (Time.time - _lastAttackerTime) <= retaliationMemory;
-        if (attackerHot && IsTargetValid(_lastAttacker) && _lastAttacker != _target)
-        {
-            float atkDist = Vector3.Distance(transform.position, _lastAttacker.position);
-            if (atkDist <= detectionRadius * 1.4f)
-            {
-                _target          = _lastAttacker;
-                _targetLockTimer = targetLockDuration;
-                return;
-            }
-        }
-
-        // ── 2. Commit to the existing target while the lock is still hot ──
-        if (currentValid && _targetLockTimer > 0f)
-        {
-            float d = Vector3.Distance(transform.position, _target.position);
-            // Only drop the lock if the target has run miles away.
-            if (d <= detectionRadius * 2.2f) return;
-        }
-
-        // ── 3. Scan for a new candidate ─────────────────────────────────────
-        float scanRadius = currentValid ? detectionRadius * 1.5f : detectionRadius;
-        Transform candidate = FindFfaTarget(scanRadius);
-
-        // Emergency wide scan so enemies do not stand idle when combat drifts far away.
-        if (candidate == null)
-            candidate = FindFfaTarget(Mathf.Max(scanRadius, aggressiveScanRadius));
-
-        // Final fallback: force focus on player if present/alive.
         if (candidate == null)
             candidate = FindPlayerTarget();
 
         if (candidate == null)
         {
-            if (!currentValid)
-            {
-                _target = null;
-                if (_state != State.Dead && _state != State.Flinch && _state != State.Jumping)
-                    TransitionTo(State.Patrol);
-            }
+            _target = null;
+            if (_state != State.Dead && _state != State.Flinch && _state != State.Jumping)
+                TransitionTo(State.Patrol);
             return;
         }
 
-        // ── 4. Hysteresis — don't switch unless newcomer is clearly closer ─
-        if (currentValid && candidate != _target)
-        {
-            float curD = Vector3.Distance(transform.position, _target.position);
-            float newD = Vector3.Distance(transform.position, candidate.position);
-            if (newD >= curD - targetSwitchHysteresis) return; // keep current
-        }
-
-        _target          = candidate;
+        _target = candidate;
         _targetLockTimer = targetLockDuration;
-        if (_state == State.Idle || _state == State.Patrol)
+        if (_state == State.Idle || _state == State.Patrol || _state == State.Attack)
             TransitionTo(State.Chase);
     }
 
@@ -1758,9 +1945,6 @@ public class EnemyController : MonoBehaviour, IDamageable
             Transform t  = dmg.transform;
             float     d2 = (t.position - transform.position).sqrMagnitude;
 
-            // Keep LoS preference but make it weak so AI remains aggressive.
-            if (!HasLineOfSight(t)) d2 *= 1.15f;
-
             if (d2 < bestScore)
             {
                 bestScore = d2;
@@ -1799,19 +1983,23 @@ public class EnemyController : MonoBehaviour, IDamageable
         return _agent != null && _agent.enabled && _agent.isOnNavMesh;
     }
 
-    private void TryRecoverAgentOnNavMesh()
+    private void WarpToNearestNavMeshAfterFall()
     {
         if (_agent == null)
+            return;
+
+        if (transform.position.y >= -5f)
             return;
 
         if (!_agent.enabled)
             _agent.enabled = true;
 
-        if (_agent.isOnNavMesh)
-            return;
-
-        if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 8f, NavMesh.AllAreas))
+        if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 30f, NavMesh.AllAreas))
+        {
+            transform.position = hit.position;
             _agent.Warp(hit.position);
+            _frozenLastPos = hit.position;
+        }
     }
 
     private Transform FindNearestLivingEnemy()

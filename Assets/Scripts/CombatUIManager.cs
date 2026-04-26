@@ -13,7 +13,7 @@ using UnityEngine.UI;
 ///   • Max 4 popups, stacked vertically.
 ///
 /// Zone B — bottom-left news feed (above health bar):
-///   • Medal strings ("HEADSHOT!", "ELIMINATED!", …) slide in, hold, fade out.
+///   • Melee medal strings ("SLASH!", "CRITICAL!", …) slide in, hold, fade out.
 ///
 /// CRITICAL — Attack Damage Window:
 ///   Damage is applied ONLY when the weapon collider physically overlaps an
@@ -40,6 +40,7 @@ public class CombatUIManager : MonoBehaviour
     [SerializeField] private float floatSpeed        = 38f;
     [SerializeField] private float stackLerpSpeed    = 14f;
     [SerializeField] private float introSlideDown    = 22f;
+    [SerializeField] private float popupAnchorY      = 0.5f;
 
     [Header("News Feed Zone")]
     [SerializeField] private float newsFeedBottomPad = 168f;
@@ -54,7 +55,7 @@ public class CombatUIManager : MonoBehaviour
 
     private static readonly string[] BO3MedalPool =
     {
-        "HEADSHOT!", "NEUTRALIZED!", "BLINDSIDE!", "BACKSTAB!",
+        "SLASH!", "CRITICAL!", "CLEAN CUT!", "BACKSTAB!",
         "MERCILESS!", "BRUTAL!", "CLEAN HIT!", "EXECUTIONER!",
         "FIRST BLOOD!", "COMEBACK!",
     };
@@ -227,8 +228,8 @@ public class CombatUIManager : MonoBehaviour
         Color  actColor = ResolveActionColour(action);
 
         RectTransform root = MakeRect(_popupRoot, "Popup_" + Time.frameCount);
-        root.anchorMin        = new Vector2(0.5f, 0.5f);
-        root.anchorMax        = new Vector2(0.5f, 0.5f);
+        root.anchorMin        = new Vector2(0.5f, popupAnchorY);
+        root.anchorMax        = new Vector2(0.5f, popupAnchorY);
         root.pivot            = new Vector2(0.5f, 0.5f);
         root.sizeDelta        = new Vector2(500f, 80f);
         root.anchoredPosition = Vector2.zero;
@@ -237,7 +238,7 @@ public class CombatUIManager : MonoBehaviour
         cg.alpha = 0f;
 
         TextMeshProUGUI xpLabel = MakeText(root, "XpLabel", 46f, FontStyles.Bold, TextAlignmentOptions.Center);
-        xpLabel.text  = xp > 0 ? $"+{xp} XP {actionWord}" : actionWord;
+        xpLabel.text  = xp > 0 ? $"{xp} XP {actionWord}" : actionWord;
         xpLabel.color = Color.white; // user specifically requested white text
         Outline(xpLabel, new Color(0f, 0f, 0f, 0.6f), new Vector2(1.5f, -1.5f));
         xpLabel.rectTransform.anchorMin        = new Vector2(0f, 0.5f);
@@ -388,7 +389,8 @@ public class CombatUIManager : MonoBehaviour
             case "UNSTOPPABLE!": return new Color(0.90f, 0.20f, 0.20f, 1f);
             case "SAVAGE!":      return new Color(0.80f, 0.10f, 0.10f, 1f);
             case "FIRST BLOOD!": return new Color(0.95f, 0.20f, 0.20f, 1f);
-            case "HEADSHOT!":    return new Color(1.00f, 0.92f, 0.20f, 1f);
+            case "SLASH!":
+            case "CRITICAL!":    return new Color(1.00f, 0.92f, 0.20f, 1f);
             default:             return ColMedal;
         }
     }
