@@ -123,7 +123,6 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Header("Separation (Anti-Stacking)")]
     public float separationRadius   = 1.0f;
     public float separationStrength = 1.0f;
-    private const float MeleeImpactRadius = 0.78f;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -223,7 +222,6 @@ public class EnemyController : MonoBehaviour, IDamageable
     private Coroutine _attackHitboxRoutine;
     private WeaponHitbox _equippedWeaponHitbox;
     private float _destinationRefreshTimer;
-    private static readonly Collider[] _meleeHitBuffer = new Collider[32];
 
     // Position-delta velocity (same technique the PlayerController uses)
     private Vector3 _lastFramePosition;
@@ -324,7 +322,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         _rb.linearDamping     = 0.5f;
         _rb.angularDamping    = 4f;
         _rb.interpolation     = RigidbodyInterpolation.Interpolate;
-        _rb.constraints       = RigidbodyConstraints.FreezeRotation;
+        _rb.constraints       = RigidbodyConstraints.FreezeRotationX
+                               | RigidbodyConstraints.FreezeRotationZ;
         _rb.isKinematic       = true;  // NavMeshAgent owns movement normally
 
         // Cache renderers for hit flash (URP-compatible: prefer _BaseColor over _Color)
@@ -604,10 +603,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             if (_agent.isStopped) _agent.isStopped = false;
 
-            if (_agent.velocity.sqrMagnitude < 0.01f)
+            if (_agent.velocity.magnitude < 0.1f)
             {
                 _stuckInChaseTimer += Time.deltaTime;
-                if (_stuckInChaseTimer >= 1.0f)
+                if (_stuckInChaseTimer >= 2.0f)
                 {
                     _stuckInChaseTimer = 0f;
                     _agent.ResetPath();
@@ -1012,86 +1011,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_equippedWeaponHitbox != null)
             _equippedWeaponHitbox.DisableHitbox();
 
-        PerformDeterministicMeleeAttack();
-    }
-
-    private void PerformDeterministicMeleeAttack()
-    {
-        Vector3 forward = transform.forward;
-        forward.y = 0f;
-        if (forward.sqrMagnitude < 0.0001f) return;
-        forward.Normalize();
-
-        Vector3 center = transform.position + Vector3.up * 1.0f;
-        Vector3 impactPoint = GetWeaponImpactPoint(center, forward);
-        Physics.SyncTransforms();
-
-        int hitCount = Physics.OverlapSphereNonAlloc(
-            impactPoint,
-            MeleeImpactRadius,
-            _meleeHitBuffer,
-            ResolveHittableMask(),
-            QueryTriggerInteraction.Ignore);
-
-        IDamageable bestTarget = null;
-        float bestDistanceSqr = float.PositiveInfinity;
-
-        for (int i = 0; i < hitCount; i++)
-        {
-            Collider hit = _meleeHitBuffer[i];
-            if (hit == null) continue;
-            if (hit.transform == transform || hit.transform.IsChildOf(transform)) continue;
-
-            IDamageable damageable = hit.GetComponentInParent<IDamageable>();
-            if (damageable == null || !damageable.IsAlive || damageable.gameObject == gameObject)
-                continue;
-
-            Vector3 closest = hit.ClosestPoint(impactPoint);
-            Vector3 toTarget = closest - center;
-            toTarget.y = 0f;
-            if (toTarget.sqrMagnitude > attackRadius * attackRadius) continue;
-            if (toTarget.sqrMagnitude > 0.0001f && Vector3.Dot(forward, toTarget.normalized) < 0.15f)
-                continue;
-
-            float d2 = (closest - impactPoint).sqrMagnitude;
-            if (d2 < bestDistanceSqr)
-            {
-                bestDistanceSqr = d2;
-                bestTarget = damageable;
-            }
-        }
-
-        if (bestTarget != null)
-        {
-            if (!DamageOcclusion.IsBlockedFromPoint(gameObject, bestTarget.gameObject, impactPoint))
-                bestTarget.ReceiveDamage(Mathf.RoundToInt(attackDamage), gameObject);
-        }
-    }
-
-    private Vector3 GetWeaponImpactPoint(Vector3 center, Vector3 forward)
-    {
-        if (equippedWeaponObject != null)
-        {
-            Renderer[] renderers = equippedWeaponObject.GetComponentsInChildren<Renderer>(true);
-            Bounds bounds = new Bounds(equippedWeaponObject.transform.position, Vector3.zero);
-            bool hasBounds = false;
-
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                if (renderers[i] == null || !renderers[i].enabled) continue;
-                if (!hasBounds) { bounds = renderers[i].bounds; hasBounds = true; }
-                else bounds.Encapsulate(renderers[i].bounds);
-            }
-
-            if (hasBounds)
-            {
-                Vector3 point = bounds.center + forward * Mathf.Min(attackRadius * 0.45f, bounds.extents.magnitude);
-                point.y = Mathf.Clamp(point.y, center.y - 0.35f, center.y + 0.45f);
-                return point;
-            }
-        }
-
-        return center + forward * Mathf.Clamp(attackRadius * 0.65f, 0.65f, attackRadius);
+        // Weapon-tip OverlapSphere during the timed window (see AttackHitboxWindowRoutine).
+        // Body-centered spheres missed slim player capsules; the coroutine was never started before.
+        _attackHitboxRoutine = StartCoroutine(AttackHitboxWindowRoutine());
     }
 
     private void DriveChaseWithFlowField()
@@ -1129,6 +1051,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (attackHitboxWindup > 0f)
             yield return new WaitForSeconds(attackHitboxWindup);
 
+        Physics.SyncTransforms();
+        _equippedWeaponHitbox.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
         _equippedWeaponHitbox.EnableHitbox();
 
         if (attackHitboxActiveTime > 0f)
@@ -1655,11 +1579,16 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private static int ResolveHittableMask()
     {
-        int hittable = LayerMask.NameToLayer("Hittable");
-        if (hittable >= 0) return 1 << hittable;
-
-        int character = LayerMask.NameToLayer("Character");
-        return character >= 0 ? 1 << character : ~0;
+        int mask = 0;
+        void Add(string n)
+        {
+            int l = LayerMask.NameToLayer(n);
+            if (l >= 0) mask |= 1 << l;
+        }
+        Add("Player");
+        Add("Hittable");
+        Add("Character");
+        return mask != 0 ? mask : ~0;
     }
 
     private static void SetLayerRecursive(GameObject root, int layer)

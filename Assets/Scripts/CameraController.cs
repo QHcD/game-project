@@ -99,14 +99,14 @@ public class CameraController : MonoBehaviour
 
     [Tooltip("SphereCast radius from the player neck/head to the desired camera position.")]
     [Range(0.05f, 0.5f)]
-    public float collisionRadius = 0.2f;
+    public float collisionRadius = 0.24f;
 
     [Tooltip("Minimum distance the camera is allowed to reach before close-space failsafe kicks in.")]
     public float minDistance = 0.35f;
 
     [Tooltip("Padding gap between camera and wall surface.")]
     [Range(0.02f, 0.3f)]
-    public float wallPadding = 0.16f;
+    public float wallPadding = 0.22f;
 
     [Tooltip("Layers treated as solid obstacles (walls, terrain, buildings).")]
     public LayerMask collisionMask = ~0;

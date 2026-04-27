@@ -552,14 +552,15 @@ public class GameManager : MonoBehaviour
         Debug.Log($"[GameManager] InitializeEnemyCount: {count} enemies registered for this level.");
     }
 
+    /// <summary>Enemy hits to kill the player from full health (with 100 HP, Normal = 10 damage per hit).</summary>
     public int GetPlayerHitsToKill()
     {
         switch (ActiveDifficulty)
         {
-            case "Easy":    return 3;
+            case "Easy":    return 15;
             case "Hard":    return 7;
-            case "Veteran": return 9;
-            default:        return 5;
+            case "Veteran": return 6;
+            default:        return 10;
         }
     }
 

@@ -1,15 +1,9 @@
 using UnityEngine;
 
 /// <summary>
-/// Trigger-based weapon hitbox that deals damage only during the active swing frames.
-/// Attach to the weapon model GameObject. A BoxCollider (trigger) is created automatically.
-///
-/// Activation flow:
-///   1. Animation event or PlayerController calls EnableHitbox()
-///   2. OnTriggerEnter deals damage to enemies that touch the collider
-///   3. Animation event or PlayerController calls DisableHitbox()
-///
-/// The hitbox is DISABLED by default — enemies take no damage outside the swing window.
+/// Melee damage during the active swing window uses <see cref="Physics.OverlapSphereNonAlloc"/>
+/// at the weapon tip. Triggers are unreliable against <see cref="CharacterController"/>, so the
+/// box collider is kept only to define tip offset/size — it stays disabled for physics.
 /// </summary>
 [DisallowMultipleComponent]
 public class WeaponHitbox : MonoBehaviour
@@ -20,6 +14,9 @@ public class WeaponHitbox : MonoBehaviour
     [Tooltip("Radius checked around the weapon tip during each active swing.")]
     public float overlapRadius = 0.85f;
 
+    [Tooltip("Layers that can receive melee damage. Default = Player + Hittable + Character.")]
+    public LayerMask meleeVictimMask;
+
     [Tooltip("Prevents the same enemy from being hit multiple times in one swing.")]
     private System.Collections.Generic.HashSet<int> hitThisSwing = new System.Collections.Generic.HashSet<int>();
 
@@ -29,9 +26,28 @@ public class WeaponHitbox : MonoBehaviour
     private bool isActive;
     private GameObject ownerRoot;
 
+    public static LayerMask BuildDefaultMeleeVictimMask()
+    {
+        int mask = 0;
+        TryAdd(ref mask, "Player");
+        TryAdd(ref mask, "Hittable");
+        TryAdd(ref mask, "Character");
+        if (mask == 0) return (LayerMask)~0;
+        return (LayerMask)mask;
+    }
+
+    private static void TryAdd(ref int mask, string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0) mask |= 1 << layer;
+    }
+
     private void Awake()
     {
-        // Create or find the trigger collider
+        if (meleeVictimMask.value == 0)
+            meleeVictimMask = BuildDefaultMeleeVictimMask();
+
+        // Box defines tip position in local space; keep disabled so all hits go through OverlapSphere.
         hitboxCollider = GetComponent<BoxCollider>();
         if (hitboxCollider == null)
         {
@@ -45,7 +61,6 @@ public class WeaponHitbox : MonoBehaviour
             hitboxCollider.isTrigger = true;
         }
 
-        // Start disabled — only active during swing
         hitboxCollider.enabled = false;
         isActive = false;
         ownerRoot = ResolveOwnerRoot();
@@ -60,7 +75,7 @@ public class WeaponHitbox : MonoBehaviour
         hitThisSwing.Clear();
         isActive = true;
         if (hitboxCollider != null)
-            hitboxCollider.enabled = true;
+            hitboxCollider.enabled = false;
         DealOverlapSphereDamage();
     }
 
@@ -86,7 +101,6 @@ public class WeaponHitbox : MonoBehaviour
     private void OnTriggerEnter(Collider other)
     {
         if (!isActive) return;
-        if (hitboxCollider == null || !hitboxCollider.enabled) return;
 
         TryDamageCollider(other);
     }
@@ -94,12 +108,15 @@ public class WeaponHitbox : MonoBehaviour
     private void DealOverlapSphereDamage()
     {
         Vector3 tip = GetWeaponTipWorldPosition();
+        int mask = meleeVictimMask.value != 0
+            ? meleeVictimMask.value
+            : BuildDefaultMeleeVictimMask().value;
         int hitCount = Physics.OverlapSphereNonAlloc(
             tip,
             Mathf.Max(0.1f, overlapRadius),
             OverlapHits,
-            ~0,
-            QueryTriggerInteraction.Collide);
+            mask,
+            QueryTriggerInteraction.Ignore);
 
         for (int i = 0; i < hitCount; i++)
             TryDamageCollider(OverlapHits[i]);

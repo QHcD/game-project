@@ -317,6 +317,20 @@ public class SessionManager : MonoBehaviour
         return null;
     }
 
+    /// <summary>
+    /// Store catalog entry whose <see cref="WeaponDefinition.LevelIndex"/> matches a campaign level
+    /// (used for live-animation presets when the player is not overriding with a mismatched store weapon).
+    /// </summary>
+    public WeaponDefinition FindWeaponForCampaignLevel(int level)
+    {
+        for (int i = 0; i < Weapons.Length; i++)
+        {
+            WeaponDefinition w = Weapons[i];
+            if (w.Id != "default" && w.LevelIndex == level) return w;
+        }
+        return null;
+    }
+
     public WeaponDefinition EquippedWeapon =>
         FindWeapon(EquippedWeaponId) ?? Weapons[0];
 
