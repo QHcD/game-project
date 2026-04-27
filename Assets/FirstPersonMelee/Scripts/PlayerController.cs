@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AI;
 using UnityEngine.InputSystem;
 
 /// <summary>
@@ -198,6 +199,23 @@ public class PlayerController : MonoBehaviour
     public float floorSnapSpeed = 14f;
     public float maxFloorSnapDistance = 0.45f;
 
+    [Header("Wall / Static collision (movement)")]
+    [Tooltip("Walls, props, containers — used to pre-clamp horizontal motion before CharacterController.Move. Exclude Character/Hittable/Player.")]
+    public LayerMask staticObstacleMask;
+
+    [Tooltip("Extra clearance beyond skinWidth so we do not ram the capsule into mesh every frame (reduces jitter).")]
+    public float wallCollisionPadding = 0.045f;
+
+    [Tooltip("Minimum gap to leave when a CapsuleCast hits static geometry.")]
+    public float minMoveClearance = 0.025f;
+
+    [Tooltip("Max separation push per frame (meters) vs other characters — prevents oscillation with walls.")]
+    public float maxSeparationPushPerFrame = 0.08f;
+
+    [Header("Jump")]
+    [Tooltip("Extra downward ray distance beyond step/skin width so Space still registers as grounded when the CharacterController flag flickers.")]
+    public float jumpGroundProbeExtra = 0.14f;
+
     // ════════════════════════════════════════════════════════════════════════
     //  PRIVATE STATE
     // ════════════════════════════════════════════════════════════════════════
@@ -316,8 +334,9 @@ public class PlayerController : MonoBehaviour
         // settings and cannot be created at runtime).
         EnemyController.EnsureCharacterLayerCollision();
 
-        // Hittable is the single melee query layer. Runtime damage never scans scenery.
-        int targetLayer = LayerMask.NameToLayer("Hittable");
+        // Prefer dedicated Player layer for enemy melee masks; fall back for older scenes.
+        int targetLayer = LayerMask.NameToLayer("Player");
+        if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Hittable");
         if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Character");
         if (targetLayer >= 0) SetLayerRecursive(gameObject, targetLayer);
 
@@ -353,6 +372,8 @@ public class PlayerController : MonoBehaviour
 
         firstPersonRenderers = GetComponentsInChildren<Renderer>(true);
         resolvedAttackMask   = ResolveHittableMask();
+        if (staticObstacleMask.value == 0)
+            staticObstacleMask = BuildDefaultStaticObstacleMask();
 
         foreach (Animator childAnimator in GetComponentsInChildren<Animator>(true))
             childAnimator.applyRootMotion = false;
@@ -367,13 +388,15 @@ public class PlayerController : MonoBehaviour
         LookSensitivityRuntime.LoadFromPrefs();
 
         // Any Rigidbody on the player root (legacy prefabs / imported rigs) must
-        // not tip the capsule or add gravity torque — CharacterController owns motion.
+        // not tip the capsule — CharacterController owns translation.
         Rigidbody rootBody = GetComponent<Rigidbody>();
         if (rootBody != null)
         {
             rootBody.isKinematic = true;
             rootBody.useGravity = false;
-            rootBody.constraints = RigidbodyConstraints.FreezeRotation;
+            rootBody.interpolation = RigidbodyInterpolation.Interpolate;
+            rootBody.constraints = RigidbodyConstraints.FreezeRotationX
+                                  | RigidbodyConstraints.FreezeRotationZ;
         }
     }
 
@@ -399,7 +422,10 @@ public class PlayerController : MonoBehaviour
         ApplyPerspectivePreference();
         EnsureThirdPersonBody();
         if (thirdPersonBody != null)
+        {
             SetLayerRecursive(thirdPersonBody, gameObject.layer);
+            LockAvatarRigidbodies(thirdPersonBody);
+        }
 
         // ── 3. Acquire the body animator and bind the intended player controller ──
         animator = null;
@@ -502,6 +528,7 @@ public class PlayerController : MonoBehaviour
         ReadInput();
         HandleActionInput();
         ApplyMovement();
+        ApplyCharacterSeparationPush();
         ApplyLook();
         // UpdateCameraZoom removed — zoom is permanently disabled.
         UpdateHeadBob();
@@ -509,11 +536,6 @@ public class PlayerController : MonoBehaviour
         UpdateCombatState();
         UpdateAnimatorParameters();
         HandleWeaponGripDebugTuning();
-    }
-
-    private void FixedUpdate()
-    {
-        ApplySeparationPush();
     }
 
     private void LateUpdate()
@@ -525,6 +547,33 @@ public class PlayerController : MonoBehaviour
 
         // Strictly lock rotation to yaw only
         transform.eulerAngles = new Vector3(0f, transform.eulerAngles.y, 0f);
+
+        SnapCharacterToGroundNavMesh();
+        SnapToArenaFloor();
+    }
+
+    /// <summary>
+    /// Keeps the capsule bottom from sitting under the baked NavMesh surface (arena floors).
+    /// </summary>
+    private void SnapCharacterToGroundNavMesh()
+    {
+        if (controller == null || !controller.enabled || isFlipping) return;
+        if (EndMatchCinematic.GameplayLocked) return;
+
+        Vector3 sampleOrigin = transform.position + Vector3.up * 0.25f;
+        if (!NavMesh.SamplePosition(sampleOrigin, out NavMeshHit hit, 2.5f, NavMesh.AllAreas))
+            return;
+
+        float capsuleBottomY = transform.position.y + controller.center.y - controller.height * 0.5f;
+        float groundY = hit.position.y;
+        const float sinkAllowance = 0.08f;
+        if (capsuleBottomY >= groundY - sinkAllowance)
+            return;
+
+        float lift = (groundY - sinkAllowance) - capsuleBottomY;
+        lift = Mathf.Clamp(lift, 0f, 0.4f);
+        if (lift > 1e-4f)
+            controller.Move(Vector3.up * lift);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -579,16 +628,39 @@ public class PlayerController : MonoBehaviour
             Attack();
     }
 
+    /// <summary>
+    /// Keyboard (WASD + arrows + numpad) takes priority when any movement key is held.
+    /// Otherwise a drifting gamepad stick can dominate with X-only input and remove forward/back.
+    /// </summary>
     private static Vector2 ReadMovementInput()
+    {
+        Vector2 keyboard = ReadKeyboardMovementVector();
+        if (keyboard.sqrMagnitude > 0.0001f)
+            return Vector2.ClampMagnitude(keyboard, 1f);
+
+        if (Gamepad.current != null)
+        {
+            Vector2 stick = Gamepad.current.leftStick.ReadValue();
+            if (stick.sqrMagnitude > 0.0001f)
+                return Vector2.ClampMagnitude(stick, 1f);
+        }
+
+        return Vector2.zero;
+    }
+
+    private static Vector2 ReadKeyboardMovementVector()
     {
         if (Keyboard.current == null) return Vector2.zero;
 
-        Vector2 movement = Vector2.zero;
-        if (Keyboard.current.wKey.isPressed || Keyboard.current.upArrowKey.isPressed)    movement.y += 1f;
-        if (Keyboard.current.sKey.isPressed || Keyboard.current.downArrowKey.isPressed)  movement.y -= 1f;
-        if (Keyboard.current.aKey.isPressed || Keyboard.current.leftArrowKey.isPressed)  movement.x -= 1f;
-        if (Keyboard.current.dKey.isPressed || Keyboard.current.rightArrowKey.isPressed) movement.x += 1f;
-        return movement;
+        Keyboard k = Keyboard.current;
+        Vector2 m = Vector2.zero;
+
+        if (k.wKey.isPressed || k.upArrowKey.isPressed || k.numpad8Key.isPressed) m.y += 1f;
+        if (k.sKey.isPressed || k.downArrowKey.isPressed || k.numpad2Key.isPressed) m.y -= 1f;
+        if (k.aKey.isPressed || k.leftArrowKey.isPressed || k.numpad4Key.isPressed) m.x -= 1f;
+        if (k.dKey.isPressed || k.rightArrowKey.isPressed || k.numpad6Key.isPressed) m.x += 1f;
+
+        return m;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -603,9 +675,14 @@ public class PlayerController : MonoBehaviour
 
     private static readonly Collider[] _separationBuffer = new Collider[24];
 
-    private void ApplySeparationPush()
+    /// <summary>
+    /// Soft separation from other damageable actors only. Runs in Update (not FixedUpdate)
+    /// so it never fights the main CharacterController move on a mismatched timestep.
+    /// </summary>
+    private void ApplyCharacterSeparationPush()
     {
         if (controller == null || !controller.enabled) return;
+        if (isMantling || isFlipping) return;
 
         Vector3 worldCenter = transform.TransformPoint(controller.center);
         float   probe       = ForcedSeparationDistance;
@@ -623,14 +700,12 @@ public class PlayerController : MonoBehaviour
             if (other.transform.IsChildOf(transform)) continue;
 
             IDamageable dmg = other.GetComponentInParent<IDamageable>();
-            if (dmg == null) continue; // not a character
+            if (dmg == null) continue;
 
             Vector3 delta = transform.position - other.transform.position;
             delta.y = 0f;
             float d = delta.magnitude;
 
-            // Coincident actors — emit a deterministic-ish nudge so two stacked
-            // statues separate rather than oscillating.
             if (d < 0.001f)
             {
                 delta = new Vector3(transform.position.x - other.transform.position.x + 0.01f,
@@ -645,13 +720,165 @@ public class PlayerController : MonoBehaviour
                 push += (delta / d) * overlap;
         }
 
-        if (push.sqrMagnitude > 1e-6f)
+        if (push.sqrMagnitude > 1e-8f)
         {
-            controller.enabled = false;
-            transform.position += Vector3.ClampMagnitude(push, ForcedSeparationDistance);
-            controller.enabled = true;
-            Physics.SyncTransforms();
+            float cap = Mathf.Min(ForcedSeparationDistance, maxSeparationPushPerFrame);
+            controller.Move(Vector3.ClampMagnitude(push, cap));
         }
+    }
+
+    /// <summary>
+    /// Imported humanoid rigs sometimes ship with loose Rigidbodies on bones — they can tug
+    /// the mesh and read as "flips". Kinematic + frozen tilt keeps visuals aligned with the capsule.
+    /// </summary>
+    private static void LockAvatarRigidbodies(GameObject body)
+    {
+        if (body == null) return;
+
+        foreach (Rigidbody rb in body.GetComponentsInChildren<Rigidbody>(true))
+        {
+            if (rb == null) continue;
+            rb.isKinematic = true;
+            rb.useGravity = false;
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+            rb.constraints = RigidbodyConstraints.FreezeRotationX
+                            | RigidbodyConstraints.FreezeRotationZ;
+        }
+    }
+
+    private static LayerMask BuildDefaultStaticObstacleMask()
+    {
+        int mask = 0;
+        void Add(string layerName)
+        {
+            int l = LayerMask.NameToLayer(layerName);
+            if (l >= 0) mask |= 1 << l;
+        }
+        Add("Environment");
+        Add("Default");
+        Add("Map");
+        Add("LevelContent");
+        return mask == 0 ? (LayerMask)0 : (LayerMask)mask;
+    }
+
+    private void GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 top)
+    {
+        Vector3 worldCenter = transform.TransformPoint(controller.center);
+        float halfHeight = Mathf.Max(controller.radius, controller.height * 0.5f - controller.radius);
+        bottom = worldCenter - Vector3.up * halfHeight;
+        top    = worldCenter + Vector3.up * halfHeight;
+    }
+
+    /// <summary>
+    /// True if we should allow a jump: CharacterController ground flag and/or a short foot ray.
+    /// Prevents Space from being consumed while airborne and fixes flicker when CC briefly reports not grounded.
+    /// </summary>
+    private bool IsGroundedForJump()
+    {
+        if (controller == null) return false;
+        if (controller.isGrounded) return true;
+
+        float reach = Mathf.Max(controller.stepOffset, controller.skinWidth) + jumpGroundProbeExtra;
+        GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 _);
+        Vector3 origin = bottom + Vector3.up * 0.06f;
+        return Physics.Raycast(origin, Vector3.down, out _, reach + 0.06f,
+            Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
+    }
+
+    /// <summary>
+    /// Forward + slightly-down ray: if we're driving velocity into a wall, damp horizontal speed
+    /// (extra layer on top of CapsuleCast clamp) to reduce "frozen" feel on box colliders.
+    /// </summary>
+    private Vector3 DampHorizontalVelocityIntoWalls(Vector3 worldHorizontalVelocity)
+    {
+        if (controller == null || staticObstacleMask.value == 0) return worldHorizontalVelocity;
+        worldHorizontalVelocity.y = 0f;
+        float mag = worldHorizontalVelocity.magnitude;
+        if (mag < 0.01f) return worldHorizontalVelocity;
+
+        Vector3 dir = worldHorizontalVelocity / mag;
+        GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 _);
+        Vector3 origin = bottom + Vector3.up * Mathf.Max(0.05f, controller.radius * 0.6f);
+        Vector3 probeDir = (dir + Vector3.down * 0.15f).normalized;
+        float dist = Mathf.Clamp(mag * Time.deltaTime + controller.radius * 0.35f, 0.08f, 0.55f);
+
+        if (Physics.Raycast(origin, probeDir, out RaycastHit hit, dist, staticObstacleMask, QueryTriggerInteraction.Ignore)
+            && hit.collider != null
+            && !hit.collider.transform.IsChildOf(transform))
+        {
+            float damp = Mathf.Clamp01(hit.distance / Mathf.Max(0.01f, dist));
+            return worldHorizontalVelocity * damp * damp;
+        }
+
+        return worldHorizontalVelocity;
+    }
+
+    /// <summary>
+    /// CapsuleCast + one slide iteration so we shed velocity into walls instead of
+    /// hammering CharacterController internal depenetration (stutter near crates).
+    /// </summary>
+    private Vector3 ClampHorizontalMoveAgainstStatics(Vector3 horizontalDelta)
+    {
+        if (horizontalDelta.sqrMagnitude < 1e-12f || controller == null)
+            return horizontalDelta;
+
+        horizontalDelta.y = 0f;
+        GetCapsuleWorldEndpoints(out Vector3 p0, out Vector3 p1);
+        float r = controller.radius;
+        float pad = Mathf.Max(controller.skinWidth, wallCollisionPadding) + minMoveClearance;
+        float dist = horizontalDelta.magnitude;
+        Vector3 dir = horizontalDelta / dist;
+
+        if (!Physics.CapsuleCast(
+                p0, p1,
+                r * 0.98f,
+                dir,
+                out RaycastHit hit,
+                dist + pad,
+                staticObstacleMask,
+                QueryTriggerInteraction.Ignore))
+            return horizontalDelta;
+
+        if (hit.collider != null && hit.collider.transform.IsChildOf(transform))
+            return horizontalDelta;
+
+        float allowed = Mathf.Max(0f, hit.distance - pad);
+        Vector3 move1 = dir * Mathf.Min(dist, allowed);
+        Vector3 leftover = horizontalDelta - move1;
+        if (leftover.sqrMagnitude < 1e-10f)
+            return move1;
+
+        Vector3 n = hit.normal;
+        n.y = 0f;
+        if (n.sqrMagnitude < 0.001f)
+            return move1;
+        n.Normalize();
+
+        Vector3 slide = Vector3.ProjectOnPlane(leftover, n);
+        slide.y = 0f;
+        float slideDist = slide.magnitude;
+        if (slideDist < 1e-6f)
+            return move1;
+
+        Vector3 sdir = slide / slideDist;
+        Vector3 p0b = p0 + move1;
+        Vector3 p1b = p1 + move1;
+        if (!Physics.CapsuleCast(
+                p0b, p1b,
+                r * 0.98f,
+                sdir,
+                out RaycastHit hit2,
+                slideDist + pad,
+                staticObstacleMask,
+                QueryTriggerInteraction.Ignore))
+            return move1 + slide;
+
+        if (hit2.collider != null && hit2.collider.transform.IsChildOf(transform))
+            return move1 + slide;
+
+        float allowed2 = Mathf.Max(0f, hit2.distance - pad);
+        return move1 + sdir * Mathf.Min(slideDist, allowed2);
     }
 
     private void ApplyMovement()
@@ -692,14 +919,20 @@ public class PlayerController : MonoBehaviour
 
             float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
             horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
+            horizontalVelocity = DampHorizontalVelocityIntoWalls(horizontalVelocity);
         }
 
-        controller.Move(horizontalVelocity * Time.deltaTime);
+        Vector3 horizontalDelta = horizontalVelocity * Time.deltaTime;
+        horizontalDelta.y = 0f;
+        if (staticObstacleMask.value != 0)
+            horizontalDelta = ClampHorizontalMoveAgainstStatics(horizontalDelta);
 
-        if (isGrounded)
+        bool jumpFeetGrounded = IsGroundedForJump();
+        if (isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f))
         {
             verticalVelocity.y = -2f;
-            if (jumpRequested && !isProne && !isSliding)
+
+            if (jumpRequested && !isProne && !isSliding && jumpFeetGrounded)
             {
                 verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
                 isGrounded = false;
@@ -712,7 +945,8 @@ public class PlayerController : MonoBehaviour
         }
 
         jumpRequested = false;
-        controller.Move(verticalVelocity * Time.deltaTime);
+        Vector3 verticalDelta = new Vector3(0f, verticalVelocity.y * Time.deltaTime, 0f);
+        controller.Move(horizontalDelta + verticalDelta);
 
         UpdateTacticalManeuverState();
         UpdateStanceCollider();
@@ -1095,14 +1329,21 @@ public class PlayerController : MonoBehaviour
         if (isProne || isSliding || isMantling || isFlipping)
             return;
 
+        // Thruster = Shift + movement (keyboard) or shoulder/trigger + stick (gamepad).
+        // Do NOT treat "any stick movement" as thruster — that blocked normal Space jumps when a pad was connected.
         bool wantsThruster = Keyboard.current != null
             && Keyboard.current.leftShiftKey.isPressed
             && moveInputSmoothed.sqrMagnitude > 0.05f;
 
-        if (Gamepad.current != null && Gamepad.current.leftStick.ReadValue().sqrMagnitude > 0.2f)
+        if (Gamepad.current != null
+            && (Gamepad.current.leftShoulder.isPressed || Gamepad.current.leftTrigger.ReadValue() > 0.45f)
+            && Gamepad.current.leftStick.ReadValue().sqrMagnitude > 0.05f)
             wantsThruster = true;
 
         if (wantsThruster && TryStartThrusterJump())
+            return;
+
+        if (!IsGroundedForJump())
             return;
 
         jumpRequested = true;
@@ -1110,7 +1351,7 @@ public class PlayerController : MonoBehaviour
 
     private bool TryStartThrusterJump()
     {
-        if (!isGrounded || thrusterCooldownTimer > 0f)
+        if (!IsGroundedForJump() || thrusterCooldownTimer > 0f)
             return false;
 
         Vector3 inputDir = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
@@ -1255,7 +1496,11 @@ public class PlayerController : MonoBehaviour
     private void ApplyAttackLunge()
     {
         if (controller == null) return;
-        controller.Move(transform.forward * attackLungeDistance);
+        Vector3 lunge = transform.forward * attackLungeDistance;
+        lunge.y = 0f;
+        if (staticObstacleMask.value != 0)
+            lunge = ClampHorizontalMoveAgainstStatics(lunge);
+        controller.Move(lunge);
         ClampInsideArena();
     }
 
@@ -2308,27 +2553,24 @@ public class PlayerController : MonoBehaviour
 
     public void EquipWeaponForLevel(int level)
     {
-        level = Mathf.Max(1, level);
+        int gameplayLevel = Mathf.Max(1, level);
+        if (GameManager.Instance != null)
+            gameplayLevel = Mathf.Clamp(gameplayLevel, 1, GameManager.TotalLevels);
 
-        // ── Store override ──────────────────────────────────────────────────
-        // If the player has unlocked + equipped a weapon in the PRSIM Store
-        // (e.g. Nunchucks), that override completely supersedes the level's
-        // default weapon. We swap to the store weapon's underlying level
-        // index so the procedural mesh + base damage curve are correct, then
-        // apply the per-weapon damage/attack-speed multipliers on top.
-        WeaponDefinition storeWeapon = null;
+        // Store buffs apply only when the equipped store weapon matches this
+        // campaign level. Otherwise we always use the level's mesh + base
+        // stats (fixes every level showing e.g. Baseball Bat after buying it).
+        WeaponDefinition storeEquipped = null;
         if (SessionManager.Instance != null)
-        {
-            storeWeapon = SessionManager.Instance.EquippedWeapon;
-            if (storeWeapon != null && storeWeapon.Id != "default")
-                level = storeWeapon.LevelIndex;
-        }
+            storeEquipped = SessionManager.Instance.EquippedWeapon;
+        bool storeBuffsThisLevel = storeEquipped != null && storeEquipped.Id != "default"
+            && storeEquipped.LevelIndex == gameplayLevel;
 
         if (GameManager.Instance != null)
         {
-            equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(level);
-            attackDamage       = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(level));
-            attackDistance     = GameManager.Instance.GetWeaponRangeForLevel(level);
+            equippedWeaponName = GameManager.Instance.GetWeaponNameForLevel(gameplayLevel);
+            attackDamage       = Mathf.RoundToInt(GameManager.Instance.GetWeaponDamageForLevel(gameplayLevel));
+            attackDistance     = GameManager.Instance.GetWeaponRangeForLevel(gameplayLevel);
             attackSpeed = 1.0f; attackDelay = 0.4f; attackRadius = 1.25f;
         }
         else
@@ -2336,15 +2578,12 @@ public class PlayerController : MonoBehaviour
             equippedWeaponName = "Combat Knife";
         }
 
-        // Apply the store weapon's per-weapon stat multipliers.
-        if (storeWeapon != null && storeWeapon.Id != "default")
+        if (storeBuffsThisLevel)
         {
-            equippedWeaponName = storeWeapon.Name;
-            attackDamage       = Mathf.Max(1, Mathf.RoundToInt(attackDamage * storeWeapon.DamageMul));
-            attackSpeed       *= storeWeapon.AttackSpeedMul;
-            // Faster weapons get a proportionally shorter recovery so the
-            // anim/hitbox windows stay in sync.
-            attackDelay        = Mathf.Clamp(attackDelay / storeWeapon.AttackSpeedMul, 0.12f, 1.0f);
+            equippedWeaponName = storeEquipped.Name;
+            attackDamage       = Mathf.Max(1, Mathf.RoundToInt(attackDamage * storeEquipped.DamageMul));
+            attackSpeed       *= storeEquipped.AttackSpeedMul;
+            attackDelay        = Mathf.Clamp(attackDelay / storeEquipped.AttackSpeedMul, 0.12f, 1.0f);
         }
 
         if (thirdPersonBody != null)
@@ -2352,8 +2591,8 @@ public class PlayerController : MonoBehaviour
             if (isThirdPersonActive)
                 thirdPersonBody.SetActive(true);
 
-            if (equippedWeaponObject == null || equippedWeaponLevel != level)
-                AttachWeaponToHand(thirdPersonBody, level);
+            if (equippedWeaponObject == null || equippedWeaponLevel != gameplayLevel)
+                AttachWeaponToHand(thirdPersonBody, gameplayLevel);
             SetupWeaponIK();
         }
 
@@ -2362,9 +2601,12 @@ public class PlayerController : MonoBehaviour
         // colour is a no-op.
         ApplyEquippedKatanaSkin();
 
-        // Wire the per-weapon "alive" feel — Nunchucks open + spin during the
-        // attack window, lighter weapons get a small follow-through, etc.
-        ApplyWeaponLiveAnimation(storeWeapon);
+        WeaponDefinition liveAnimDef = storeBuffsThisLevel
+            ? storeEquipped
+            : (SessionManager.Instance != null
+                ? SessionManager.Instance.FindWeaponForCampaignLevel(gameplayLevel)
+                : null);
+        ApplyWeaponLiveAnimation(liveAnimDef);
 
         // RefreshFirstPersonWeaponModel removed — third-person only.
     }
@@ -2536,10 +2778,20 @@ public class PlayerController : MonoBehaviour
         Transform handBone = ResolveHandBone(body, level);
         Debug.Log($"[PlayerController] Hand bone resolved: '{handBone.name}' (level={level})");
 
-        // ── 3. Scale-normalising socket — same as enemy ─────────────────────
-        // The socket counter-scales the hand bone's imported lossy scale so the
-        // weapon sees a clean (≈1,1,1) parent space, preventing near-zero scale.
-        Transform weaponSocket = GetOrCreateWeaponSocket(handBone);
+        // ── 3. Attach parent: katana / level-2 → RightHand bone directly (palm alignment).
+        //     Other weapons keep the scale-normalising socket under the hand bone.
+        bool katanaStyle = level == 2
+            || (prefab != null && prefab.name.ToLowerInvariant().Contains("katana"));
+        Transform weaponParent = GetOrCreateWeaponSocket(handBone);
+        if (katanaStyle)
+        {
+            Animator anim = body.GetComponentInChildren<Animator>(true);
+            if (anim != null && anim.isHuman)
+            {
+                Transform rh = anim.GetBoneTransform(HumanBodyBones.RightHand);
+                if (rh != null) weaponParent = rh;
+            }
+        }
 
         // ── 4. Instantiate unparented to measure clean world-space bounds ────
         GameObject weapon = Instantiate(prefab);
@@ -2555,15 +2807,15 @@ public class PlayerController : MonoBehaviour
         float weaponExtent = GetMaxRendererExtent(weapon);
         if (weaponExtent < 0.001f) weaponExtent = 1f;
 
-        // ── 6. Parent to socket — MIRROR ENEMY LOGIC ────────────────────────
-        weapon.transform.SetParent(weaponSocket, worldPositionStays: false);
+        // ── 6. Parent to hand / socket — MIRROR ENEMY LOGIC ─────────────────
+        weapon.transform.SetParent(weaponParent, worldPositionStays: false);
         weapon.transform.localPosition = Vector3.zero;
         weapon.transform.localRotation = Quaternion.identity;
         weapon.transform.localScale    = Vector3.one;
 
         // ── 7. Scale to target world size ────────────────────────────────────
         float uniformScale = finalTargetSize / weaponExtent;
-        Vector3 parentLossy = weaponSocket.lossyScale;
+        Vector3 parentLossy = weaponParent.lossyScale;
         weapon.transform.localScale = new Vector3(
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.x), 0.0001f),
             uniformScale / Mathf.Max(Mathf.Abs(parentLossy.y), 0.0001f),
@@ -2599,7 +2851,7 @@ public class PlayerController : MonoBehaviour
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
         ApplyKatanaGripFix(level, prefab, weapon.transform);
 
-        Debug.Log($"[PlayerController] Weapon '{weapon.name}' → hand '{handBone.name}' " +
+        Debug.Log($"[PlayerController] Weapon '{weapon.name}' → '{weaponParent.name}' " +
                   $"targetSize={finalTargetSize} extent={weaponExtent} " +
                   $"localPosition={weapon.transform.localPosition} " +
                   $"localEuler={weapon.transform.localEulerAngles} " +
@@ -2638,6 +2890,10 @@ public class PlayerController : MonoBehaviour
         // ── 12. Visibility fix (URP) ─────────────────────────────────────────
         if (weapon.GetComponent<WeaponVisibilityFix>() == null)
             weapon.AddComponent<WeaponVisibilityFix>();
+
+        MeleeWeaponWallPullback wallPull = weapon.GetComponent<MeleeWeaponWallPullback>();
+        if (wallPull == null) wallPull = weapon.AddComponent<MeleeWeaponWallPullback>();
+        wallPull.Configure(transform, staticObstacleMask);
 
         // ── 13. Refresh melee animation event sink cache ─────────────────────
         if (thirdPersonBody != null)
@@ -2984,6 +3240,10 @@ public class PlayerController : MonoBehaviour
             if (weapon.GetComponent<WeaponVisibilityFix>() == null)
                 weapon.AddComponent<WeaponVisibilityFix>();
 
+            MeleeWeaponWallPullback wallPullBk = weapon.GetComponent<MeleeWeaponWallPullback>();
+            if (wallPullBk == null) wallPullBk = weapon.AddComponent<MeleeWeaponWallPullback>();
+            wallPullBk.Configure(transform, staticObstacleMask);
+
             WeaponHitbox hitbox = weapon.GetComponent<WeaponHitbox>();
             if (hitbox == null)
                 hitbox = weapon.AddComponent<WeaponHitbox>();
@@ -3243,6 +3503,10 @@ public class PlayerController : MonoBehaviour
         meshObj.transform.localScale    = new Vector3(0.05f, 0.3f, 0.05f);
 
         Destroy(meshObj.GetComponent<Collider>());
+
+        MeleeWeaponWallPullback wallPullPm = root.GetComponent<MeleeWeaponWallPullback>();
+        if (wallPullPm == null) wallPullPm = root.AddComponent<MeleeWeaponWallPullback>();
+        wallPullPm.Configure(transform, staticObstacleMask);
 
         return root;
     }

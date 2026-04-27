@@ -1,0 +1,75 @@
+PRISM — Scene View visuals & third-person movement (Unity 6000.x)
+================================================================
+
+1) EDITOR — HIDE NAVMESH (BLUE OVERLAY)
+---------------------------------------
+Goal: See terrain/materials in the Scene view without deleting NavMesh data.
+
+A. Scene view Gizmos (fastest)
+   • Open the Scene tab.
+   • Top-right: open the “Gizmos” dropdown.
+   • Under AI Navigation / NavMesh entries, uncheck NavMesh (or “Show NavMesh”).
+   • The blue bake overlay hides; NavMesh asset and agents still work in Play Mode.
+
+B. AI Navigation overlay (Unity 6)
+   • Press ~ (tilde) or use the Scene overlays menu.
+   • Open the “AI Navigation” overlay if needed.
+   • Turn off NavMesh surface preview / “Show NavMesh” there.
+
+C. Menu shortcut (project script)
+   • PRISM → Scene View → Hide NavMesh Overlay (if SceneViewDisplayTools.cs is present).
+
+
+2) EDITOR — PLAYER LOOKS LIKE BLUE WIREFRAME / OUTLINE
+-------------------------------------------------------
+A. Shaded mode (not wireframe)
+   • In the Scene view toolbar, set the draw mode to “Shaded” or “Shaded Textured”.
+   • Avoid “Wireframe” / “Shaded Wireframe” for normal authoring.
+
+B. Selection outline
+   • Selected objects get a colored outline; click empty space or another object to compare.
+
+C. Prefab Isolation Mode
+   • If the breadcrumb shows you are inside a Prefab (blue isolation), click ← Back
+     to return to the main .unity scene. Full lighting/material context returns.
+
+D. Mesh Renderer
+   • Select the player body; ensure Skinned Mesh Renderer / Mesh Renderer is enabled.
+
+
+3) PLAY MODE — MOVEMENT & PHYSICS (PlayerController.cs)
+-------------------------------------------------------
+The gameplay character uses CharacterController (not Rigidbody dynamics) for motion.
+
+Implemented logic (summary):
+   • Gravity via verticalVelocity and a single CharacterController.Move per frame.
+   • CapsuleCast-based clamp into static geometry + forward/down ray damping to reduce
+     “stuck” sliding against walls/boxes.
+   • Jump only when IsGroundedForJump() — CharacterController.isGrounded and/or a short
+     foot Raycast (fixes flicker + prevents Space eating jumps in the air).
+   • Thruster jump: Shift + move (keyboard) or LB / left trigger + stick (gamepad);
+     plain stick drift no longer steals Space.
+   • While grounded with downward velocity, foot probe keeps vertical stick so attacks
+     don’t float off the floor.
+
+Rigidbody on the player root (if present):
+   • Is Kinematic = ON
+   • Use Gravity = OFF
+   • Interpolate = Interpolate
+   • Freeze Rotation X + Z (Y handled by gameplay / CC)
+Child rig Rigidbodies: kinematic, no gravity (see LockAvatarRigidbodies in code).
+
+
+4) JUMP (SPACEBAR)
+------------------
+   • Press Space while grounded (see jumpGroundProbeExtra on PlayerController if you
+     need a slightly more forgiving floor check).
+   • Jump is ignored when prone / sliding / mantling / flipping.
+
+
+5) TUNING INSPECTOR FIELDS
+---------------------------
+   • jumpHeight — apex of hop
+   • gravity — negative acceleration while airborne
+   • jumpGroundProbeExtra — extra foot ray length when CC ground flag is unreliable
+   • staticObstacleMask — layers for wall clamp + anti-freeze ray (Environment, Default, …)

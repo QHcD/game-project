@@ -1,0 +1,35 @@
+PRISM / Unity — Combat movement & clipping checklist
+====================================================
+
+Player / CharacterController
+- Single root Rigidbody: Kinematic, Use Gravity OFF, Interpolate ON (optional).
+- Freeze rotation on X and Z (Y can stay free on kinematic bodies; root yaw is driven in code).
+- Do NOT mix a non-kinematic Rigidbody on the same root as CharacterController for gameplay motion.
+- CharacterController: Skin Width ~0.03–0.05, Min Move Distance 0, Step Offset tuned to stairs (~0.3–0.5).
+- Capsule must not intersect static geometry at spawn; place spawn points above floor.
+
+Static world (walls, crates, floor)
+- Use Static batching where appropriate; mark as Static only if transforms never move.
+- Colliders: Box/Mesh on Environment (or Default) layer — non-trigger for blocking movement.
+- Prefer a dedicated Environment layer and assign it on PlayerController → Static Obstacle Mask.
+
+Dynamic props (moving crates, doors)
+- Rigidbody: Continuous Dynamic if fast-moving; Continuous Speculative for typical props.
+- Mass and drag reasonable so they do not tunnel the player capsule.
+
+Layers & matrix
+- Player on Player (or Hittable) layer; enemies on their own layer.
+- Ensure Physics collision matrix: Player/Character vs Environment overlaps; avoid ignoring Environment for the player capsule.
+
+Camera (CameraController)
+- Collision mask excludes Player, Character, UI, Hittable (melee) so casts only hit world geometry.
+- SphereCast radius + wall padding define how early the camera pulls in (tune for your FOV).
+
+Weapon clipping
+- Level geometry must use colliders on layers included in MeleeWeaponWallPullback.obstacleMask.
+- For “FPS-style” zero clip, add a second camera (weapon-only layer, depth only) — heavier setup.
+- Pullback script is a good default for third-person melee.
+
+Performance
+- Keep obstacle queries on narrow LayerMasks (not Everything).
+- Use NonAlloc overlap/cast variants in hot paths (already used in several PRISM scripts).

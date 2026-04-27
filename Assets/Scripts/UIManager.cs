@@ -66,8 +66,9 @@ public class UIManager : MonoBehaviour
     private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         if (!Application.isPlaying) return;
-        if (!IsMainMenuLikeScene()) return;
+        // Gameplay / pause overlays need a consistent EventSystem in every scene.
         EnsureInputSystemEventSystem();
+        if (!IsMainMenuLikeScene()) return;
         CompactifyMainMenuCanvas();
         _mainMenuApplyFramesRemaining = 60;
 
