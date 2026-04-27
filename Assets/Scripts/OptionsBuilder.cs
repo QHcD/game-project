@@ -12,7 +12,7 @@ public class OptionsBuilder : MonoBehaviour
     public TMP_FontAsset prismFont;
 
     private readonly string[] difficultyOptions = { "EASY", "NORMAL", "HARD" };
-    private readonly string[] perspectiveOptions = { "THIRD PERSON" };
+    private readonly string[] perspectiveOptions = { "FIRST PERSON", "THIRD PERSON" };
     private readonly string[] controlOptions = { "WASD + MOUSE", "ARROWS + MOUSE" };
 
     private TMP_Dropdown difficultyDropdown;
@@ -196,7 +196,11 @@ public class OptionsBuilder : MonoBehaviour
 
     private int PerspectiveIndex()
     {
-        return 0;
+        GameManager.PerspectiveMode mode = GameManager.Instance != null
+            ? GameManager.Instance.GetPerspectiveMode()
+            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson), 0, 1);
+
+        return mode == GameManager.PerspectiveMode.FirstPerson ? 0 : 1;
     }
 
     private int ControlIndex()
@@ -220,7 +224,9 @@ public class OptionsBuilder : MonoBehaviour
 
     private void OnPerspectiveChanged(int selectedIndex)
     {
-        GameManager.PerspectiveMode perspective = GameManager.PerspectiveMode.ThirdPerson;
+        GameManager.PerspectiveMode perspective = selectedIndex == 0
+            ? GameManager.PerspectiveMode.FirstPerson
+            : GameManager.PerspectiveMode.ThirdPerson;
 
         if (GameManager.Instance != null)
         {
@@ -231,6 +237,10 @@ public class OptionsBuilder : MonoBehaviour
             PlayerPrefs.SetInt("PerspectiveMode", (int)perspective);
             PlayerPrefs.Save();
         }
+
+        PlayerController player = FindFirstObjectByType<PlayerController>();
+        if (player != null)
+            player.RefreshGameplayPreferences();
     }
 
     private void OnControlChanged(int selectedIndex)
