@@ -101,8 +101,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Extended emergency scan radius so enemies stay aggressive and do not idle.")]
     public float aggressiveScanRadius = 120f;
 
-    [Tooltip("Seconds between target scans (coroutine-based for performance).")]
-    public float detectionInterval = 0.08f;
+    [Tooltip("Seconds between target scans. 0.5 = FFA re-evaluate nearest combatant twice per second.")]
+    public float detectionInterval = 0.5f;
 
     [Header("Target Locking & LoS")]
     [Tooltip("How long (seconds) the AI commits to a target before considering switching.")]
@@ -349,7 +349,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
-        detectionInterval = Mathf.Clamp(detectionInterval, 0.05f, 0.2f);
+        detectionInterval = Mathf.Clamp(detectionInterval, 0.1f, 2.0f);
         detectionRadius = Mathf.Max(detectionRadius, 80f);
         aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, 120f);
         attackCooldown = Mathf.Min(attackCooldown, 0.65f);

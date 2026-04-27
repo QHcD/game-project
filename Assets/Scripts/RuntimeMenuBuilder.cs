@@ -154,14 +154,17 @@ public class RuntimeMenuBuilder : MonoBehaviour
         // Single centered column (reference): even spacing, pills hug text, top-to-bottom order.
         var navList = new System.Collections.Generic.List<Selectable>(8);
 
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, startLabel, () => GameManager.Instance?.StartRun(continueLevel)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SELECT LEVEL", () => ToggleLevelSelect(root)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "PRISM STORE", () => ToggleStore(root)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CHALLENGES", () => ToggleChallenges(root)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "OPTIONS", () => UnityEngine.SceneManagement.SceneManager.LoadScene("Options")));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SETTINGS", () => UnityEngine.SceneManagement.SceneManager.LoadScene("Settings")));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CREDITS", () => UnityEngine.SceneManagement.SceneManager.LoadScene("Credits")));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "QUIT", QuitFromMainMenu));
+        // Layout order: Continue → [Custom Match | Select Level] → [Prism Store | Challenges]
+        //               → Options → Settings → Credits → Quit
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, startLabel,       () => GameManager.Instance?.StartRun(continueLevel)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CUSTOM MATCH",   () => ToggleCustomMatch(root)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SELECT LEVEL",   () => ToggleLevelSelect(root)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "PRISM STORE",    () => ToggleStore(root)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CHALLENGES",     () => ToggleChallenges(root)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "OPTIONS",        () => UnityEngine.SceneManagement.SceneManager.LoadScene("Options")));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SETTINGS",       () => UnityEngine.SceneManagement.SceneManager.LoadScene("Settings")));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CREDITS",        () => UnityEngine.SceneManagement.SceneManager.LoadScene("Credits")));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "QUIT",           QuitFromMainMenu));
 
         MenuNavigationManager.AttachLinear(root.gameObject, navList);
 

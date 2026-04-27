@@ -521,6 +521,22 @@ public class PlayerController : MonoBehaviour
         if (controller == null)
             return;
 
+        // Hard anti-flip clamp — unconditional. If anything tilted the root
+        // (animator, ragdoll, external script) reset to yaw-only this frame.
+        if (!EndMatchCinematic.GameplayLocked)
+        {
+            Vector3 e0 = transform.eulerAngles;
+            transform.eulerAngles = new Vector3(0f, e0.y, 0f);
+
+            // Also kill any root-motion on all body animators — belt-and-suspenders
+            // so an asset import that ships with root motion can't cause flips.
+            if (thirdPersonBody != null)
+            {
+                foreach (Animator a in thirdPersonBody.GetComponentsInChildren<Animator>(true))
+                    if (a != null && a.applyRootMotion) a.applyRootMotion = false;
+            }
+        }
+
         isGrounded = controller.isGrounded;
 
         // End-match cinematic freezes player input — the Winners-Circle
@@ -566,11 +582,90 @@ public class PlayerController : MonoBehaviour
         if (EndMatchCinematic.GameplayLocked)
             return;
 
-        // Strictly lock rotation to yaw only
+        // Strictly lock ROOT rotation to yaw only
         transform.eulerAngles = new Vector3(0f, transform.eulerAngles.y, 0f);
+
+        // Guard the body mesh: if an animator or physics bone drifted it off-vertical
+        // outside of a deliberate flip/prone pose, snap it back to its cached base.
+        if (!isFlipping && thirdPersonBody != null && !isProne)
+        {
+            Vector3 bw = thirdPersonBody.transform.eulerAngles;
+            float xDev = Mathf.Abs(Mathf.DeltaAngle(bw.x, 0f));
+            float zDev = Mathf.Abs(Mathf.DeltaAngle(bw.z, 0f));
+            if (xDev > 8f || zDev > 8f)
+                thirdPersonBody.transform.localRotation = thirdPersonBodyBaseLocalRotation;
+        }
 
         SnapCharacterToGroundNavMesh();
         SnapToArenaFloor();
+    }
+
+    // ── Anti-Sink + Anti-Flip enforcement (runs every physics tick) ────────
+    //
+    // FixedUpdate is the deterministic place to enforce two absolute rules
+    // that must hold regardless of what any animator, coroutine, or external
+    // script tries to do to the transform:
+    //
+    //   1. The capsule bottom is NEVER below the floor surface.
+    //   2. The character is NEVER tilted around X (pitch) or Z (roll).
+    //
+    // These run in addition to the smoother per-frame logic in Update /
+    // LateUpdate.  This is the hard backstop — zero tolerance, no smoothing.
+    private void FixedUpdate()
+    {
+        if (controller == null) return;
+        if (EndMatchCinematic.GameplayLocked) return;
+
+        // ── Rule 2: hard yaw-only rotation lock ─────────────────────────────
+        // Unconditional — no threshold. The root MUST stay Y-only every physics
+        // tick. Flip visuals live on the body's local rotation, not here.
+        Vector3 e = transform.eulerAngles;
+        transform.eulerAngles = new Vector3(0f, e.y, 0f);
+
+        // ── Rule 1: hard anti-sink floor clamp ──────────────────────────────
+        EnforceFloorClamp();
+    }
+
+    private void EnforceFloorClamp()
+    {
+        if (isMantling) return; // Mantle owns transform during the lerp.
+        // NOTE: intentionally runs during flips — the flip arc goes UP, not down,
+        // so hitting the sink condition (capsule bottom below floor) while flipping
+        // means something else pushed us underground. Fix it immediately.
+
+        // Probe from inside the capsule downward to find the real floor.
+        Vector3 castOrigin = transform.position
+                           + Vector3.up * (controller.center.y + 0.05f);
+        int groundMask = BuildGroundCheckMask();
+
+        // Distance covers the full capsule height plus 1 m so a knockback or
+        // slope dive that briefly sinks us is still recoverable on one tick.
+        float castDist = controller.height + 1f;
+        if (!Physics.Raycast(castOrigin, Vector3.down, out RaycastHit hit,
+                             castDist, groundMask, QueryTriggerInteraction.Ignore))
+            return;
+
+        if (hit.collider != null && hit.collider.transform.IsChildOf(transform))
+            return;
+
+        float capsuleBottomY = transform.position.y
+                             + controller.center.y
+                             - controller.height * 0.5f;
+        float floorY         = hit.point.y;
+
+        // Allow exactly skinWidth of penetration (the CC's natural contact
+        // tolerance).  Anything past that is a sink — fix it now.  Toggling
+        // controller.enabled bypasses CC depenetration, which can fail on
+        // thin floor meshes for a single tick.
+        if (capsuleBottomY >= floorY - controller.skinWidth) return;
+
+        float lift = floorY - capsuleBottomY;
+        controller.enabled = false;
+        transform.position = new Vector3(transform.position.x,
+                                         transform.position.y + lift,
+                                         transform.position.z);
+        controller.enabled = true;
+        if (verticalVelocity.y < 0f) verticalVelocity.y = -2f;
     }
 
     /// <summary>

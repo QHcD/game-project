@@ -173,20 +173,21 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
-    /// IMG_6880.mov final cleanup:
-    /// - remove the top-left ProfileHeader (name/credits)
-    /// - rebuild a compact button stack with zero spacing
-    /// - create paired rows using HorizontalLayoutGroup (spacing/padding 0)
+    /// IMG_6880.mov final fix:
+    /// • COMPLETELY destroys the top-left ProfileHeader panel
+    /// • Rebuilds a compact zero-gap button stack in the requested order:
+    ///   Continue → [Custom Match | Select Level] → [Prism Store | Challenges]
+    ///   → Options → Settings → Credits → Quit
     /// </summary>
     public static void CompactifyMainMenuCanvas()
     {
         GameObject canvas = GameObject.Find("NeonCanvas");
         if (canvas == null) return;
 
-        // 1) Keep name/credits, but remove the rectangle panel visuals.
+        // 1) Completely destroy the ProfileHeader — no visual remnant.
         Transform profile = canvas.transform.Find("ProfileHeader");
         if (profile != null)
-            StripProfilePanelVisuals(profile);
+            Object.Destroy(profile.gameObject);
 
         // If overlays are currently open, do not reshuffle under them.
         if (canvas.transform.Find("LevelSelectOverlay") != null) return;
@@ -195,43 +196,42 @@ public class UIManager : MonoBehaviour
         if (canvas.transform.Find("ChallengesOverlay") != null) return;
         if (canvas.transform.Find("NameEntryOverlay") != null) return;
 
-        // RuntimeMenuBuilder may own the whole layout under a stretched Panel (two-column main menu).
-        // Reparenting would break that hierarchy — only strip profile visuals above and stop.
+        // RuntimeMenuBuilder may own the whole layout under a Panel with a VLG.
         Transform menuPanel = canvas.transform.Find("Panel");
         if (menuPanel != null && menuPanel.GetComponent<VerticalLayoutGroup>() != null)
             return;
 
-        // 2) Collect main menu buttons by their label (created by RuntimeMenuBuilder: <Label>_Btn).
-        Button continueBtn    = FindButtonByLabel(canvas.transform, "CONTINUE") ?? FindButtonByLabel(canvas.transform, "START");
-        Button selectLevelBtn = FindButtonByLabel(canvas.transform, "SELECT LEVEL");
-        Button storeBtn       = FindButtonByLabel(canvas.transform, "PRISM STORE");
-        Button challengesBtn  = FindButtonByLabel(canvas.transform, "CHALLENGES");
-        Button optionsBtn     = FindButtonByLabel(canvas.transform, "OPTIONS");
-        Button settingsBtn    = FindButtonByLabel(canvas.transform, "SETTINGS");
-        Button creditsBtn     = FindButtonByLabel(canvas.transform, "CREDITS");
-        Button quitBtn        = FindButtonByLabel(canvas.transform, "QUIT");
+        // 2) Collect buttons (RuntimeMenuBuilder names them by label text).
+        Button continueBtn     = FindButtonByLabel(canvas.transform, "CONTINUE") ?? FindButtonByLabel(canvas.transform, "START");
+        Button customMatchBtn  = FindButtonByLabel(canvas.transform, "CUSTOM MATCH");
+        Button selectLevelBtn  = FindButtonByLabel(canvas.transform, "SELECT LEVEL");
+        Button storeBtn        = FindButtonByLabel(canvas.transform, "PRISM STORE");
+        Button challengesBtn   = FindButtonByLabel(canvas.transform, "CHALLENGES");
+        Button optionsBtn      = FindButtonByLabel(canvas.transform, "OPTIONS");
+        Button settingsBtn     = FindButtonByLabel(canvas.transform, "SETTINGS");
+        Button creditsBtn      = FindButtonByLabel(canvas.transform, "CREDITS");
+        Button quitBtn         = FindButtonByLabel(canvas.transform, "QUIT");
 
-        // If we can't find the core buttons, bail safely (menu may be rebuilding).
+        // Core buttons required; Custom Match is optional (added by RuntimeMenuBuilder update).
         if (continueBtn == null || selectLevelBtn == null || storeBtn == null ||
             challengesBtn == null || optionsBtn == null || settingsBtn == null ||
             creditsBtn == null || quitBtn == null)
             return;
 
-        // Destroy any previous stack if present.
+        // Destroy previous stack if present.
         Transform existingStack = canvas.transform.Find("MainMenuButtonStack");
         if (existingStack != null) Object.Destroy(existingStack.gameObject);
 
         GameObject stackGo = new GameObject("MainMenuButtonStack", typeof(RectTransform));
         stackGo.transform.SetParent(canvas.transform, false);
         RectTransform stackRT = (RectTransform)stackGo.transform;
-        // Give the stack more vertical room and lift it slightly so bottom buttons never clip.
-        stackRT.anchorMin = new Vector2(0.18f, 0.10f);
+        stackRT.anchorMin = new Vector2(0.18f, 0.08f);
         stackRT.anchorMax = new Vector2(0.82f, 0.82f);
         stackRT.offsetMin = stackRT.offsetMax = Vector2.zero;
 
         VerticalLayoutGroup vlg = stackGo.AddComponent<VerticalLayoutGroup>();
         vlg.childAlignment = TextAnchor.UpperCenter;
-        vlg.spacing = 0f;
+        vlg.spacing = 0f;                          // zero gap — buttons touch
         vlg.padding = new RectOffset(0, 0, 0, 0);
         vlg.childControlWidth = true;
         vlg.childControlHeight = true;
@@ -240,33 +240,36 @@ public class UIManager : MonoBehaviour
 
         ContentSizeFitter fit = stackGo.AddComponent<ContentSizeFitter>();
         fit.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
-        fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        fit.verticalFit   = ContentSizeFitter.FitMode.PreferredSize;
 
-        // Row 0: Continue
+        // Row 0: Continue (full width)
         ReparentAndLayout(continueBtn, stackRT, preferredHeight: 88f, fullWidth: true);
 
-        // Row 1: Pair 1 (Select Level | Prism Store) with | separator
+        // Row 1: Custom Match | Select Level
         Transform pair1 = CreatePairRow(stackRT, "Pair1_Row");
-        ReparentAndLayout(selectLevelBtn, pair1, preferredHeight: 88f, fullWidth: false);
-        CreatePairSeparator(pair1);
-        ReparentAndLayout(storeBtn, pair1, preferredHeight: 88f, fullWidth: false);
+        if (customMatchBtn != null)
+        {
+            ReparentAndLayout(customMatchBtn, pair1, preferredHeight: 88f, fullWidth: false);
+            CreatePairSeparator(pair1);
+        }
+        ReparentAndLayout(selectLevelBtn, pair1, preferredHeight: 88f, fullWidth: customMatchBtn == null);
 
-        // Row 2: Pair 2 (Challenges | Options)
+        // Row 2: Prism Store | Challenges
         Transform pair2 = CreatePairRow(stackRT, "Pair2_Row");
-        ReparentAndLayout(challengesBtn, pair2, preferredHeight: 88f, fullWidth: false);
+        ReparentAndLayout(storeBtn,      pair2, preferredHeight: 88f, fullWidth: false);
         CreatePairSeparator(pair2);
-        ReparentAndLayout(optionsBtn, pair2, preferredHeight: 88f, fullWidth: false);
+        ReparentAndLayout(challengesBtn, pair2, preferredHeight: 88f, fullWidth: false);
 
-        // Rows 3-5: Settings, Credits, Quit
+        // Rows 3-6: Options, Settings, Credits, Quit (all full width, zero gap)
+        ReparentAndLayout(optionsBtn,  stackRT, preferredHeight: 88f, fullWidth: true);
         ReparentAndLayout(settingsBtn, stackRT, preferredHeight: 88f, fullWidth: true);
-        ReparentAndLayout(creditsBtn, stackRT, preferredHeight: 88f, fullWidth: true);
-        ReparentAndLayout(quitBtn, stackRT, preferredHeight: 88f, fullWidth: true);
+        ReparentAndLayout(creditsBtn,  stackRT, preferredHeight: 88f, fullWidth: true);
+        ReparentAndLayout(quitBtn,     stackRT, preferredHeight: 88f, fullWidth: true);
 
-        // Disable any stray copies of these buttons still under the canvas
-        // (prevents text overlap from duplicate instances).
+        // Hide stray duplicate buttons that are still parented outside the stack.
         DisableStrayMenuButtons(canvas.transform, stackRT);
 
-        // 3) Navigation based on the new hierarchy order.
+        // 3) Keyboard navigation wired to the new stack order.
         MenuNavigationManager.AttachMainMenuCompact(canvas, stackRT);
     }
 
@@ -365,59 +368,20 @@ public class UIManager : MonoBehaviour
         return null;
     }
 
+    // Legacy helper kept for external callers that may still reference it,
+    // but CompactifyMainMenuCanvas now calls Object.Destroy on the panel directly.
     private static void StripProfilePanelVisuals(Transform profileHeader)
     {
-        if (profileHeader == null) return;
-
-        // Remove any rectangle/background visuals, but never hide text.
-        // In some variants, the rectangle is a separate child object; in others, it's on ProfileHeader itself.
-        // We prefer disabling components (robust vs re-adding) and only deactivating whole objects that contain NO TMP text.
-        Transform[] all = profileHeader.GetComponentsInChildren<Transform>(true);
-        for (int i = 0; i < all.Length; i++)
-        {
-            Transform t = all[i];
-            if (t == null) continue;
-
-            bool hasText = ContainsTMPText(t);
-
-            Image img = t.GetComponent<Image>();
-            RawImage raw = t.GetComponent<RawImage>();
-            Outline outline = t.GetComponent<Outline>();
-
-            bool hasPlateComponent = (img != null) || (raw != null) || (outline != null);
-            if (!hasPlateComponent) continue;
-
-            if (!hasText)
-            {
-                // Pure plate: safest is to turn it off entirely.
-                t.gameObject.SetActive(false);
-                continue;
-            }
-
-            // Mixed object (rare): keep it alive for text, but disable visuals.
-            if (img != null)
-            {
-                img.enabled = false;
-                img.raycastTarget = false;
-            }
-            if (raw != null)
-            {
-                raw.enabled = false;
-                raw.raycastTarget = false;
-            }
-            if (outline != null) outline.enabled = false;
-        }
+        if (profileHeader != null)
+            Object.Destroy(profileHeader.gameObject);
     }
 
     private static bool ContainsTMPText(Transform root)
     {
         if (root == null) return false;
         if (root.GetComponent<TMPro.TextMeshProUGUI>() != null) return true;
-
         for (int i = 0; i < root.childCount; i++)
-        {
             if (ContainsTMPText(root.GetChild(i))) return true;
-        }
         return false;
     }
 
@@ -433,9 +397,9 @@ public class UIManager : MonoBehaviour
 
             TMPro.TextMeshProUGUI t = b.GetComponentInChildren<TMPro.TextMeshProUGUI>(true);
             string txt = t != null ? (t.text ?? string.Empty).Trim().ToUpperInvariant() : string.Empty;
-            if (txt == "CONTINUE" || txt == "START" || txt == "SELECT LEVEL" ||
-                txt == "PRISM STORE" || txt == "CHALLENGES" || txt == "OPTIONS" || txt == "SETTINGS" ||
-                txt == "CREDITS" || txt == "QUIT")
+            if (txt == "CONTINUE" || txt == "START" || txt == "CUSTOM MATCH" ||
+                txt == "SELECT LEVEL" || txt == "PRISM STORE" || txt == "CHALLENGES" ||
+                txt == "OPTIONS" || txt == "SETTINGS" || txt == "CREDITS" || txt == "QUIT")
             {
                 b.gameObject.SetActive(false);
             }
