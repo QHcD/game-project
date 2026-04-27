@@ -37,13 +37,12 @@ public class PlayerController : MonoBehaviour
     private static readonly Vector3 DefaultLevel12SawGripLocalEuler = WeaponLoadoutCatalog.ChainsawPlayerLocalEuler;
     private static readonly Vector3 PlayerChainsawGripLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
     private static readonly Vector3 PlayerChainsawGripLocalEuler = new Vector3(-177.177f, -175.886f, 88.481f);
-    // Tuned grip pose for the procedurally-attached katana. The previous
-    // values placed the hilt against the *forearm* (wrist bone with a tiny
-    // forward push). Pushing further along the bone's local +Z + nudging up
-    // along +Y plants the grip squarely in the palm. The Euler rotation
-    // realigns the blade so it points outward like a sheathed-then-drawn
-    // weapon instead of laying flush along the arm.
-    private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(0.075f, 0.020f, 0.115f);
+    // Katana grip pose applied to the third-person RightHand bone.
+    // (0.3, -0.4, 0.6) in hand-local space seats the hilt in the palm;
+    // Euler (0, 90, 0) points the blade along the hand's forward axis.
+    // These match the FP viewmodel offset so the weapon reads consistently
+    // in both perspectives.
+    private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(0.3f, -0.4f, 0.6f);
     private static readonly Vector3 PlayerKatanaGripLocalEuler    = new Vector3(0f, 90f, 0f);
 
     // ════════════════════════════════════════════════════════════════════════
@@ -337,6 +336,14 @@ public class PlayerController : MonoBehaviour
 
     private void Awake()
     {
+        // ── Near clip — set before any camera becomes active so the weapon
+        // viewmodel never disappears on the very first frame.
+        if (Camera.main != null)
+            Camera.main.nearClipPlane = 0.01f;
+        foreach (Camera cam in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            if (cam != null && cam.nearClipPlane > 0.01f)
+                cam.nearClipPlane = 0.01f;
+
         // Force the project-wide layer collision matrix to allow Player ↔
         // Enemies overlap so the manual separation push below sees them. The
         // helper handles missing layers gracefully (layers are project-level
@@ -598,6 +605,7 @@ public class PlayerController : MonoBehaviour
 
         SnapCharacterToGroundNavMesh();
         SnapToArenaFloor();
+        EnforceGroundYLock();
     }
 
     // ── Anti-Sink + Anti-Flip enforcement (runs every physics tick) ────────
@@ -2201,6 +2209,44 @@ public class PlayerController : MonoBehaviour
         controller.enabled = true;
     }
 
+    /// <summary>
+    /// Strict Y-axis ground lock: if the CharacterController has confirmed the
+    /// player is grounded, the capsule bottom must sit at exactly
+    /// (detected floor Y + 1.0 m above the capsule centre offset) — preventing
+    /// any frame where the feet visually sink below the surface.
+    ///
+    /// This runs AFTER all other snapping so it acts as the final safety net.
+    /// Skipped during flips, mantles, and airborne frames so it never fights
+    /// intentional vertical motion.
+    /// </summary>
+    private void EnforceGroundYLock()
+    {
+        if (controller == null || !controller.enabled) return;
+        if (isFlipping || isMantling) return;
+        if (!controller.isGrounded) return;
+        if (verticalVelocity.y > 0.05f) return; // jumping — don't clamp
+
+        int groundMask = BuildGroundCheckMask();
+        Vector3 probeOrigin = transform.position + Vector3.up * 0.3f;
+        if (!Physics.Raycast(probeOrigin, Vector3.down, out RaycastHit hit,
+                             1.5f, groundMask, QueryTriggerInteraction.Ignore))
+            return;
+
+        // Target: capsule bottom exactly on the floor surface.
+        // capsuleBottomY = transform.position.y + center.y - height*0.5
+        // → transform.position.y = floorY - center.y + height*0.5
+        float targetY = hit.point.y - controller.center.y + controller.height * 0.5f;
+
+        // Only lift (never push down) — prevents fighting the physics step offset.
+        if (transform.position.y < targetY - 0.005f)
+        {
+            controller.enabled = false;
+            transform.position = new Vector3(transform.position.x, targetY, transform.position.z);
+            controller.enabled = true;
+            if (verticalVelocity.y < 0f) verticalVelocity.y = -2f;
+        }
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     //  PERSPECTIVE MANAGEMENT
     // ════════════════════════════════════════════════════════════════════════
@@ -3528,14 +3574,23 @@ public class PlayerController : MonoBehaviour
         firstPersonWeaponMeshRenderer = null;
         if (firstPersonCam == null) return;
 
+        // Search for an existing "Weapon" child under the FPS camera.
         Transform[] trs = firstPersonCam.GetComponentsInChildren<Transform>(true);
         for (int i = 0; i < trs.Length; i++)
         {
             if (trs[i].name != "Weapon") continue;
             firstPersonWeaponSlot = trs[i];
             firstPersonWeaponMeshRenderer = firstPersonWeaponSlot.GetComponent<MeshRenderer>();
-            break;
+            return;
         }
+
+        // No "Weapon" slot found — create one directly under the camera so
+        // RefreshFirstPersonWeaponModel never silently exits with a null slot.
+        GameObject slotGo = new GameObject("Weapon");
+        slotGo.transform.SetParent(firstPersonCam.transform, false);
+        slotGo.transform.localPosition = Vector3.zero;
+        slotGo.transform.localRotation = Quaternion.identity;
+        firstPersonWeaponSlot = slotGo.transform;
     }
 
     private void ClearFirstPersonKnifeVisual()
@@ -3583,18 +3638,19 @@ public class PlayerController : MonoBehaviour
         foreach (Collider c in vm.GetComponentsInChildren<Collider>(true))
             c.enabled = false;
 
-        // Sensible default placement (keeps the weapon to the lower-right like COD).
-        vm.transform.localPosition = new Vector3(0.28f, -0.22f, 0.62f);
-        vm.transform.localRotation = Quaternion.Euler(-6f, 165f, 2f);
+        // ── Weapon viewmodel offset rules (IMG_6923.mov fix) ────────────────
+        // Mandatory offsets: localPosition (0.3, -0.4, 0.6) puts the hilt
+        // in the player's hand and ensures Z > 0 so the weapon is in FRONT
+        // of the camera. localRotation Euler(0, 90, 0) aligns the blade
+        // along the camera's right axis (standard katana draw pose).
+        vm.transform.localPosition = new Vector3(0.3f, -0.4f, 0.6f);
+        vm.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
         vm.transform.localScale    = Vector3.one * 0.32f;
 
-        // A couple of special-case nudges so common weapons look "pure FPS".
-        if (level == 2) // Katana
+        // Per-weapon scale tuning so long blades don't fill the whole screen.
+        if (level == 2) // Katana — long blade, needs a tighter scale
         {
-            // Katana is long; keep it lower/right and smaller so it never fills the screen.
-            vm.transform.localPosition = new Vector3(0.36f, -0.28f, 0.78f);
-            vm.transform.localRotation = Quaternion.Euler(-12f, 150f, 6f);
-            vm.transform.localScale    = Vector3.one * 0.22f;
+            vm.transform.localScale = Vector3.one * 0.20f;
         }
 
         // Hide the placeholder mesh renderer if the camera has one.
