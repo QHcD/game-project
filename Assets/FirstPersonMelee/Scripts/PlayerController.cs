@@ -928,7 +928,14 @@ public class PlayerController : MonoBehaviour
             horizontalDelta = ClampHorizontalMoveAgainstStatics(horizontalDelta);
 
         bool jumpFeetGrounded = IsGroundedForJump();
-        if (isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f))
+        // Guard: while the flip coroutine owns the vertical impulse, do NOT
+        // reset it to -2f. isGrounded is captured at the very top of Update
+        // (before HandleActionInput), so it is still true on the same frame
+        // that TryStartFlip sets verticalVelocity.y to the launch impulse.
+        // Without this guard the -2f overwrite fires immediately, the player
+        // never leaves the ground, and the high horizontal boost drives them
+        // into the floor geometry instead of arcing cleanly over it.
+        if (!isFlipping && (isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f)))
         {
             verticalVelocity.y = -2f;
 
