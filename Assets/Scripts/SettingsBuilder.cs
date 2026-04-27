@@ -24,6 +24,9 @@ public class SettingsBuilder : MonoBehaviour
     Slider masterSlider;
     Slider musicSlider;
     Slider sfxSlider;
+    TextMeshProUGUI masterVolumeValueLabel;
+    TextMeshProUGUI musicVolumeValueLabel;
+    TextMeshProUGUI sfxVolumeValueLabel;
 
     void Start()
     {
@@ -35,12 +38,7 @@ public class SettingsBuilder : MonoBehaviour
 
     void EnsureEventSystem()
     {
-        if (FindFirstObjectByType<EventSystem>() != null)
-            return;
-
-        GameObject eventSystemObj = new GameObject("EventSystem");
-        eventSystemObj.AddComponent<EventSystem>();
-        eventSystemObj.AddComponent<InputSystemUIInputModule>();
+        UIManager.EnsureInputSystemEventSystem();
     }
 
     void LoadSettingsData()
@@ -106,34 +104,37 @@ public class SettingsBuilder : MonoBehaviour
         Stretch(overlay.GetComponent<RectTransform>());
         overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.22f);
 
-        MakeText(canvasObj.transform, "SETTINGS", 62, new Color(0.78f, 0.84f, 1f, 1f),
-            new Vector2(0f, 300f), new Vector2(720f, 84f), true, TextAlignmentOptions.Center);
-
         GameObject panelObj = new GameObject("CentralPanel");
         panelObj.transform.SetParent(canvasObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        panel.color = new Color(0.16f, 0.20f, 0.30f, 0.30f);
         Outline outline = panelObj.AddComponent<Outline>();
-        outline.effectColor = new Color(0.26f, 0.42f, 0.68f, 0.18f);
-        outline.effectDistance = new Vector2(2f, -2f);
-        SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 520f), new Vector2(0f, -10f));
+        SetRect(panel.GetComponent<RectTransform>(), new Vector2(1040f, 620f), new Vector2(0f, 8f));
+        PrismOrganizedMenuChrome.ApplyPanelSurface(panel, outline);
 
-        masterSlider = MakeSliderRow(panel.transform, "MASTER VOLUME:", 150f, AudioSettingsRuntime.MasterKey, value =>
-        {
-            AudioSettingsRuntime.ApplyListenerVolume();
-        });
-        musicSlider = MakeSliderRow(panel.transform, "MUSIC VOLUME:", 75f, AudioSettingsRuntime.MusicKey, null);
-        sfxSlider = MakeSliderRow(panel.transform, "SFX VOLUME:", 0f, AudioSettingsRuntime.SfxKey, null);
+        // Title inside panel — room below for footer chips.
+        MakeText(panelObj.transform, "SETTINGS", 62, new Color(0.78f, 0.84f, 1f, 1f),
+            new Vector2(0f, 258f), new Vector2(720f, 84f), true, TextAlignmentOptions.Center);
 
-        // Resolution + Graphics share a single centered row so the two
-        // dropdowns are visually aligned next to each other.
-        BuildResolutionAndGraphicsRow(panel.transform, -90f);
-        fullscreenToggle = MakeFullscreenRow(panel.transform, -180f);
+        masterSlider = MakeSliderRow(panel.transform, "MASTER VOLUME:", 188f, AudioSettingsRuntime.MasterKey,
+            out masterVolumeValueLabel, value => { AudioSettingsRuntime.ApplyListenerVolume(); });
+        musicSlider = MakeSliderRow(panel.transform, "MUSIC VOLUME:", 128f, AudioSettingsRuntime.MusicKey,
+            out musicVolumeValueLabel, null);
+        sfxSlider = MakeSliderRow(panel.transform, "SFX VOLUME:", 68f, AudioSettingsRuntime.SfxKey,
+            out sfxVolumeValueLabel, null);
 
-        Button returnBtn = MakePrismButton(canvasObj.transform, "RETURN", new Vector2(-150f, -325f), () => SceneManager.LoadScene("MainMenu"));
-        Button resetBtn  = MakePrismButton(canvasObj.transform, "RESET",  new Vector2(150f, -325f), ResetSettings);
+        BuildResolutionAndGraphicsRow(panel.transform, -48f);
+        fullscreenToggle = MakeFullscreenRow(panel.transform, -122f);
 
-        // Keyboard nav across all interactables on this screen.
+        RectTransform footerRt = PrismOrganizedMenuChrome.CreateFooterRow(panelObj.transform);
+        Button returnBtn = PrismOrganizedMenuChrome.AddFooterChipButton(
+            footerRt, "RETURN",
+            new Color(0.12f, 0.20f, 0.42f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlineBlue,
+            () => SceneManager.LoadScene("MainMenu"), prismFont);
+        Button resetBtn = PrismOrganizedMenuChrome.AddFooterChipButton(
+            footerRt, "RESET",
+            new Color(0.22f, 0.12f, 0.38f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlinePurple,
+            ResetSettings, prismFont);
+
         List<Selectable> nav = new List<Selectable>();
         if (masterSlider != null)        nav.Add(masterSlider);
         if (musicSlider != null)         nav.Add(musicSlider);
@@ -143,7 +144,7 @@ public class SettingsBuilder : MonoBehaviour
         if (fullscreenToggle != null)    nav.Add(fullscreenToggle);
         if (returnBtn != null) nav.Add(returnBtn);
         if (resetBtn != null)  nav.Add(resetBtn);
-        MenuKeyboardNavigator.AttachVertical(canvasObj, nav);
+        MenuNavigationManager.AttachLinear(canvasObj, nav);
     }
 
     /// <summary>
@@ -155,21 +156,22 @@ public class SettingsBuilder : MonoBehaviour
     void BuildResolutionAndGraphicsRow(Transform parent, float yPos)
     {
         GameObject row = CreateRow(parent, "Row_DISPLAY", yPos);
-        SetRect(row.GetComponent<RectTransform>(), new Vector2(900f, 60f), new Vector2(0f, yPos));
+        SetRect(row.GetComponent<RectTransform>(), new Vector2(920f, 64f), new Vector2(0f, yPos));
 
-        // Left column: RESOLUTION
+        const float dropW = 240f;
+        const float dropH = 52f;
+
         MakeText(row.transform, "RESOLUTION:", 24, new Color(0.95f, 0.95f, 1f, 1f),
-            new Vector2(-280f, 0f), new Vector2(220f, 42f), false, TextAlignmentOptions.MidlineRight);
+            new Vector2(-320f, 0f), new Vector2(200f, 44f), false, TextAlignmentOptions.MidlineRight);
         resolutionDropdown = CreateDropdown(row.transform, BuildResolutionLabels(), currentResIndex,
-            new Vector2(-60f, 0f), OnResolutionChanged);
-        SetRect(resolutionDropdown.GetComponent<RectTransform>(), new Vector2(220f, 52f), new Vector2(-60f, 0f));
+            new Vector2(-72f, 0f), OnResolutionChanged);
+        SetRect(resolutionDropdown.GetComponent<RectTransform>(), new Vector2(dropW, dropH), new Vector2(-72f, 0f));
 
-        // Right column: GRAPHICS
         MakeText(row.transform, "GRAPHICS:", 24, new Color(0.95f, 0.95f, 1f, 1f),
-            new Vector2(110f, 0f), new Vector2(160f, 42f), false, TextAlignmentOptions.MidlineRight);
+            new Vector2(92f, 0f), new Vector2(200f, 44f), false, TextAlignmentOptions.MidlineRight);
         graphicsDropdown = CreateDropdown(row.transform, new List<string>(graphicsOptions), currentGraphicsIndex,
-            new Vector2(280f, 0f), OnGraphicsChanged);
-        SetRect(graphicsDropdown.GetComponent<RectTransform>(), new Vector2(180f, 52f), new Vector2(280f, 0f));
+            new Vector2(356f, 0f), OnGraphicsChanged);
+        SetRect(graphicsDropdown.GetComponent<RectTransform>(), new Vector2(dropW, dropH), new Vector2(356f, 0f));
     }
 
     List<string> BuildResolutionLabels()
@@ -210,6 +212,8 @@ public class SettingsBuilder : MonoBehaviour
         PlayerPrefs.SetFloat(AudioSettingsRuntime.SfxKey, 0.8f);
         AudioSettingsRuntime.ApplyListenerVolume();
 
+        RefreshVolumeValueLabels();
+
         if (resolutionDropdown != null)
         {
             resolutionDropdown.SetValueWithoutNotify(currentResIndex);
@@ -249,16 +253,17 @@ public class SettingsBuilder : MonoBehaviour
         QualitySettings.SetQualityLevel(targetQuality);
     }
 
-    Slider MakeSliderRow(Transform parent, string label, float yPos, string prefKey, UnityEngine.Events.UnityAction<float> onChanged)
+    Slider MakeSliderRow(Transform parent, string label, float yPos, string prefKey,
+        out TextMeshProUGUI valueLabel, UnityEngine.Events.UnityAction<float> onChanged)
     {
         GameObject row = CreateRow(parent, "Row_" + label, yPos);
-        MakeText(row.transform, label, 25, new Color(0.95f, 0.95f, 1f, 1f), new Vector2(-210f, 0f), new Vector2(340f, 42f), false, TextAlignmentOptions.MidlineRight);
+        MakeText(row.transform, label, 25, new Color(0.95f, 0.95f, 1f, 1f), new Vector2(-220f, 0f), new Vector2(300f, 42f), false, TextAlignmentOptions.MidlineRight);
 
         GameObject barObj = new GameObject("SliderBar");
         barObj.transform.SetParent(row.transform, false);
         Image barBg = barObj.AddComponent<Image>();
         barBg.color = new Color(0.74f, 0.74f, 0.74f, 0.95f);
-        SetRect(barObj.GetComponent<RectTransform>(), new Vector2(360f, 18f), new Vector2(175f, 0f));
+        SetRect(barObj.GetComponent<RectTransform>(), new Vector2(300f, 18f), new Vector2(140f, 0f));
 
         Slider slider = barObj.AddComponent<Slider>();
         slider.direction = Slider.Direction.LeftToRight;
@@ -276,7 +281,7 @@ public class SettingsBuilder : MonoBehaviour
         GameObject fill = new GameObject("Fill");
         fill.transform.SetParent(fillArea.transform, false);
         Image fillImage = fill.AddComponent<Image>();
-        fillImage.color = new Color(0.58f, 0.32f, 0.94f, 1f);
+        fillImage.color = new Color(0.32f, 0.56f, 0.96f, 1f);
         RectTransform fillRect = fill.GetComponent<RectTransform>();
         fillRect.anchorMin = Vector2.zero;
         fillRect.anchorMax = Vector2.one;
@@ -292,15 +297,35 @@ public class SettingsBuilder : MonoBehaviour
         slider.fillRect = fillRect;
         slider.handleRect = handleRect;
         slider.targetGraphic = handleImage;
-        slider.value = PlayerPrefs.GetFloat(prefKey, 0.8f);
+        float initial = PlayerPrefs.GetFloat(prefKey, 0.8f);
+        slider.value = initial;
+
+        // % readout sits close to the slider (not far on the edge).
+        valueLabel = MakeText(row.transform, SettingsManager.FormatVolumePercent(initial), 22, new Color(0.92f, 0.94f, 1f, 1f),
+            new Vector2(320f, 0f), new Vector2(84f, 42f), false, TextAlignmentOptions.Center);
+        valueLabel.fontStyle = FontStyles.Bold;
+
+        TextMeshProUGUI volumeReadout = valueLabel;
         slider.onValueChanged.AddListener(val =>
         {
             PlayerPrefs.SetFloat(prefKey, val);
             PlayerPrefs.Save();
+            if (volumeReadout != null)
+                volumeReadout.text = SettingsManager.FormatVolumePercent(val);
             onChanged?.Invoke(val);
         });
 
         return slider;
+    }
+
+    void RefreshVolumeValueLabels()
+    {
+        if (masterVolumeValueLabel != null && masterSlider != null)
+            masterVolumeValueLabel.text = SettingsManager.FormatVolumePercent(masterSlider.value);
+        if (musicVolumeValueLabel != null && musicSlider != null)
+            musicVolumeValueLabel.text = SettingsManager.FormatVolumePercent(musicSlider.value);
+        if (sfxVolumeValueLabel != null && sfxSlider != null)
+            sfxVolumeValueLabel.text = SettingsManager.FormatVolumePercent(sfxSlider.value);
     }
 
     TMP_Dropdown MakeDropdownRow(Transform parent, string label, IList<string> options, int selectedIndex, float yPos, UnityEngine.Events.UnityAction<int> onChanged)
@@ -419,17 +444,13 @@ public class SettingsBuilder : MonoBehaviour
         GameObject checkmarkObj = new GameObject("Checkmark");
         checkmarkObj.transform.SetParent(toggleObj.transform, false);
         TextMeshProUGUI mark = checkmarkObj.AddComponent<TextMeshProUGUI>();
-        mark.text = "v";
-        mark.fontSize = 24f;
-        mark.alignment = TextAlignmentOptions.Center;
-        mark.color = new Color(0.18f, 0.22f, 0.34f, 1f);
+        Stretch(checkmarkObj.GetComponent<RectTransform>());
         if (prismFont != null)
             mark.font = prismFont;
-        Stretch(checkmarkObj.GetComponent<RectTransform>());
 
-        toggle.graphic = mark;
         toggle.targetGraphic = bg;
         toggle.isOn = isFullscreen;
+        SettingsManager.ApplyFullscreenToggleGraphic(toggle, mark, prismFont);
         toggle.onValueChanged.AddListener(value =>
         {
             isFullscreen = value;
@@ -490,7 +511,6 @@ public class SettingsBuilder : MonoBehaviour
         Image buttonImage = new GameObject("Btn_" + label).AddComponent<Image>();
         buttonImage.transform.SetParent(parent, false);
         buttonImage.color = Color.white;
-        SetRect(buttonImage.GetComponent<RectTransform>(), new Vector2(190f, 58f), pos);
 
         Outline outline = buttonImage.gameObject.AddComponent<Outline>();
         outline.effectColor = new Color(0.20f, 0.24f, 0.38f, 0.30f);
@@ -499,10 +519,17 @@ public class SettingsBuilder : MonoBehaviour
         Button button = buttonImage.gameObject.AddComponent<Button>();
         button.targetGraphic = buttonImage;
         button.onClick.AddListener(action);
-        TextMeshProUGUI labelText = MakeText(buttonImage.transform, label, 22, new Color(0.10f, 0.10f, 0.14f, 1f), Vector2.zero, new Vector2(190f, 58f), false, TextAlignmentOptions.Center);
+        TextMeshProUGUI labelText = MakeText(buttonImage.transform, label, 22, new Color(0.10f, 0.10f, 0.14f, 1f), Vector2.zero, new Vector2(400f, 58f), false, TextAlignmentOptions.Center);
         labelText.fontStyle = FontStyles.Bold;
         labelText.fontSize = 24f;
         labelText.color = new Color(0.10f, 0.10f, 0.14f, 1f);
+        labelText.ForceMeshUpdate();
+        float w = Mathf.Clamp(labelText.GetPreferredValues().x + 48f, 120f, 420f);
+        SetRect(buttonImage.GetComponent<RectTransform>(), new Vector2(w, 58f), pos);
+        RectTransform lrt = labelText.rectTransform;
+        lrt.anchorMin = Vector2.zero;
+        lrt.anchorMax = Vector2.one;
+        lrt.offsetMin = lrt.offsetMax = Vector2.zero;
         AttachHoverEffect(buttonImage.gameObject, labelText, buttonImage);
         return button;
     }

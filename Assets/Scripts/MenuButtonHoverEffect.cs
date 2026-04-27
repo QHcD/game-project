@@ -18,6 +18,8 @@ public class MenuButtonHoverEffect : MonoBehaviour, IPointerEnterHandler, IPoint
 
     bool isHovered;
     bool isPressed;
+    /// <summary>When true, menu keyboard navigation keeps this item visually highlighted.</summary>
+    public bool KeyboardFocus { get; set; }
 
     void Awake()
     {
@@ -58,9 +60,10 @@ public class MenuButtonHoverEffect : MonoBehaviour, IPointerEnterHandler, IPoint
 
     void ApplyState(bool instant)
     {
-        Vector3 targetScale = isPressed ? pressedScale : isHovered ? hoverScale : normalScale;
-        Color targetText = isHovered ? hoverTextColor : normalTextColor;
-        Color targetBackground = isHovered ? hoverBackgroundColor : normalBackgroundColor;
+        bool highlight = isHovered || KeyboardFocus;
+        Vector3 targetScale = isPressed ? pressedScale : highlight ? hoverScale : normalScale;
+        Color targetText = highlight ? hoverTextColor : normalTextColor;
+        Color targetBackground = highlight ? hoverBackgroundColor : normalBackgroundColor;
 
         float step = instant ? 1f : animationSpeed * Time.unscaledDeltaTime;
         transform.localScale = Vector3.Lerp(transform.localScale, targetScale, step);

@@ -39,7 +39,12 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         bool isMainMenu = (GameManager.Instance == null || GameManager.PendingMenuScreen == GameManager.MenuScreen.MainMenu);
         if (isMainMenu)
+        {
             RemoveLegacyCinematicStage();
+            GameObject strayMenuAnim = GameObject.Find("BackgroundAnimationOverlay");
+            if (strayMenuAnim != null)
+                Destroy(strayMenuAnim);
+        }
 
         GameObject canvasObj = new GameObject("NeonCanvas");
         Canvas canvas = canvasObj.AddComponent<Canvas>();
@@ -72,16 +77,15 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Image overlay = new GameObject("Overlay").AddComponent<Image>();
         overlay.transform.SetParent(canvasObj.transform, false);
         Stretch(overlay.GetComponent<RectTransform>());
-        // Light scrim over the original background image so text stays readable.
+        // Neutral dark scrim (no blue tint) so the landscape background reads clearly.
         overlay.color = isMainMenu
-            ? new Color(0.02f, 0.03f, 0.07f, 0.22f)
+            ? new Color(0f, 0f, 0f, 0.26f)
             : new Color(0.01f, 0.02f, 0.05f, 0.48f);
 
         if (isMainMenu)
         {
-            // Animation now lives on top of the original menu background.
-            // Do not replace the user's image with a procedural 3D scene.
-            BuildAnimatedBackgroundOverlay(canvasObj.transform);
+            // Loading / menu motion graphics disabled — flat scrim + static background only (performance).
+            // BuildAnimatedBackgroundOverlay(canvasObj.transform);
             BuildMainMenu(canvasObj.transform);
             return;
         }
@@ -100,11 +104,20 @@ public class RuntimeMenuBuilder : MonoBehaviour
         if (backgroundImage != null)
             return backgroundImage;
 
+        Sprite fromResources = Resources.Load<Sprite>("MainMenuBackground");
+        if (fromResources != null)
+        {
+            backgroundImage = fromResources;
+            return fromResources;
+        }
+
 #if UNITY_EDITOR
         // In Play Mode the scene instance is sometimes created without the
         // inspector reference. Restore the user's original background asset
         // by path instead of falling back to the procedural stage.
         Sprite editorSprite = UnityEditor.AssetDatabase.LoadAssetAtPath<Sprite>("Assets/images/mainmenubackground.jpg");
+        if (editorSprite == null)
+            editorSprite = UnityEditor.AssetDatabase.LoadAssetAtPath<Sprite>("Assets/Hamed_Ahmed/Images/mainmenubackground.jpg");
         if (editorSprite != null)
         {
             backgroundImage = editorSprite;
@@ -117,132 +130,43 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
     void BuildAnimatedBackgroundOverlay(Transform root)
     {
-        GameObject layer = new GameObject("BackgroundAnimationOverlay");
-        layer.transform.SetParent(root, false);
-        RectTransform layerRT = layer.AddComponent<RectTransform>();
-        Stretch(layerRT);
-        CanvasGroup group = layer.AddComponent<CanvasGroup>();
-        group.blocksRaycasts = false;
-        group.interactable = false;
-
-        // Subtle drifting scanlines / energy streaks above the original image.
-        // This keeps the user's background intact while still giving the menu
-        // motion and life.
-        for (int i = 0; i < 14; i++)
-        {
-            GameObject streak = new GameObject("BgEnergyStreak_" + i);
-            streak.transform.SetParent(layer.transform, false);
-            Image img = streak.AddComponent<Image>();
-            img.color = new Color(0.32f, 0.55f, 1f, 0.10f + (i % 3) * 0.035f);
-
-            RectTransform rt = streak.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(0f, 0f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(180f + (i % 4) * 65f, 2f + (i % 2) * 2f);
-            rt.anchoredPosition = new Vector2(-180f + i * 145f, 120f + (i % 5) * 145f);
-            rt.localRotation = Quaternion.Euler(0f, 0f, -8f + (i % 5) * 4f);
-
-            BackgroundStreakAnimator anim = streak.AddComponent<BackgroundStreakAnimator>();
-            anim.speed = 18f + i * 3.5f;
-            anim.verticalAmplitude = 10f + (i % 4) * 6f;
-            anim.phase = i * 0.73f;
-        }
-
-        GameObject pulse = new GameObject("BgVignettePulse");
-        pulse.transform.SetParent(layer.transform, false);
-        Image pulseImg = pulse.AddComponent<Image>();
-        pulseImg.color = new Color(0.20f, 0.32f, 0.95f, 0.035f);
-        Stretch(pulseImg.rectTransform);
-        BackgroundPulseAnimator pulseAnim = pulse.AddComponent<BackgroundPulseAnimator>();
-        pulseAnim.minAlpha = 0.015f;
-        pulseAnim.maxAlpha = 0.055f;
-        pulseAnim.speed = 0.75f;
+        // Intentionally empty: streak / pulse menu animations removed (flat UI only).
+        if (root == null) { }
     }
 
     // ─── MAIN MENU ────────────────────────────────────────────────────────────────
     void BuildMainMenu(Transform root)
     {
+        // Titles higher so the menu panel (below) never overlaps subtitle text.
         MakeText(root, "PRISM-7", 120, new Color(0.92f, 0.92f, 1f, 1f),
-            new Vector2(0.18f, 0.78f), new Vector2(0.82f, 0.96f), true);
-        MakeText(root, "WEAPON TRIALS", 74, new Color(0.45f, 0.20f, 0.75f, 0.24f),
-            new Vector2(0.14f, 0.66f), new Vector2(0.86f, 0.80f), true);
+            new Vector2(0.18f, 0.82f), new Vector2(0.82f, 0.97f), true);
+        MakeText(root, "WEAPON TRIALS", 74, new Color(0.62f, 0.48f, 0.92f, 0.78f),
+            new Vector2(0.14f, 0.70f), new Vector2(0.86f, 0.82f), true);
 
-        // Persistent profile header — shows the username + PRISM credit balance
-        // top-left so the player always knows who they are and what they own.
-        BuildProfileHeader(root);
+        MenuUIManager.BuildProfileHeader(root, customFont);
 
-        // Show "START" for brand-new players; "CONTINUE" when save data exists.
         bool isNew         = GameManager.Instance == null || GameManager.Instance.IsNewPlayer();
         int  continueLevel = GameManager.Instance != null ? GameManager.Instance.GetContinueLevel() : 1;
         string startLabel  = isNew ? "START" : "CONTINUE";
 
-        // Compact button stack — 9 entries fit between y = 0.04 and y = 0.62.
-        // Each button is 0.063 tall with a 0.011 gap.
-        const float btnTop    = 0.62f;
-        const float btnHeight = 0.063f;
-        const float btnGap    = 0.011f;
-        Button[] mainButtons = new Button[9];
-        mainButtons[0] = MakeMenuButton(root, startLabel,     ButtonSlot(btnTop, 0, btnHeight, btnGap, true), ButtonSlot(btnTop, 0, btnHeight, btnGap, false), () => GameManager.Instance?.StartRun(continueLevel));
-        mainButtons[1] = MakeMenuButton(root, "CUSTOM MATCH", ButtonSlot(btnTop, 1, btnHeight, btnGap, true), ButtonSlot(btnTop, 1, btnHeight, btnGap, false), () => ToggleCustomMatch(root));
-        mainButtons[2] = MakeMenuButton(root, "SELECT LEVEL", ButtonSlot(btnTop, 2, btnHeight, btnGap, true), ButtonSlot(btnTop, 2, btnHeight, btnGap, false), () => ToggleLevelSelect(root));
-        mainButtons[3] = MakeMenuButton(root, "PRISM STORE",  ButtonSlot(btnTop, 3, btnHeight, btnGap, true), ButtonSlot(btnTop, 3, btnHeight, btnGap, false), () => ToggleStore(root));
-        mainButtons[4] = MakeMenuButton(root, "CHALLENGES",   ButtonSlot(btnTop, 4, btnHeight, btnGap, true), ButtonSlot(btnTop, 4, btnHeight, btnGap, false), () => ToggleChallenges(root));
-        mainButtons[5] = MakeMenuButton(root, "OPTIONS",      ButtonSlot(btnTop, 5, btnHeight, btnGap, true), ButtonSlot(btnTop, 5, btnHeight, btnGap, false), () => SceneManager.LoadScene("Options"));
-        mainButtons[6] = MakeMenuButton(root, "SETTINGS",     ButtonSlot(btnTop, 6, btnHeight, btnGap, true), ButtonSlot(btnTop, 6, btnHeight, btnGap, false), () => SceneManager.LoadScene("Settings"));
-        mainButtons[7] = MakeMenuButton(root, "CREDITS",      ButtonSlot(btnTop, 7, btnHeight, btnGap, true), ButtonSlot(btnTop, 7, btnHeight, btnGap, false), () => SceneManager.LoadScene("Credits"));
-        mainButtons[8] = MakeMenuButton(root, "QUIT",         ButtonSlot(btnTop, 8, btnHeight, btnGap, true), ButtonSlot(btnTop, 8, btnHeight, btnGap, false), QuitFromMainMenu);
+        Transform menuPanel = CreateMainMenuPanel(root);
 
-        // Hook the canvas root with arrow-key navigation across the column.
-        System.Collections.Generic.List<Selectable> nav = new System.Collections.Generic.List<Selectable>(mainButtons.Length);
-        for (int i = 0; i < mainButtons.Length; i++) if (mainButtons[i] != null) nav.Add(mainButtons[i]);
-        MenuKeyboardNavigator.AttachVertical(root.gameObject, nav);
+        // Single centered column (reference): even spacing, pills hug text, top-to-bottom order.
+        var navList = new System.Collections.Generic.List<Selectable>(8);
 
-        // First-run prompt: if the player hasn't set a username yet, force the
-        // overlay open before they can interact with anything else.
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, startLabel, () => GameManager.Instance?.StartRun(continueLevel)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SELECT LEVEL", () => ToggleLevelSelect(root)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "PRISM STORE", () => ToggleStore(root)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CHALLENGES", () => ToggleChallenges(root)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "OPTIONS", () => UnityEngine.SceneManagement.SceneManager.LoadScene("Options")));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SETTINGS", () => UnityEngine.SceneManagement.SceneManager.LoadScene("Settings")));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CREDITS", () => UnityEngine.SceneManagement.SceneManager.LoadScene("Credits")));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "QUIT", QuitFromMainMenu));
+
+        MenuNavigationManager.AttachLinear(root.gameObject, navList);
+
         if (!PlayerProfile.HasUsername)
             ShowNameEntryOverlay(root);
-    }
-
-    /// <summary>
-    /// Top-left "OPERATIVE" badge that shows the player's username and how
-    /// many PRISM Credits they have. Updates live by reading SessionManager.
-    /// </summary>
-    void BuildProfileHeader(Transform root)
-    {
-        GameObject header = new GameObject("ProfileHeader");
-        header.transform.SetParent(root, false);
-        RectTransform rt = header.AddComponent<RectTransform>();
-        rt.anchorMin = new Vector2(0.018f, 0.93f);
-        rt.anchorMax = new Vector2(0.30f, 0.99f);
-        rt.offsetMin = rt.offsetMax = Vector2.zero;
-
-        Image bg = header.AddComponent<Image>();
-        bg.color = new Color(0.10f, 0.13f, 0.22f, 0.55f);
-        Outline ol = header.AddComponent<Outline>();
-        ol.effectColor    = new Color(0.30f, 0.55f, 1f, 0.40f);
-        ol.effectDistance = new Vector2(2f, -2f);
-
-        string nameText = PlayerProfile.HasUsername ? PlayerProfile.Username : "<no username>";
-        MakeText(header.transform, nameText.ToUpperInvariant(), 26, new Color(0.92f, 0.95f, 1f, 1f),
-            new Vector2(0.05f, 0.50f), new Vector2(0.95f, 1f), false);
-
-        int credits = SessionManager.Instance != null ? SessionManager.Instance.Credits : 0;
-        MakeText(header.transform, credits.ToString("N0") + " PRISM CREDITS", 20,
-            new Color(0.30f, 0.85f, 1f, 1f),
-            new Vector2(0.05f, 0f), new Vector2(0.95f, 0.50f), false);
-    }
-
-    /// <summary>
-    /// Helper to compute anchorMin (isMin=true) or anchorMax (isMin=false) of
-    /// a vertically stacked button slot. The stack starts at <paramref name="top"/>
-    /// and walks downwards by <paramref name="height"/> + <paramref name="gap"/>.
-    /// </summary>
-    static Vector2 ButtonSlot(float top, int index, float height, float gap, bool isMin)
-    {
-        float yMax = top - index * (height + gap);
-        float yMin = yMax - height;
-        return isMin ? new Vector2(0.34f, yMin) : new Vector2(0.66f, yMax);
     }
 
     // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
@@ -277,8 +201,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
             int score  = GameManager.Instance != null ? GameManager.Instance.score : 0;
             int level  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
             title = "LEVEL COMPLETE";
-            subtitle = "WINNER  " + winnerName.ToUpperInvariant() + "  (" + winnerKills + " KILLS)"
-                     + (winnerIsPlayer ? "  +500 CR BONUS" : "")
+            subtitle = "TOP OPERATIVE:  " + winnerName.ToUpperInvariant() + "  (" + winnerKills + " KILLS)"
+                     + (winnerIsPlayer ? "  •  +500 CR BONUS" : "")
                      + "\nSTARS  " + stars + " / 3"
                      + "\nSCORE  " + score
                      + "\nLEVEL  " + level
@@ -301,20 +225,44 @@ public class RuntimeMenuBuilder : MonoBehaviour
         else if (GameManager.PendingMenuScreen == GameManager.MenuScreen.Victory)
         {
             int score = GameManager.Instance != null ? GameManager.Instance.score : 0;
-            title = "PRISM CLEARED";
-            subtitle = "All 20 trials completed.\nFinal Score: " + score
+            title = "PRISM CONQUERED";
+            subtitle = "YOU ARE #1 — EVERY TRIAL FALLS.\nAll 20 missions completed.\nFinal Score: " + score
                      + "\nCREDITS  " + liveCredits.ToString("N0");
             primaryButton = "PLAY AGAIN";
             primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.StartRun(1); else UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene"); };
         }
 
-        // Title
-        MakeText(root, title, 92, new Color(0.92f, 0.92f, 1f, 1f),
-            new Vector2(0.20f, 0.62f), new Vector2(0.80f, 0.82f), true);
+        bool celebrate = GameManager.PendingMenuScreen == GameManager.MenuScreen.LevelComplete
+            || GameManager.PendingMenuScreen == GameManager.MenuScreen.Victory;
 
-        // Subtitle panel
-        MakeText(root, subtitle, 42, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.25f, 0.40f), new Vector2(0.75f, 0.60f));
+        string displayTitle = title;
+        if (GameManager.PendingMenuScreen == GameManager.MenuScreen.LevelComplete)
+            displayTitle = "VICTORY";
+
+        Color titleColor = celebrate
+            ? new Color(1f, 0.86f, 0.2f, 1f)
+            : new Color(0.92f, 0.92f, 1f, 1f);
+        float titleSize = celebrate ? 112f : 92f;
+        Vector2 titleMin = celebrate ? new Vector2(0.08f, 0.70f) : new Vector2(0.20f, 0.62f);
+        Vector2 titleMax = celebrate ? new Vector2(0.92f, 0.90f) : new Vector2(0.80f, 0.82f);
+
+        TextMeshProUGUI titleTmp = MakeText(root, displayTitle, titleSize, titleColor,
+            titleMin, titleMax, true);
+
+        TextMeshProUGUI bannerTmp = null;
+        if (celebrate)
+        {
+            string bannerLine = GameManager.PendingMenuScreen == GameManager.MenuScreen.Victory
+                ? "#1 ON THE BOARD — LEGEND STATUS"
+                : "#1 PLACEMENT — CHAMPION";
+            bannerTmp = MakeText(root, bannerLine, 46, new Color(1f, 0.42f, 0.95f, 1f),
+                new Vector2(0.06f, 0.58f), new Vector2(0.94f, 0.68f), true);
+        }
+
+        float subSize = celebrate ? 34f : 42f;
+        Vector2 subMin = celebrate ? new Vector2(0.20f, 0.28f) : new Vector2(0.25f, 0.40f);
+        Vector2 subMax = celebrate ? new Vector2(0.80f, 0.56f) : new Vector2(0.75f, 0.60f);
+        MakeText(root, subtitle, subSize, new Color(0.94f, 0.94f, 1f, 1f), subMin, subMax);
 
         // Primary action button (NEXT LEVEL / RETRY / PLAY AGAIN) — large, bright
         MakeActiveButton(root, primaryButton, new Vector2(0.32f, 0.24f), new Vector2(0.68f, 0.33f),
@@ -323,6 +271,12 @@ public class RuntimeMenuBuilder : MonoBehaviour
         // MAIN MENU button — slightly smaller, secondary style
         MakeActiveButton(root, "MAIN MENU", new Vector2(0.35f, 0.11f), new Vector2(0.65f, 0.20f),
             GoToMainMenuSafe, new Color(0.18f, 0.18f, 0.28f, 1f), new Color(0.88f, 0.88f, 1f, 1f));
+
+        if (celebrate)
+        {
+            WinScreenCelebration fanfare = root.gameObject.AddComponent<WinScreenCelebration>();
+            fanfare.Configure(titleTmp.rectTransform, bannerTmp, root);
+        }
     }
 
     void EnsureGameManager()
@@ -363,8 +317,10 @@ public class RuntimeMenuBuilder : MonoBehaviour
         btn.onClick.AddListener(action);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
-        rect.anchorMin = anchorMin;
-        rect.anchorMax = anchorMax;
+        float cx = (anchorMin.x + anchorMax.x) * 0.5f;
+        rect.anchorMin = new Vector2(cx, anchorMin.y);
+        rect.anchorMax = new Vector2(cx, anchorMax.y);
+        rect.pivot = new Vector2(0.5f, 0.5f);
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
         Outline outline = obj.AddComponent<Outline>();
@@ -373,6 +329,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         TextMeshProUGUI lbl = CreateCenteredLabel(obj.transform, label, 32, textColor, true);
         lbl.fontStyle = FontStyles.Bold;
+        lbl.ForceMeshUpdate();
+        float w = Mathf.Clamp(lbl.GetPreferredValues().x + 72f, 220f, 960f);
+        rect.sizeDelta = new Vector2(w, 0f);
 
         AttachHoverEffect(obj, lbl, img, bgColor,
             new Color(Mathf.Min(1f, bgColor.r + 0.18f), Mathf.Min(1f, bgColor.g + 0.08f), Mathf.Min(1f, bgColor.b + 0.18f), 1f),
@@ -402,9 +361,10 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject panelObj = new GameObject("LevelSelectPanel");
         panelObj.transform.SetParent(overlayObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        panel.color = new Color(0.16f, 0.20f, 0.30f, 0.30f);
+        // Closer to the older "clean blue" card look (more solid than the newer translucent panel).
+        panel.color = new Color(0.14f, 0.20f, 0.36f, 0.62f);
         Outline panelOutline = panelObj.AddComponent<Outline>();
-        panelOutline.effectColor = new Color(0.30f, 0.55f, 1f, 0.30f);
+        panelOutline.effectColor = new Color(0.12f, 0.20f, 0.40f, 0.75f);
         panelOutline.effectDistance = new Vector2(2f, -2f);
 
         SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 760f), new Vector2(0f, -6f));
@@ -457,10 +417,10 @@ public class RuntimeMenuBuilder : MonoBehaviour
             {
                 Destroy(overlayObj);
                 SetMainMenuElementsVisible(root, true);
-            });
+            }, 31f, false, true);
         if (returnBtn != null) tileSelectables.Add(returnBtn);
 
-        MenuKeyboardNavigator.AttachVertical(overlayObj, tileSelectables);
+        MenuNavigationManager.AttachLinear(overlayObj, tileSelectables);
     }
 
     /// <summary>
@@ -491,14 +451,17 @@ public class RuntimeMenuBuilder : MonoBehaviour
     Button MakeLevelTile(Transform parent, int level, bool isUnlocked, bool isCurrent,
         UnityEngine.Events.UnityAction action)
     {
-        // Theme colours — kept here so all four states stay perfectly in sync.
-        Color unlockedFill   = new Color(0.32f, 0.56f, 0.96f, 1f); // primary blue
-        Color unlockedHover  = new Color(0.18f, 0.42f, 0.92f, 1f); // brighter blue (hover)
-        Color currentFill    = new Color(0.18f, 0.42f, 0.92f, 1f); // brighter blue
-        Color lockedFill     = new Color(0.18f, 0.20f, 0.30f, 0.55f);
-        Color glowBlue       = new Color(0.30f, 0.55f, 1.00f, 0.55f);
-        Color labelDark      = new Color(0.06f, 0.10f, 0.28f, 1f);  // contrast on blue
-        Color labelLocked    = new Color(0.55f, 0.60f, 0.74f, 0.55f);
+        // Restore the older, cleaner Select Level styling:
+        // - Unlocked: light gray tiles with dark border
+        // - Current: purple highlight
+        // - Locked: dim gray
+        Color unlockedFill   = new Color(0.86f, 0.88f, 0.92f, 1f);
+        Color unlockedHover  = new Color(0.95f, 0.96f, 0.99f, 1f);
+        Color currentFill    = new Color(0.60f, 0.33f, 0.82f, 1f);
+        Color lockedFill     = new Color(0.52f, 0.56f, 0.62f, 0.55f);
+        Color borderDark     = new Color(0.10f, 0.14f, 0.22f, 0.70f);
+        Color labelDark      = new Color(0.12f, 0.14f, 0.18f, 1f);
+        Color labelLocked    = new Color(0.18f, 0.20f, 0.26f, 0.55f);
 
         GameObject obj = new GameObject("Level_" + level);
         obj.transform.SetParent(parent, false);
@@ -511,11 +474,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
         btn.interactable = isUnlocked;
         if (isUnlocked) btn.onClick.AddListener(action);
 
-        Outline glow = obj.AddComponent<Outline>();
-        glow.effectColor = isCurrent ? glowBlue
-            : isUnlocked ? new Color(glowBlue.r, glowBlue.g, glowBlue.b, 0.32f)
-            : new Color(0f, 0f, 0f, 0.12f);
-        glow.effectDistance = new Vector2(2f, -2f);
+        Outline border = obj.AddComponent<Outline>();
+        border.effectColor = borderDark;
+        border.effectDistance = new Vector2(2f, -2f);
 
         Color numColor = isCurrent ? Color.white
             : isUnlocked ? labelDark
@@ -561,9 +522,10 @@ public class RuntimeMenuBuilder : MonoBehaviour
         return tmp;
     }
 
+    /// <param name="centerX">0–1 normalized X anchor for a width-sized pill (not full-row stretch).</param>
     Button MakeMenuButton(Transform parent, string label,
-        Vector2 anchorMin, Vector2 anchorMax,
-        UnityEngine.Events.UnityAction action)
+        Vector2 rowAnchorMin, Vector2 rowAnchorMax, float centerX,
+        UnityEngine.Events.UnityAction action, float labelFontSize = 40f)
     {
         GameObject obj = new GameObject(label + "_Btn");
         obj.transform.SetParent(parent, false);
@@ -574,11 +536,16 @@ public class RuntimeMenuBuilder : MonoBehaviour
         btn.onClick.AddListener(action);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
-        rect.anchorMin = anchorMin;
-        rect.anchorMax = anchorMax;
+        rect.anchorMin = new Vector2(centerX, rowAnchorMin.y);
+        rect.anchorMax = new Vector2(centerX, rowAnchorMax.y);
+        rect.pivot = new Vector2(0.5f, 0.5f);
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
-        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 40, new Color(0.95f, 0.95f, 1f, 1f), true);
+        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, labelFontSize, new Color(0.95f, 0.95f, 1f, 1f), true);
+        labelText.ForceMeshUpdate();
+        float w = Mathf.Clamp(labelText.GetPreferredValues().x + 80f, 160f, 920f);
+        rect.sizeDelta = new Vector2(w, 0f);
+
         AttachHoverEffect(obj, labelText, img,
             new Color(1f, 1f, 1f, 0f),
             new Color(0.18f, 0.42f, 0.92f, 0.32f),
@@ -586,14 +553,115 @@ public class RuntimeMenuBuilder : MonoBehaviour
         return btn;
     }
 
+    Transform CreateMainMenuPanel(Transform parent)
+    {
+        GameObject panelObj = new GameObject("Panel");
+        panelObj.transform.SetParent(parent, false);
+
+        RectTransform rect = panelObj.AddComponent<RectTransform>();
+        // Tall band under titles: column vertically centered in this area, room for all eight rows + QUIT.
+        rect.anchorMin = new Vector2(0.12f, 0.04f);
+        rect.anchorMax = new Vector2(0.88f, 0.66f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.offsetMin = Vector2.zero;
+        rect.offsetMax = Vector2.zero;
+
+        // No background plate — layout only.
+        VerticalLayoutGroup layout = panelObj.AddComponent<VerticalLayoutGroup>();
+        layout.childAlignment = TextAnchor.MiddleCenter;
+        layout.spacing = 14f;
+        layout.padding = new RectOffset(20, 20, 16, 24);
+        layout.childControlWidth = true;
+        layout.childControlHeight = true;
+        layout.childForceExpandWidth = true;
+        layout.childForceExpandHeight = false;
+
+        return panelObj.transform;
+    }
+
+    /// <summary>
+    /// Full-width row that centers a pill-sized button (hover panel hugs the label, not the screen).
+    /// </summary>
+    Button MakeCenteredPillMenuButton(Transform parent, string label,
+        UnityEngine.Events.UnityAction action, float labelFontSize = 40f)
+    {
+        GameObject row = new GameObject(label + "_Row", typeof(RectTransform));
+        row.transform.SetParent(parent, false);
+        HorizontalLayoutGroup h = row.AddComponent<HorizontalLayoutGroup>();
+        h.childAlignment = TextAnchor.MiddleCenter;
+        h.spacing = 0f;
+        h.padding = new RectOffset(0, 0, 0, 0);
+        h.childControlWidth = true;
+        h.childControlHeight = true;
+        h.childForceExpandWidth = false;
+        h.childForceExpandHeight = false;
+        LayoutElement rowLe = row.AddComponent<LayoutElement>();
+        rowLe.preferredHeight = 76f;
+        rowLe.minHeight = 64f;
+        rowLe.flexibleHeight = 0f;
+        rowLe.flexibleWidth = 1f;
+
+        return MakePillMenuButton(row.transform, label, action, labelFontSize);
+    }
+
+    Button MakePillMenuButton(Transform parent, string label,
+        UnityEngine.Events.UnityAction action, float labelFontSize = 40f)
+    {
+        GameObject obj = new GameObject(label + "_Btn");
+        obj.transform.SetParent(parent, false);
+
+        RectTransform rect = obj.AddComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 0.5f);
+        rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.sizeDelta = Vector2.zero;
+
+        Image img = obj.AddComponent<Image>();
+        img.color = new Color(1f, 1f, 1f, 0f);
+
+        Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
+        btn.onClick.AddListener(action);
+
+        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, labelFontSize, new Color(0.95f, 0.95f, 1f, 1f), true);
+        labelText.textWrappingMode = TextWrappingModes.NoWrap;
+        labelText.overflowMode = TextOverflowModes.Overflow;
+        labelText.enableAutoSizing = false;
+        labelText.ForceMeshUpdate();
+        float textW = labelText.GetPreferredValues().x;
+        float pillW = Mathf.Clamp(textW + 72f, 148f, 880f);
+
+        LayoutElement element = obj.AddComponent<LayoutElement>();
+        element.preferredWidth = pillW;
+        element.preferredHeight = 76f;
+        element.minHeight = 64f;
+        element.flexibleWidth = 0f;
+        element.flexibleHeight = 0f;
+
+        AttachHoverEffect(obj, labelText, img,
+            new Color(1f, 1f, 1f, 0f),
+            new Color(0.18f, 0.42f, 0.92f, 0.32f),
+            Color.white);
+        return btn;
+    }
+
+    Button MakeStackMenuButton(Transform parent, string label,
+        UnityEngine.Events.UnityAction action, float labelFontSize = 40f)
+    {
+        return MakeCenteredPillMenuButton(parent, label, action, labelFontSize);
+    }
+
     Button MakePanelButton(Transform parent, string label,
         Vector2 anchorMin, Vector2 anchorMax,
-        UnityEngine.Events.UnityAction action)
+        UnityEngine.Events.UnityAction action,
+        float labelFontSize = 31f,
+        bool staticMenuBlue = false,
+        bool autoSizeSingleLine = false)
     {
         GameObject obj = new GameObject(label + "_Btn");
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
-        img.color = Color.white;
+        img.color = staticMenuBlue ? SettingsManager.MenuBlue : Color.white;
         Button btn = obj.AddComponent<Button>();
         btn.targetGraphic = img;
         btn.onClick.AddListener(action);
@@ -604,19 +672,51 @@ public class RuntimeMenuBuilder : MonoBehaviour
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
         Outline outline = obj.AddComponent<Outline>();
-        outline.effectColor = new Color(0.20f, 0.24f, 0.38f, 0.30f);
+        outline.effectColor = staticMenuBlue
+            ? new Color(0.90f, 0.94f, 1f, 0.55f)
+            : new Color(0.20f, 0.24f, 0.38f, 0.30f);
         outline.effectDistance = new Vector2(2f, -2f);
 
-        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 28,
-            new Color(0.05f, 0.08f, 0.32f, 1f), true);
+        Color textCol = staticMenuBlue ? Color.white : new Color(0.05f, 0.08f, 0.32f, 1f);
+        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, labelFontSize, textCol, true);
         labelText.fontStyle = FontStyles.Bold;
-        labelText.fontSize = 31f;
-        labelText.color = new Color(0.05f, 0.08f, 0.32f, 1f);
+        labelText.fontSize = labelFontSize;
+        labelText.color = textCol;
+        if (autoSizeSingleLine)
+        {
+            labelText.textWrappingMode = TextWrappingModes.NoWrap;
+            labelText.enableAutoSizing = true;
+            labelText.fontSizeMin = 16;
+            labelText.fontSizeMax = Mathf.RoundToInt(labelFontSize);
+            labelText.overflowMode = TextOverflowModes.Truncate;
+        }
 
-        AttachHoverEffect(obj, labelText, img,
-            Color.white,
-            new Color(0.98f, 0.98f, 1f, 1f),
-            new Color(0.05f, 0.08f, 0.32f, 1f));
+        if (staticMenuBlue)
+        {
+            AttachHoverEffect(obj, labelText, img,
+                SettingsManager.MenuBlue,
+                new Color(0.38f, 0.62f, 1f, 1f),
+                Color.white);
+        }
+        else
+        {
+            AttachHoverEffect(obj, labelText, img,
+                Color.white,
+                new Color(0.98f, 0.98f, 1f, 1f),
+                new Color(0.05f, 0.08f, 0.32f, 1f));
+        }
+
+        if (autoSizeSingleLine)
+        {
+            labelText.ForceMeshUpdate();
+            float w = Mathf.Clamp(labelText.GetPreferredValues().x + 52f, 120f, 760f);
+            float cx = (anchorMin.x + anchorMax.x) * 0.5f;
+            rect.anchorMin = new Vector2(cx, anchorMin.y);
+            rect.anchorMax = new Vector2(cx, anchorMax.y);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.offsetMin = rect.offsetMax = Vector2.zero;
+            rect.sizeDelta = new Vector2(w, 0f);
+        }
         return btn;
     }
 
@@ -1169,19 +1269,24 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject panelObj = new GameObject("CustomMatchPanel");
         panelObj.transform.SetParent(overlayObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        panel.color = new Color(0.10f, 0.13f, 0.22f, 0.85f);
+        // Match Options/Settings panel vibe (shadowy slate).
+        panel.color = new Color(0.16f, 0.20f, 0.30f, 0.68f);
         Outline panelOutline = panelObj.AddComponent<Outline>();
         panelOutline.effectColor = new Color(0.30f, 0.55f, 1f, 0.45f);
         panelOutline.effectDistance = new Vector2(2f, -2f);
         SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(960f, 700f), Vector2.zero);
 
         MakeText(panelObj.transform, "CUSTOM MATCH", 64, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
+            new Vector2(0.04f, 0.88f), new Vector2(0.96f, 0.98f), true);
+        // Subheader (adds polish + explains).
+        MakeText(panelObj.transform, "FAST SETUP — ENEMIES, TIME, DIFFICULTY + MAP", 22,
+            new Color(0.72f, 0.84f, 1f, 0.88f),
+            new Vector2(0.04f, 0.82f), new Vector2(0.96f, 0.88f), true);
 
         // ─── Enemy Count Slider ──────────────────────────────────────────────
         TextMeshProUGUI enemyValueLabel;
         Slider enemySlider = MakeIntSliderRow(panelObj.transform, "ENEMIES", 1, 25,
-            defaultEnemies, 0.66f, out enemyValueLabel);
+            defaultEnemies, 0.72f, out enemyValueLabel);
 
         // ─── Match Time Buttons (2 / 5 / 10) ─────────────────────────────────
         int[] minuteOptions  = new[] { 2, 5, 10 };
@@ -1189,7 +1294,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         if (selectedTimeIx < 0) selectedTimeIx = 1;
         Button[] timeButtons = new Button[minuteOptions.Length];
         MakeText(panelObj.transform, "MATCH TIME", 30, new Color(0.85f, 0.88f, 0.96f, 1f),
-            new Vector2(0.07f, 0.49f), new Vector2(0.40f, 0.55f), false);
+            new Vector2(0.07f, 0.56f), new Vector2(0.40f, 0.62f), false);
         for (int i = 0; i < minuteOptions.Length; i++)
         {
             int idx = i;
@@ -1197,7 +1302,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             float xMin = 0.40f + idx * 0.18f;
             float xMax = xMin + 0.16f;
             Button btn = MakeChoiceButton(panelObj.transform, minutes + " MIN",
-                new Vector2(xMin, 0.49f), new Vector2(xMax, 0.55f),
+                new Vector2(xMin, 0.56f), new Vector2(xMax, 0.62f),
                 () => SelectChoice(timeButtons, idx));
             timeButtons[i] = btn;
         }
@@ -1209,44 +1314,72 @@ public class RuntimeMenuBuilder : MonoBehaviour
         if (selectedDiffIx < 0) selectedDiffIx = 1;
         Button[] diffButtons  = new Button[difficulties.Length];
         MakeText(panelObj.transform, "DIFFICULTY", 30, new Color(0.85f, 0.88f, 0.96f, 1f),
-            new Vector2(0.07f, 0.34f), new Vector2(0.40f, 0.40f), false);
+            new Vector2(0.07f, 0.40f), new Vector2(0.40f, 0.46f), false);
         for (int i = 0; i < difficulties.Length; i++)
         {
             int idx = i;
             float xMin = 0.40f + idx * 0.18f;
             float xMax = xMin + 0.16f;
             Button btn = MakeChoiceButton(panelObj.transform, difficulties[i].ToUpperInvariant(),
-                new Vector2(xMin, 0.34f), new Vector2(xMax, 0.40f),
+                new Vector2(xMin, 0.40f), new Vector2(xMax, 0.46f),
                 () => SelectChoice(diffButtons, idx));
             diffButtons[i] = btn;
         }
         SelectChoice(diffButtons, selectedDiffIx);
 
-        // Info / hint line below the controls.
         MakeText(panelObj.transform, "Veteran enemies hit harder, soak more damage and chase faster.",
             22, new Color(0.66f, 0.74f, 0.92f, 0.9f),
-            new Vector2(0.08f, 0.20f), new Vector2(0.92f, 0.27f), false);
+            new Vector2(0.08f, 0.26f), new Vector2(0.92f, 0.33f), false);
 
-        // ─── START / RETURN ──────────────────────────────────────────────────
+        // ─── Map toggle (small but useful “feature”) ─────────────────────────
+        MakeText(panelObj.transform, "MAP", 30, new Color(0.85f, 0.88f, 0.96f, 1f),
+            new Vector2(0.07f, 0.32f), new Vector2(0.30f, 0.38f), false);
+        string mapName = GameManager.Instance != null ? GameManager.Instance.GetSelectedMap().ToString().ToUpperInvariant() : "MAP1";
+        TextMeshProUGUI mapLabel = MakeText(panelObj.transform, mapName, 28, new Color(0.05f, 0.08f, 0.32f, 1f),
+            new Vector2(0.40f, 0.32f), new Vector2(0.56f, 0.38f), false);
+        Button mapBtn = MakePanelButton(panelObj.transform, mapName,
+            new Vector2(0.40f, 0.32f), new Vector2(0.56f, 0.38f),
+            () =>
+            {
+                if (GameManager.Instance == null) return;
+                GameManager.ArenaMap next = GameManager.Instance.GetSelectedMap() == GameManager.ArenaMap.Map1
+                    ? GameManager.ArenaMap.Map2
+                    : GameManager.ArenaMap.Map1;
+                GameManager.Instance.SetSelectedMap(next);
+                if (mapLabel != null) mapLabel.text = next.ToString().ToUpperInvariant();
+            }, 28f, false, true);
+        if (mapBtn != null && mapBtn.targetGraphic is Image mImg) mImg.color = Color.white;
+
+        // Randomize button (quick fun).
+        Button randomBtn = MakePanelButton(panelObj.transform, "RANDOMIZE",
+            new Vector2(0.58f, 0.32f), new Vector2(0.78f, 0.38f),
+            () =>
+            {
+                if (enemySlider != null) enemySlider.value = Random.Range(1, 26);
+                SelectChoice(timeButtons, Random.Range(0, timeButtons.Length));
+                SelectChoice(diffButtons, Random.Range(0, diffButtons.Length));
+            }, 24f, false, true);
+
         Button startBtn = MakePanelButton(panelObj.transform, "START MATCH",
-            new Vector2(0.30f, 0.06f), new Vector2(0.55f, 0.15f),
+            new Vector2(0.22f, 0.07f), new Vector2(0.58f, 0.14f),
             () =>
             {
                 int enemyCount = enemySlider != null ? Mathf.RoundToInt(enemySlider.value) : defaultEnemies;
-                int chosenMin  = minuteOptions[FindSelectedIndex(timeButtons, 1)];
-                string diff    = difficulties[FindSelectedIndex(diffButtons, 1)];
+                int tIx = FindSelectedIndex(timeButtons, selectedTimeIx);
+                int dIx = FindSelectedIndex(diffButtons, selectedDiffIx);
+                int chosenMin  = minuteOptions[Mathf.Clamp(tIx, 0, minuteOptions.Length - 1)];
+                string diff    = difficulties[Mathf.Clamp(dIx, 0, difficulties.Length - 1)];
                 if (GameManager.Instance != null)
                     GameManager.Instance.StartCustomRun(enemyCount, chosenMin * 60, diff);
-            });
+            }, 28f, true, true);
         Button returnBtn = MakePanelButton(panelObj.transform, "RETURN",
-            new Vector2(0.58f, 0.06f), new Vector2(0.78f, 0.15f),
+            new Vector2(0.62f, 0.07f), new Vector2(0.78f, 0.14f),
             () =>
             {
                 Destroy(overlayObj);
                 SetMainMenuElementsVisible(root, true);
-            });
+            }, 26f, true, true);
 
-        // ─── Keyboard Navigation ─────────────────────────────────────────────
         System.Collections.Generic.List<Selectable> nav =
             new System.Collections.Generic.List<Selectable>();
         if (enemySlider != null) nav.Add(enemySlider);
@@ -1254,7 +1387,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         for (int i = 0; i < diffButtons.Length; i++) if (diffButtons[i] != null) nav.Add(diffButtons[i]);
         if (startBtn  != null) nav.Add(startBtn);
         if (returnBtn != null) nav.Add(returnBtn);
-        MenuKeyboardNavigator.AttachVertical(overlayObj, nav);
+        MenuNavigationManager.AttachLinear(overlayObj, nav);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1384,7 +1517,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         System.Collections.Generic.List<Selectable> nav =
             new System.Collections.Generic.List<Selectable> { field, confirmBtn, skipBtn };
-        MenuKeyboardNavigator.AttachVertical(overlayObj, nav);
+        MenuNavigationManager.AttachLinear(overlayObj, nav);
 
         EventSystem.current?.SetSelectedGameObject(field.gameObject);
         field.ActivateInputField();
@@ -1448,14 +1581,13 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject panelObj = new GameObject("StorePanel");
         panelObj.transform.SetParent(overlayObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        panel.color = new Color(0.10f, 0.13f, 0.22f, 0.88f);
         Outline panelOutline = panelObj.AddComponent<Outline>();
-        panelOutline.effectColor    = new Color(0.30f, 0.55f, 1f, 0.45f);
-        panelOutline.effectDistance = new Vector2(2f, -2f);
         SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1180f, 800f), Vector2.zero);
+        PrismOrganizedMenuChrome.ApplyPanelSurface(panel, panelOutline);
 
+        // Title centered (matches the other panels).
         MakeText(panelObj.transform, "PRISM STORE", 64, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.04f, 0.88f), new Vector2(0.62f, 0.98f), true);
+            new Vector2(0.04f, 0.88f), new Vector2(0.96f, 0.98f), true);
 
         // Live credits readout in the corner.
         TextMeshProUGUI creditsLabel = MakeText(panelObj.transform,
@@ -1484,19 +1616,33 @@ public class RuntimeMenuBuilder : MonoBehaviour
             });
         HighlightTab(weaponTabBtn, skinTabBtn, _activeStoreTab == StoreTab.Weapons);
 
-        // ── Initial content + return button ────────────────────────────────
+        GameObject sectionHeaderGo = new GameObject("StoreSectionHeader");
+        sectionHeaderGo.transform.SetParent(panelObj.transform, false);
+        TextMeshProUGUI sectionHeader = sectionHeaderGo.AddComponent<TextMeshProUGUI>();
+        sectionHeader.text = _activeStoreTab == StoreTab.Weapons ? "WEAPONS" : "SKINS";
+        sectionHeader.fontSize = 30f;
+        sectionHeader.fontStyle = FontStyles.Bold;
+        sectionHeader.alignment = TextAlignmentOptions.Left;
+        sectionHeader.color = new Color(0.92f, 0.94f, 1f, 1f);
+        if (customFont != null) sectionHeader.font = customFont;
+        RectTransform shRT = sectionHeaderGo.GetComponent<RectTransform>();
+        shRT.anchorMin = new Vector2(0.34f, 0.735f);
+        shRT.anchorMax = new Vector2(0.96f, 0.775f);
+        shRT.offsetMin = shRT.offsetMax = Vector2.zero;
+
         RebuildStoreContent(panelObj.transform, creditsLabel);
 
-        Button returnBtn = MakePanelButton(panelObj.transform, "RETURN",
-            new Vector2(0.39f, 0.02f), new Vector2(0.61f, 0.09f),
+        RectTransform storeFooter = PrismOrganizedMenuChrome.CreateFooterRow(panelObj.transform, 64f, 14f, 36f);
+        Button returnBtn = PrismOrganizedMenuChrome.AddFooterChipButton(
+            storeFooter, "RETURN",
+            new Color(0.12f, 0.20f, 0.42f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlineBlue,
             () =>
             {
                 Destroy(overlayObj);
                 SetMainMenuElementsVisible(root, true);
                 ClearAndRebuildMainMenu(root);
-            });
+            }, customFont);
 
-        // Keyboard nav — tabs first, then live content rows, then return.
         System.Collections.Generic.List<Selectable> nav =
             new System.Collections.Generic.List<Selectable> { weaponTabBtn, skinTabBtn };
         Button[] live = panelObj.GetComponentsInChildren<Button>(true);
@@ -1507,7 +1653,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             nav.Add(b);
         }
         if (returnBtn != null) nav.Add(returnBtn);
-        MenuKeyboardNavigator.AttachVertical(overlayObj, nav);
+        MenuNavigationManager.AttachLinear(overlayObj, nav);
     }
 
     void HighlightTab(Button weaponsBtn, Button skinsBtn, bool weaponsActive)
@@ -1526,7 +1672,6 @@ public class RuntimeMenuBuilder : MonoBehaviour
     /// </summary>
     void RebuildStoreContent(Transform panel, TextMeshProUGUI creditsLabel)
     {
-        // Clear old content (anything tagged with "StoreContent_").
         for (int i = panel.childCount - 1; i >= 0; i--)
         {
             Transform child = panel.GetChild(i);
@@ -1534,11 +1679,19 @@ public class RuntimeMenuBuilder : MonoBehaviour
                 Destroy(child.gameObject);
         }
 
+        Transform hdr = panel.Find("StoreSectionHeader");
+        if (hdr != null)
+        {
+            TextMeshProUGUI t = hdr.GetComponent<TextMeshProUGUI>();
+            if (t != null)
+                t.text = _activeStoreTab == StoreTab.Weapons ? "WEAPONS" : "SKINS";
+        }
+
         GameObject contentRoot = new GameObject("StoreContent_" + _activeStoreTab);
         contentRoot.transform.SetParent(panel, false);
         RectTransform crRT = contentRoot.AddComponent<RectTransform>();
-        crRT.anchorMin = new Vector2(0f, 0.10f);
-        crRT.anchorMax = new Vector2(1f, 0.78f);
+        crRT.anchorMin = new Vector2(0f, 0.13f);
+        crRT.anchorMax = new Vector2(1f, 0.72f);
         crRT.offsetMin = crRT.offsetMax = Vector2.zero;
 
         // ─── Preview pane ────────────────────────────────────────────────
@@ -1569,6 +1722,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
             BuildWeaponRows(contentRoot.transform, creditsLabel, previewImg, previewName, previewSubtitle, previewGlyph);
         else
             BuildSkinRows(contentRoot.transform, creditsLabel, previewImg, previewName, previewSubtitle, previewGlyph);
+
+        if (hdr != null)
+            hdr.SetAsLastSibling();
     }
 
     void BuildWeaponRows(Transform parent, TextMeshProUGUI creditsLabel,
@@ -1832,32 +1988,76 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject panelObj = new GameObject("ChallengesPanel");
         panelObj.transform.SetParent(overlayObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        panel.color = new Color(0.10f, 0.13f, 0.22f, 0.88f);
         Outline panelOutline = panelObj.AddComponent<Outline>();
-        panelOutline.effectColor    = new Color(0.30f, 0.55f, 1f, 0.45f);
-        panelOutline.effectDistance = new Vector2(2f, -2f);
         SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(960f, 720f), Vector2.zero);
+        PrismOrganizedMenuChrome.ApplyPanelSurface(panel, panelOutline);
 
         MakeText(panelObj.transform, "CHALLENGES", 64, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.04f, 0.86f), new Vector2(0.96f, 0.98f), true);
+            new Vector2(0.04f, 0.88f), new Vector2(0.96f, 0.98f), true);
         MakeText(panelObj.transform,
             "Earn +" + SessionManager.CreditsPerChallenge + " PRISM CREDITS per completed challenge.",
             22, new Color(0.66f, 0.74f, 0.92f, 0.95f),
-            new Vector2(0.04f, 0.78f), new Vector2(0.96f, 0.86f), true);
+            new Vector2(0.04f, 0.805f), new Vector2(0.96f, 0.865f), true);
 
         SessionManager session = SessionManager.Instance;
-        const float topY = 0.74f;
-        const float rowH = 0.085f;
-        const float rowGap = 0.012f;
+
+        GameObject scrollGo = new GameObject("ChallengesScroll");
+        scrollGo.transform.SetParent(panelObj.transform, false);
+        RectTransform scrollRT = scrollGo.AddComponent<RectTransform>();
+        scrollRT.anchorMin = new Vector2(0.04f, 0.14f);
+        scrollRT.anchorMax = new Vector2(0.96f, 0.76f);
+        scrollRT.offsetMin = scrollRT.offsetMax = Vector2.zero;
+
+        ScrollRect scroll = scrollGo.AddComponent<ScrollRect>();
+        scroll.horizontal = false;
+        scroll.vertical = true;
+        scroll.movementType = ScrollRect.MovementType.Clamped;
+        scroll.scrollSensitivity = 28f;
+
+        GameObject viewport = new GameObject("Viewport");
+        viewport.transform.SetParent(scrollGo.transform, false);
+        RectTransform vpRT = viewport.AddComponent<RectTransform>();
+        Stretch(vpRT);
+        Image vpImg = viewport.AddComponent<Image>();
+        vpImg.color = new Color(0.04f, 0.05f, 0.08f, 0.25f);
+        viewport.AddComponent<RectMask2D>();
+
+        GameObject content = new GameObject("Content");
+        content.transform.SetParent(viewport.transform, false);
+        RectTransform contentRT = content.AddComponent<RectTransform>();
+        contentRT.anchorMin = new Vector2(0f, 1f);
+        contentRT.anchorMax = new Vector2(1f, 1f);
+        contentRT.pivot = new Vector2(0.5f, 1f);
+        contentRT.anchoredPosition = Vector2.zero;
+        contentRT.sizeDelta = new Vector2(0f, 0f);
+
+        VerticalLayoutGroup vlg = content.AddComponent<VerticalLayoutGroup>();
+        vlg.spacing = 7f;
+        vlg.padding = new RectOffset(2, 2, 2, 8);
+        vlg.childAlignment = TextAnchor.UpperCenter;
+        vlg.childControlHeight = true;
+        vlg.childControlWidth = true;
+        vlg.childForceExpandHeight = false;
+        vlg.childForceExpandWidth = true;
+
+        ContentSizeFitter csf = content.AddComponent<ContentSizeFitter>();
+        csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+
+        scroll.viewport = vpRT;
+        scroll.content = contentRT;
+
         for (int i = 0; i < SessionManager.Challenges.Length; i++)
         {
             ChallengeDefinition def = SessionManager.Challenges[i];
-            float yMax = topY - i * (rowH + rowGap);
-            float yMin = yMax - rowH;
 
             GameObject row = new GameObject("ChallengeRow_" + def.Id);
-            row.transform.SetParent(panelObj.transform, false);
+            row.transform.SetParent(content.transform, false);
             Image rowImg = row.AddComponent<Image>();
+            LayoutElement rowLayout = row.AddComponent<LayoutElement>();
+            rowLayout.preferredHeight = 92f;
+            rowLayout.minHeight = 92f;
+            rowLayout.flexibleWidth = 1f;
 
             bool completed = session != null && session.IsChallengeCompleted(def.Id);
             rowImg.color = completed
@@ -1865,12 +2065,13 @@ public class RuntimeMenuBuilder : MonoBehaviour
                 : new Color(0.16f, 0.20f, 0.30f, 0.95f);
 
             RectTransform rowRT = row.GetComponent<RectTransform>();
-            rowRT.anchorMin = new Vector2(0.06f, yMin);
-            rowRT.anchorMax = new Vector2(0.94f, yMax);
-            rowRT.offsetMin = rowRT.offsetMax = Vector2.zero;
+            rowRT.localScale = Vector3.one;
 
-            MakeText(row.transform, def.Title, 26, new Color(0.94f, 0.96f, 1f, 1f),
-                new Vector2(0.04f, 0.45f), new Vector2(0.65f, 0.95f), false);
+            TextMeshProUGUI titleTmp = MakeText(row.transform, def.Title, 20, new Color(0.94f, 0.96f, 1f, 1f),
+                new Vector2(0.04f, 0.38f), new Vector2(0.62f, 0.96f), false);
+            titleTmp.textWrappingMode = TextWrappingModes.Normal;
+            titleTmp.overflowMode = TextOverflowModes.Truncate;
+            titleTmp.alignment = TextAlignmentOptions.TopLeft;
 
             int progress = session != null ? Mathf.Min(session.GetChallengeProgress(def.Id), def.Target) : 0;
             string progressText = completed ? "COMPLETE" : progress + " / " + def.Target;
@@ -1882,7 +2083,6 @@ public class RuntimeMenuBuilder : MonoBehaviour
                 new Color(0.85f, 0.88f, 0.96f, 0.85f),
                 new Vector2(0.04f, 0.05f), new Vector2(0.65f, 0.40f), false);
 
-            // Mini progress bar (visual only).
             if (def.Target > 1 && !completed)
             {
                 GameObject bar = new GameObject("Bar");
@@ -1906,18 +2106,20 @@ public class RuntimeMenuBuilder : MonoBehaviour
             }
         }
 
-        Button returnBtn = MakePanelButton(panelObj.transform, "RETURN",
-            new Vector2(0.39f, 0.04f), new Vector2(0.61f, 0.11f),
+        RectTransform chFooter = PrismOrganizedMenuChrome.CreateFooterRow(panelObj.transform, 64f, 14f, 36f);
+        Button returnBtn = PrismOrganizedMenuChrome.AddFooterChipButton(
+            chFooter, "RETURN",
+            new Color(0.12f, 0.20f, 0.42f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlineBlue,
             () =>
             {
                 Destroy(overlayObj);
                 SetMainMenuElementsVisible(root, true);
                 ClearAndRebuildMainMenu(root);
-            });
+            }, customFont);
 
         System.Collections.Generic.List<Selectable> nav =
             new System.Collections.Generic.List<Selectable> { returnBtn };
-        MenuKeyboardNavigator.AttachVertical(overlayObj, nav);
+        MenuNavigationManager.AttachLinear(overlayObj, nav);
     }
 
     /// <summary>
@@ -2017,7 +2219,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject obj = new GameObject(label + "_Choice");
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
-        img.color = new Color(0.18f, 0.22f, 0.32f, 1f);
+        img.color = SettingsManager.MenuBlue;
 
         Outline outline = obj.AddComponent<Outline>();
         outline.effectColor = new Color(0.30f, 0.55f, 1f, 0.40f);
@@ -2026,6 +2228,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Button btn = obj.AddComponent<Button>();
         btn.targetGraphic = img;
         btn.onClick.AddListener(action);
+        obj.AddComponent<MenuChoiceTag>();
 
         RectTransform rect = obj.GetComponent<RectTransform>();
         rect.anchorMin = anchorMin;
@@ -2049,19 +2252,23 @@ public class RuntimeMenuBuilder : MonoBehaviour
         {
             Button b = buttons[i];
             if (b == null) continue;
+            MenuChoiceTag tag = b.GetComponent<MenuChoiceTag>();
+            if (tag != null) tag.Selected = i == selectedIndex;
+
             Image img = b.targetGraphic as Image;
             if (img == null) continue;
+            img.color = SettingsManager.MenuBlue;
+            Outline o = b.GetComponent<Outline>();
+            if (o == null) continue;
             if (i == selectedIndex)
             {
-                img.color = new Color(0.32f, 0.56f, 0.96f, 1f);
-                Outline o = b.GetComponent<Outline>();
-                if (o != null) o.effectColor = new Color(0.85f, 0.92f, 1f, 0.85f);
+                o.effectColor = new Color(0.95f, 0.97f, 1f, 0.95f);
+                o.effectDistance = new Vector2(3f, -3f);
             }
             else
             {
-                img.color = new Color(0.18f, 0.22f, 0.32f, 1f);
-                Outline o = b.GetComponent<Outline>();
-                if (o != null) o.effectColor = new Color(0.30f, 0.55f, 1f, 0.40f);
+                o.effectColor = new Color(0.22f, 0.40f, 0.72f, 0.55f);
+                o.effectDistance = new Vector2(1.5f, -1.5f);
             }
         }
     }
@@ -2077,14 +2284,18 @@ public class RuntimeMenuBuilder : MonoBehaviour
         {
             Button b = buttons[i];
             if (b == null) continue;
-            Image img = b.targetGraphic as Image;
-            if (img == null) continue;
-            // Distinguish "selected" by detecting our bright blue fill.
-            if (img.color.b > 0.85f && img.color.r < 0.5f) return i;
+            MenuChoiceTag tag = b.GetComponent<MenuChoiceTag>();
+            if (tag != null && tag.Selected) return i;
         }
         return fallback;
     }
 
+}
+
+/// <summary>Tracks which option is active in a <see cref="RuntimeMenuBuilder"/> choice-button group.</summary>
+public sealed class MenuChoiceTag : MonoBehaviour
+{
+    public bool Selected;
 }
 
 // ─── CINEMATIC CAMERA ORBIT ───────────────────────────────────────────────────

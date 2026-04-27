@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
+using UnityEngine.Audio;
+using UnityEngine.SceneManagement;
 
 /// <summary>
 /// Persistent profile-wide session manager for PRISM-7.
@@ -418,12 +420,47 @@ public class SessionManager : MonoBehaviour
 
         if (_save == null) _save = new SessionSave();
         _save.EnsureValid();
+        if (!PlayerProfile.HasUsername && !string.IsNullOrEmpty(_save.profileName))
+            PlayerProfile.SetUsername(_save.profileName);
         EvaluateChallenges();
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Writes session JSON (credits, unlocks, mirrored profile name) and flushes
+    /// <see cref="PlayerPrefs"/> (graphics, audio, username). Call on scene
+    /// changes and match end so data survives abrupt exits.
+    /// </summary>
+    public void FlushPersistence()
+    {
+        SyncProfileIntoSave();
+        Persist();
+        PlayerPrefs.Save();
+    }
+
+    private void OnEnable()
+    {
+        SceneManager.sceneLoaded += OnSceneLoaded;
+    }
+
+    private void OnDisable()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+    }
+
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        FlushPersistence();
+    }
+
+    private void SyncProfileIntoSave()
+    {
+        _save.profileName = PlayerProfile.HasUsername ? PlayerProfile.Username : string.Empty;
+    }
+
     private void Persist()
     {
+        SyncProfileIntoSave();
         try
         {
             File.WriteAllText(SavePath, JsonUtility.ToJson(_save, prettyPrint: false));
@@ -444,6 +481,59 @@ public class SessionManager : MonoBehaviour
     }
 
     // ────────────────────────────────────────────────────────────────────────
+    //  Match audio — optional mixer from Resources (routes VO / UI SFX)
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Resources path to an <see cref="AudioMixer"/> asset (no extension), e.g. <c>Audio/Mixers/PRISM_Master</c>.</summary>
+    public string MatchAudioMixerResourcePath = "Audio/Mixers/PRISM_Master";
+
+    /// <summary>Mixer group name substring for commentary / VO (matched via <see cref="AudioMixer.FindMatchingGroups"/>).</summary>
+    public string VoiceOverMixerGroupName = "VO";
+
+    /// <summary>Mixer group for match start countdown ticks / GO chime.</summary>
+    public string MatchUiMixerGroupName = "UI";
+
+    private AudioMixer _matchMixer;
+    private readonly Dictionary<string, AudioMixerGroup> _mixerGroupCache = new Dictionary<string, AudioMixerGroup>();
+
+    /// <summary>Assigns an <see cref="AudioMixerGroup"/> to <paramref name="source"/> when a mixer is available.</summary>
+    public void ConfigureMatchAudioSource(AudioSource source, string mixerGroupName)
+    {
+        if (source == null || string.IsNullOrEmpty(mixerGroupName)) return;
+
+        AudioMixerGroup group = ResolveMixerGroup(mixerGroupName);
+        if (group != null)
+            source.outputAudioMixerGroup = group;
+    }
+
+    private AudioMixerGroup ResolveMixerGroup(string groupName)
+    {
+        if (string.IsNullOrEmpty(groupName)) return null;
+        if (_mixerGroupCache.TryGetValue(groupName, out AudioMixerGroup cached))
+            return cached;
+
+        if (_matchMixer == null && !string.IsNullOrEmpty(MatchAudioMixerResourcePath))
+            _matchMixer = Resources.Load<AudioMixer>(MatchAudioMixerResourcePath);
+
+        if (_matchMixer == null)
+            return null;
+
+        AudioMixerGroup[] found = _matchMixer.FindMatchingGroups(groupName);
+        if (found == null || found.Length == 0)
+            return null;
+
+        _mixerGroupCache[groupName] = found[0];
+        return found[0];
+    }
+
+    /// <summary>Clears cached mixer reference (e.g. after loading a new mixer asset in editor).</summary>
+    public void ClearMatchAudioMixerCache()
+    {
+        _matchMixer = null;
+        _mixerGroupCache.Clear();
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
     //  Internal save layout (JSON-friendly)
     // ────────────────────────────────────────────────────────────────────────
 
@@ -454,6 +544,8 @@ public class SessionManager : MonoBehaviour
         public int lifetimeKills;
         public int lifetimeWins;
         public int lifetimeMatches;
+        /// <summary>Mirror of <see cref="PlayerProfile"/> for JSON backup when prefs are cleared.</summary>
+        public string profileName = string.Empty;
         public string equippedSkinId   = "default";
         public string equippedWeaponId = "default";
 
@@ -465,6 +557,7 @@ public class SessionManager : MonoBehaviour
 
         public void EnsureValid()
         {
+            if (profileName == null) profileName = string.Empty;
             if (unlockedSkins == null)        unlockedSkins = new List<string>();
             if (unlockedWeapons == null)      unlockedWeapons = new List<string>();
             if (completedChallenges == null)  completedChallenges = new List<string>();

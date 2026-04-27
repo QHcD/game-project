@@ -152,7 +152,7 @@ public class LevelBuilder : MonoBehaviour
 
     private static LevelBuilder GetOrCreateEditorBuilder()
     {
-        LevelBuilder builder = FindFirstObjectByType<LevelBuilder>();
+        LevelBuilder builder = Object.FindFirstObjectByType<LevelBuilder>();
         if (builder != null)
             return builder;
 
@@ -208,7 +208,7 @@ public class LevelBuilder : MonoBehaviour
         GameObject gameplayRoot = GameObject.Find(GameplayRootName);
         GameObject arenaRoot = GameObject.Find(ArenaRootName);
         GameObject enemyRoot = GameObject.Find(EnemyRootName);
-        PlayerController player = FindFirstObjectByType<PlayerController>();
+        PlayerController player = Object.FindFirstObjectByType<PlayerController>();
 
         bool hasArenaVisuals = arenaRoot != null &&
             arenaRoot.GetComponentsInChildren<Renderer>(true).Length > 0;
@@ -323,6 +323,7 @@ public class LevelBuilder : MonoBehaviour
             BuildArena(arenaRoot);
             // EnsureSceneGroundVisible skipped — industrial map has its own ground
             StabilizeGround(arenaRoot);
+            EnsureIndustrialDoorsInteractable(arenaRoot);
             Debug.Log("[LevelBuilder] Step 3: Arena built + floor stabilised");
 
             // Environmental props are provided by the RPG/FPS industrial map prefab — skip procedural spawning.
@@ -369,6 +370,40 @@ public class LevelBuilder : MonoBehaviour
     // ════════════════════════════════════════════════════════════════════════
     //  ARENA BUILDING
     // ════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Imported industrial meshes name door pieces "…door…" but ship without
+    /// <see cref="DoorController"/>. Adds interaction on collider objects so
+    /// the player can open them with the same raycast used for <see cref="IInteractable"/>.
+    /// </summary>
+    private static void EnsureIndustrialDoorsInteractable(Transform arenaRoot)
+    {
+        if (arenaRoot == null) return;
+
+        Collider[] colliders = arenaRoot.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider c = colliders[i];
+            if (c == null || !c.enabled) continue;
+
+            Transform t = c.transform;
+            if (t.GetComponentInParent<DoorController>(true) != null) continue;
+
+            string lower = t.name.ToLowerInvariant();
+            if (!lower.Contains("door")) continue;
+
+            if (t.GetComponent<DoorController>() != null) continue;
+
+            DoorController door = t.gameObject.AddComponent<DoorController>();
+            door.openOnStart         = false;
+            door.openOnPlayerTrigger = true;
+            door.interactiveToggle   = true;
+
+            int envLayer = LayerMask.NameToLayer("Environment");
+            if (envLayer >= 0)
+                SetLayerRecursive(t.gameObject, envLayer);
+        }
+    }
 
     private void BuildArena(Transform arenaRoot)
     {
@@ -693,6 +728,9 @@ public class LevelBuilder : MonoBehaviour
         float enemyDamage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() : 10f;
         int   currentLvl  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
 
+        PlayerController playerRef = Object.FindFirstObjectByType<PlayerController>();
+        Vector3 playerPos = playerRef != null ? playerRef.transform.position : Vector3.zero;
+
         // Try loading the Crosby enemy model
         GameObject enemyPrefab = Resources.Load<GameObject>("Enemy/Crosby");
 
@@ -712,11 +750,13 @@ public class LevelBuilder : MonoBehaviour
             new Vector3(-15f, 0.01f, -20f),
             new Vector3( 15f, 0.01f, -20f)
         };
-        Shuffle(spawnPoints);
+        var orderedSpawns = new System.Collections.Generic.List<Vector3>(spawnPoints);
+        orderedSpawns.Sort((a, b) =>
+            Vector3.Distance(b, playerPos).CompareTo(Vector3.Distance(a, playerPos)));
 
         for (int i = 0; i < enemyCount; i++)
         {
-            Vector3 spawnPos = spawnPoints[i % spawnPoints.Length];
+            Vector3 spawnPos = orderedSpawns[i % orderedSpawns.Count];
             GameObject enemyObject;
 
             if (enemyPrefab != null)
@@ -759,7 +799,7 @@ public class LevelBuilder : MonoBehaviour
             // Find an open-air spawn point first and move the object there
             // before adding NavMeshAgent, otherwise Unity warns if the object
             // starts too far from any baked NavMesh.
-            Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i);
+            Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i, playerPos);
             Vector3 agentSpawn = ResolveAgentSpawnPosition(openSpawn);
             enemyObject.transform.position = agentSpawn;
 
@@ -1009,7 +1049,7 @@ public class LevelBuilder : MonoBehaviour
 
         if (GameManager.Instance != null) return;
 
-        GameManager existing = FindFirstObjectByType<GameManager>();
+        GameManager existing = Object.FindFirstObjectByType<GameManager>();
         if (existing != null) return;
 
         GameObject managerObject = new GameObject("GameManager");
@@ -1109,7 +1149,7 @@ public class LevelBuilder : MonoBehaviour
 
     private void ConfigurePlayer()
     {
-        PlayerController playerController = FindFirstObjectByType<PlayerController>();
+        PlayerController playerController = Object.FindFirstObjectByType<PlayerController>();
         if (playerController == null)
         {
             GameObject playerPrefab = Resources.Load<GameObject>("FirstPersonMelee/Player");
@@ -1182,7 +1222,7 @@ public class LevelBuilder : MonoBehaviour
     }
     private NavMeshSurface EnsureNavMeshSurface()
     {
-        NavMeshSurface navMeshSurface = FindFirstObjectByType<NavMeshSurface>();
+        NavMeshSurface navMeshSurface = Object.FindFirstObjectByType<NavMeshSurface>();
         if (navMeshSurface != null)
         {
             navMeshSurface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
@@ -1228,7 +1268,7 @@ public class LevelBuilder : MonoBehaviour
 
     private void EnsureHud()
     {
-        HUDManager hud = FindFirstObjectByType<HUDManager>();
+        HUDManager hud = Object.FindFirstObjectByType<HUDManager>();
         if (hud == null)
         {
             GameObject hudObject = new GameObject("HUDManager");
@@ -1239,6 +1279,8 @@ public class LevelBuilder : MonoBehaviour
             hud.UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
             hud.UpdateScore(GameManager.Instance.score);
         }
+
+        // MatchCommentator is attached to the DDOL GameManager in GameManager.Awake (fully programmatic VO).
     }
 
     private void EnsurePauseMenu()
@@ -1249,7 +1291,7 @@ public class LevelBuilder : MonoBehaviour
 
     private void EnsureMinimapCamera()
     {
-        if (FindFirstObjectByType<MinimapCameraFollow>() != null) return;
+        if (Object.FindFirstObjectByType<MinimapCameraFollow>() != null) return;
         GameObject minimapObject = new GameObject(MinimapCameraName);
         Camera minimapCamera = minimapObject.AddComponent<Camera>();
         minimapCamera.transform.position = new Vector3(0f, 35f, 0f);
@@ -1517,9 +1559,29 @@ public class LevelBuilder : MonoBehaviour
     /// Finds an open spawn point for enemies. Same logic but with a wider set
     /// of candidates around the given position.
     /// </summary>
-    private static Vector3 FindOpenEnemySpawn(Vector3 preferred, int index)
+    private static Vector3 FindOpenEnemySpawn(Vector3 preferred, int index, Vector3 playerPosition)
     {
-        // Try offsets from the preferred position
+        float[] minClearMeters = { 15f, 11f, 7f, 4f, 0f };
+
+        for (int tier = 0; tier < minClearMeters.Length; tier++)
+        {
+            if (TryFindEnemySpawnWithHorizontalClearance(preferred, playerPosition, minClearMeters[tier], out Vector3 found))
+                return found;
+        }
+
+        NavMeshHit fallbackHit;
+        if (NavMesh.SamplePosition(preferred + Vector3.up * 0.5f, out fallbackHit, 5f, NavMesh.AllAreas))
+            return fallbackHit.position + Vector3.up * 0.1f;
+
+        return new Vector3(preferred.x, 0.1f, preferred.z);
+    }
+
+    private static bool TryFindEnemySpawnWithHorizontalClearance(
+        Vector3 preferred, Vector3 playerPosition, float minHorizontal, out Vector3 result)
+    {
+        result = default;
+        float minSq = minHorizontal * minHorizontal;
+
         Vector3[] offsets =
         {
             Vector3.zero,
@@ -1527,22 +1589,32 @@ public class LevelBuilder : MonoBehaviour
             new Vector3( 0f, 0f,  2f), new Vector3( 0f, 0f, -2f),
             new Vector3( 4f, 0f,  0f), new Vector3(-4f, 0f,  0f),
             new Vector3( 0f, 0f,  4f), new Vector3( 0f, 0f, -4f),
+            new Vector3( 6f, 0f,  0f), new Vector3(-6f, 0f,  0f),
+            new Vector3( 0f, 0f,  6f), new Vector3( 0f, 0f, -6f),
             new Vector3( 3f, 0f,  3f), new Vector3(-3f, 0f, -3f),
+            new Vector3( 3f, 0f, -3f), new Vector3(-3f, 0f,  3f),
+            new Vector3( 5f, 0f,  5f), new Vector3(-5f, 0f, -5f),
+            new Vector3( 8f, 0f,  0f), new Vector3(-8f, 0f,  0f),
+            new Vector3( 0f, 0f,  8f), new Vector3( 0f, 0f, -8f),
         };
         Shuffle(offsets);
 
+        Vector2 pXZ = new Vector2(playerPosition.x, playerPosition.z);
+
         foreach (Vector3 offset in offsets)
         {
-            if (IsOpenSpawnPoint(preferred + offset, out Vector3 offsetPos))
-                return offsetPos;
+            if (!IsOpenSpawnPoint(preferred + offset, out Vector3 offsetPos))
+                continue;
+
+            Vector2 eXZ = new Vector2(offsetPos.x, offsetPos.z);
+            if ((eXZ - pXZ).sqrMagnitude >= minSq)
+            {
+                result = offsetPos;
+                return true;
+            }
         }
 
-        // Fallback — just NavMesh snap without clearance check
-        NavMeshHit fallbackHit;
-        if (NavMesh.SamplePosition(preferred + Vector3.up * 0.5f, out fallbackHit, 5f, NavMesh.AllAreas))
-            return fallbackHit.position + Vector3.up * 0.1f;
-
-        return new Vector3(preferred.x, 0.1f, preferred.z);
+        return false;
     }
 
     // Progressive search radii — each step doubles the previous.

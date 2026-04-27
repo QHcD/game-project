@@ -1,3 +1,5 @@
+// Loading-screen / full-screen transition animations are not driven from HUDManager
+// (see LoadingScreenUI + RuntimeMenuBuilder — motion overlays disabled project-wide).
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
@@ -68,6 +70,9 @@ public class HUDManager : MonoBehaviour
 
     public bool IsMatchFinished => matchFinished;
 
+    /// <summary>Elapsed match seconds (drives the on-screen timer). Prefer this over duplicating time state.</summary>
+    public float MatchElapsedSeconds => elapsed;
+
     private void Awake()
     {
         if (Instance == null)
@@ -101,6 +106,9 @@ public class HUDManager : MonoBehaviour
         playerController = FindFirstObjectByType<PlayerController>();
 
         int level = GameManager.Instance.currentLevel;
+        timeLimit = GameManager.Instance.LevelTimeLimitSeconds;
+        elapsed = 0f;
+
         if (levelText != null)
         {
             levelText.text = "LEVEL " + level;
@@ -338,6 +346,7 @@ public class HUDManager : MonoBehaviour
                 EnsureMinimap(canvasObject.transform);
                 EnsureFullMapOverlay(canvasObject.transform);
                 EnsureScoreboardOverlay(canvasObject.transform);
+                EnsurePlayerIdentityChip(canvasObject.transform);
             }
             return;
         }
@@ -422,13 +431,14 @@ public class HUDManager : MonoBehaviour
             34f, FontStyles.Bold, TextAlignmentOptions.Left);
 
         levelText ??= CreateText(topBar.transform, "LevelText",
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 16f), new Vector2(320f, 44f),
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 22f), new Vector2(320f, 40f),
             36f, FontStyles.Bold, TextAlignmentOptions.Center);
 
         weaponText ??= CreateText(topBar.transform, "WeaponText",
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -18f), new Vector2(500f, 34f),
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -12f), new Vector2(500f, 30f),
             24f, FontStyles.Normal, TextAlignmentOptions.Center);
 
+        // Restore classic layout: top-right ENEMIES + TIME (pre-regression).
         enemyCountText ??= CreateText(topBar.transform, "EnemyText",
             new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-215f, 14f), new Vector2(380f, 40f),
             28f, FontStyles.Bold, TextAlignmentOptions.Right);
@@ -459,6 +469,26 @@ public class HUDManager : MonoBehaviour
         EnsureMinimap(canvasObject.transform);
         EnsureFullMapOverlay(canvasObject.transform);
         EnsureScoreboardOverlay(canvasObject.transform);
+        EnsurePlayerIdentityChip(canvasObject.transform);
+    }
+
+    /// <summary>Small top-left name strip — semi-transparent, sized to the handle.</summary>
+    private void EnsurePlayerIdentityChip(Transform canvasTransform)
+    {
+        if (canvasTransform == null) return;
+
+        string hudName = PlayerProfile.HasUsername ? PlayerProfile.Username : "OPERATIVE";
+        GameObject chip = CreateImage(canvasTransform, "PlayerIdentityChip",
+            new Color(0.12f, 0.12f, 0.14f, 0.5f),
+            new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(14f, -68f), new Vector2(268f, 46f));
+
+        TextMeshProUGUI nameTmp = CreateText(chip.transform, "PlayerHudName",
+            Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
+            20f, FontStyles.Bold, TextAlignmentOptions.Left);
+        nameTmp.text = "  " + hudName;
+        nameTmp.color = new Color(0.96f, 0.97f, 1f, 1f);
+        nameTmp.enableWordWrapping = false;
+        if (prismFont != null) nameTmp.font = prismFont;
     }
 
     private void EnsureCombatUi(Transform canvasTransform)

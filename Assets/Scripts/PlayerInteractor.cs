@@ -1,6 +1,10 @@
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
 
 /// <summary>
 /// Raycast-based interaction controller for the player. Each frame it casts
@@ -21,6 +25,12 @@ public class PlayerInteractor : MonoBehaviour
 
     [Tooltip("Interact key.")]
     public KeyCode interactKey = KeyCode.E;
+
+    [Tooltip("Also use primary mouse button when the pointer is not over UI.")]
+    public bool useMouseClick = true;
+
+    [Tooltip("When the cursor is visible/unlocked, cast from the mouse instead of screen center.")]
+    public bool rayFromMouseWhenCursorUnlocked = true;
 
     [Tooltip("Layers considered for interaction. Default = everything except UI/IgnoreRaycast.")]
     public LayerMask interactionMask = ~0;
@@ -54,25 +64,150 @@ public class PlayerInteractor : MonoBehaviour
             return;
         }
 
-        Camera cam = Camera.main;
+        Camera cam = ResolveInteractCamera();
         if (cam == null) { HideReticle(); return; }
 
-        Ray ray = cam.ScreenPointToRay(new Vector3(Screen.width * 0.5f, Screen.height * 0.5f, 0f));
-        if (Physics.Raycast(ray, out RaycastHit hit, maxDistance, interactionMask, QueryTriggerInteraction.Collide))
+        Vector2 screenPoint = GetInteractionScreenPoint();
+        Ray ray = cam.ScreenPointToRay(screenPoint);
+
+        if (TryGetInteractableHit(ray, out RaycastHit hit, out IInteractable interactable))
         {
-            IInteractable interactable = hit.collider.GetComponentInParent<IInteractable>();
-            if (interactable != null && interactable.CanInteract)
+            _currentTarget = interactable;
+            string clickHint = useMouseClick ? " / CLICK" : string.Empty;
+            ShowReticle("[" + interactKey + "]" + clickHint + "  " + interactable.GetPrompt());
+
+            bool useUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+            bool pressed = WasInteractPressedThisFrame();
+            if (useMouseClick && !pressed && !useUi)
             {
-                _currentTarget = interactable;
-                ShowReticle("[" + interactKey + "]  " + interactable.GetPrompt());
-                if (Input.GetKeyDown(interactKey))
-                    interactable.Interact(gameObject);
-                return;
+#if ENABLE_INPUT_SYSTEM
+                if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+                    pressed = true;
+#else
+                if (!pressed)
+                    pressed = UnityEngine.Input.GetMouseButtonDown(0);
+#endif
             }
+
+            if (pressed)
+                interactable.Interact(gameObject);
+            return;
         }
 
         _currentTarget = null;
         HideReticle();
+    }
+
+    private static Camera ResolveInteractCamera()
+    {
+        if (CameraController.Instance != null)
+        {
+            Camera c = CameraController.Instance.GetComponent<Camera>();
+            if (c != null && c.enabled) return c;
+        }
+
+        return Camera.main;
+    }
+
+    private Vector2 GetInteractionScreenPoint()
+    {
+        bool freeCursor = Cursor.lockState != CursorLockMode.Locked || Cursor.visible;
+        if (rayFromMouseWhenCursorUnlocked && freeCursor)
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (Mouse.current != null)
+                return Mouse.current.position.ReadValue();
+#else
+            return UnityEngine.Input.mousePosition;
+#endif
+        }
+
+        return new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+    }
+
+    /// <summary>
+    /// Third-person rays from the camera often hit the player mesh first. Walk
+    /// sorted hits until we find an <see cref="IInteractable"/> on another body.
+    /// </summary>
+    private bool TryGetInteractableHit(Ray ray, out RaycastHit bestHit, out IInteractable interactable)
+    {
+        bestHit      = default;
+        interactable = null;
+
+        RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, interactionMask, QueryTriggerInteraction.Collide);
+        if (hits == null || hits.Length == 0) return false;
+
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        Transform playerRoot = transform;
+
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider col = hits[i].collider;
+            if (col == null) continue;
+            if (IsPlayerOwnedCollider(col, playerRoot)) continue;
+
+            IInteractable found = FindInteractable(col);
+            if (found != null && found.CanInteract)
+            {
+                bestHit      = hits[i];
+                interactable = found;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsPlayerOwnedCollider(Collider col, Transform playerRoot)
+    {
+        if (playerRoot == null || col == null) return false;
+        Transform t = col.transform;
+        return t == playerRoot || t.IsChildOf(playerRoot);
+    }
+
+    /// <summary>
+    /// Walks parents and checks each <see cref="MonoBehaviour"/> for <see cref="IInteractable"/>.
+    /// More reliable than <c>GetComponentInParent&lt;IInteractable&gt;()</c> across Unity versions.
+    /// </summary>
+    private static IInteractable FindInteractable(Collider col)
+    {
+        if (col == null) return null;
+        for (Transform tr = col.transform; tr != null; tr = tr.parent)
+        {
+            MonoBehaviour[] mbs = tr.GetComponents<MonoBehaviour>();
+            for (int i = 0; i < mbs.Length; i++)
+            {
+                if (mbs[i] == null || !mbs[i].enabled) continue;
+                if (mbs[i] is IInteractable intr)
+                    return intr;
+            }
+        }
+
+        return null;
+    }
+
+    private bool WasInteractPressedThisFrame()
+    {
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null)
+        {
+            switch (interactKey)
+            {
+                case KeyCode.E: return Keyboard.current.eKey.wasPressedThisFrame;
+                case KeyCode.F: return Keyboard.current.fKey.wasPressedThisFrame;
+                case KeyCode.Q: return Keyboard.current.qKey.wasPressedThisFrame;
+                case KeyCode.R: return Keyboard.current.rKey.wasPressedThisFrame;
+                case KeyCode.G: return Keyboard.current.gKey.wasPressedThisFrame;
+                case KeyCode.Space: return Keyboard.current.spaceKey.wasPressedThisFrame;
+                case KeyCode.LeftShift: return Keyboard.current.leftShiftKey.wasPressedThisFrame;
+                case KeyCode.RightShift: return Keyboard.current.rightShiftKey.wasPressedThisFrame;
+                case KeyCode.Return: return Keyboard.current.enterKey.wasPressedThisFrame;
+            }
+        }
+        return false;
+#else
+        return UnityEngine.Input.GetKeyDown(interactKey);
+#endif
     }
 
     private void EnsureReticle()

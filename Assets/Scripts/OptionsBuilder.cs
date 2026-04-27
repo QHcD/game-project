@@ -30,14 +30,7 @@ public class OptionsBuilder : MonoBehaviour
 
     private void EnsureEventSystem()
     {
-        if (FindFirstObjectByType<EventSystem>() != null)
-        {
-            return;
-        }
-
-        GameObject eventSystemObject = new GameObject("EventSystem");
-        eventSystemObject.AddComponent<EventSystem>();
-        eventSystemObject.AddComponent<InputSystemUIInputModule>();
+        UIManager.EnsureInputSystemEventSystem();
     }
 
     private void BuildOptionsMenu()
@@ -73,35 +66,40 @@ public class OptionsBuilder : MonoBehaviour
         Stretch(overlay.GetComponent<RectTransform>());
         overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.22f);
 
-        MakeText(canvasObject.transform, "OPTIONS", 62f, new Color(0.78f, 0.84f, 1f, 1f),
-            new Vector2(0f, 300f), new Vector2(720f, 84f), true, TextAlignmentOptions.Center);
-        MakeText(canvasObject.transform, "MATCH THE RUN TO YOUR STYLE", 22f, new Color(0.72f, 0.84f, 1f, 0.88f),
-            new Vector2(0f, 248f), new Vector2(720f, 34f), false, TextAlignmentOptions.Center);
-
         GameObject panelObject = new GameObject("CentralPanel");
         panelObject.transform.SetParent(canvasObject.transform, false);
         Image panel = panelObject.AddComponent<Image>();
-        panel.color = new Color(0.16f, 0.20f, 0.30f, 0.30f);
         Outline outline = panelObject.AddComponent<Outline>();
-        outline.effectColor = new Color(0.26f, 0.42f, 0.68f, 0.18f);
-        outline.effectDistance = new Vector2(2f, -2f);
-        SetRect(panel.GetComponent<RectTransform>(), new Vector2(980f, 540f), new Vector2(0f, -10f));
+        SetRect(panel.GetComponent<RectTransform>(), new Vector2(1100f, 640f), new Vector2(0f, 6f));
+        PrismOrganizedMenuChrome.ApplyPanelSurface(panel, outline);
+
+        // Title + subtitle inside the panel (not floating above it).
+        MakeText(panelObject.transform, "OPTIONS", 62f, new Color(0.78f, 0.84f, 1f, 1f),
+            new Vector2(0f, 268f), new Vector2(720f, 84f), true, TextAlignmentOptions.Center);
+        MakeText(panelObject.transform, "MATCH THE RUN TO YOUR STYLE", 22f, new Color(0.72f, 0.84f, 1f, 0.88f),
+            new Vector2(0f, 220f), new Vector2(720f, 34f), false, TextAlignmentOptions.Center);
 
         difficultyDropdown = MakeDropdownRow(panel.transform, "DIFFICULTY:", new List<string>(difficultyOptions),
-            DifficultyIndex(), 80f, OnDifficultyChanged);
+            DifficultyIndex(), 118f, OnDifficultyChanged);
         perspectiveDropdown = MakeDropdownRow(panel.transform, "CAMERA VIEW:", new List<string>(perspectiveOptions),
-            PerspectiveIndex(), 4f, OnPerspectiveChanged);
+            PerspectiveIndex(), 42f, OnPerspectiveChanged);
         controlDropdown = MakeDropdownRow(panel.transform, "MOVE STYLE:", new List<string>(controlOptions),
-            ControlIndex(), -72f, OnControlChanged);
-        sensitivitySlider = MakeSensitivityRow(panel.transform, -148f);
+            ControlIndex(), -34f, OnControlChanged);
+        sensitivitySlider = MakeSensitivityRow(panel.transform, -108f);
 
         MakeInfoText(panel.transform, "Tune difficulty, camera view, movement scheme, and mouse sensitivity. Sensitivity 0 is very slow, 7 is very fast — the change takes effect immediately in-game.",
-            new Vector2(0f, -212f), new Vector2(820f, 70f));
+            new Vector2(0f, -162f), new Vector2(820f, 70f));
 
-        Button returnBtn = MakePrismButton(canvasObject.transform, "RETURN", new Vector2(-150f, -340f), () => SceneManager.LoadScene("MainMenu"));
-        Button resetBtn  = MakePrismButton(canvasObject.transform, "RESET",  new Vector2(150f, -340f), ResetOptions);
+        RectTransform footerRt = PrismOrganizedMenuChrome.CreateFooterRow(panelObject.transform);
+        Button returnBtn = PrismOrganizedMenuChrome.AddFooterChipButton(
+            footerRt, "RETURN",
+            new Color(0.12f, 0.20f, 0.42f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlineBlue,
+            () => SceneManager.LoadScene("MainMenu"), prismFont);
+        Button resetBtn = PrismOrganizedMenuChrome.AddFooterChipButton(
+            footerRt, "RESET",
+            new Color(0.22f, 0.12f, 0.38f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlinePurple,
+            ResetOptions, prismFont);
 
-        // Wire arrow-key + Enter navigation across every interactable on this screen.
         List<Selectable> nav = new List<Selectable>();
         if (difficultyDropdown != null)  nav.Add(difficultyDropdown);
         if (perspectiveDropdown != null) nav.Add(perspectiveDropdown);
@@ -109,7 +107,7 @@ public class OptionsBuilder : MonoBehaviour
         if (sensitivitySlider != null)   nav.Add(sensitivitySlider);
         if (returnBtn != null) nav.Add(returnBtn);
         if (resetBtn != null)  nav.Add(resetBtn);
-        MenuKeyboardNavigator.AttachVertical(canvasObject, nav);
+        MenuNavigationManager.AttachLinear(canvasObject, nav);
     }
 
     /// <summary>

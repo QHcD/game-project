@@ -160,6 +160,11 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        // Door / wall occlusion: if a static prop on the Environment layer
+        // sits between the attacker and us, the hit is blocked entirely.
+        if (DamageOcclusion.IsBlocked(attackerRoot, gameObject))
+            return;
+
         if (attackerRoot != null)
         {
             EnemyController attackerEnemy = attackerRoot.GetComponentInParent<EnemyController>();
