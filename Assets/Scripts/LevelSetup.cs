@@ -18,6 +18,7 @@ public class LevelSetup : MonoBehaviour
             EnsureCamera();
             EnsureGroundVisible();
             StabilizeEnvironment();
+            DestroyHeavyLevelProps();
             ForceFallbackSpawnIfNeeded();
             TryInitializeOptionalAISystems();
         }
@@ -219,6 +220,42 @@ public class LevelSetup : MonoBehaviour
 
             if (envLayer >= 0)
                 col.gameObject.layer = envLayer;
+        }
+    }
+
+    /// <summary>
+    /// Performance pass: destroy known-heavy props that are not gameplay-critical.
+    /// Concrete Barriers are preserved; everything else on the hit list is removed.
+    /// </summary>
+    private void DestroyHeavyLevelProps()
+    {
+        // Name fragments to destroy (case-insensitive substring match).
+        string[] destroyPatterns = { "car", "wooden box", "woodenbox", "red building", "redbuilding" };
+        // Prefixes that must be preserved even if they contain a destroy pattern.
+        string[] preservePatterns = { "concrete barrier", "concretebarrier" };
+
+        GameObject[] all = FindObjectsByType<GameObject>(FindObjectsSortMode.None);
+        foreach (GameObject go in all)
+        {
+            if (go == null || !go.scene.IsValid()) continue;
+            // Never destroy the player or enemies.
+            if (go.GetComponentInParent<IDamageable>() != null) continue;
+
+            string nameLower = go.name.ToLowerInvariant();
+
+            bool shouldPreserve = false;
+            foreach (string p in preservePatterns)
+                if (nameLower.Contains(p)) { shouldPreserve = true; break; }
+            if (shouldPreserve) continue;
+
+            foreach (string pattern in destroyPatterns)
+            {
+                if (nameLower.Contains(pattern))
+                {
+                    Destroy(go);
+                    break;
+                }
+            }
         }
     }
 
