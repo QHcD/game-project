@@ -2251,10 +2251,22 @@ public class PlayerController : MonoBehaviour
             firstPersonLocalPos = new Vector3(firstPersonLocalPos.x, headY, Mathf.Max(firstPersonLocalPos.z, 0.09f));
             firstPersonCam.transform.localPosition = firstPersonLocalPos;
             firstPersonCam.transform.localRotation = firstPersonLocalRot;
-            // FPS needs a close near clip so the viewmodel doesn't clip away.
-            firstPersonCam.nearClipPlane = Mathf.Min(firstPersonCam.nearClipPlane, 0.01f);
+            // Hard minimum near clip — eliminates near-surface geometry bleeding.
+            firstPersonCam.nearClipPlane = 0.01f;
             firstPersonCam.tag = "MainCamera";
             firstPersonCam.gameObject.SetActive(true);
+
+            // If FPSCameraRig is present, let it take over anchor + culling-mask setup.
+            FPSCameraRig rig = firstPersonCam.GetComponent<FPSCameraRig>();
+            if (rig == null)
+                rig = firstPersonCam.gameObject.AddComponent<FPSCameraRig>();
+            rig.playerRoot = transform;
+            // Forward the head bone if the body is already spawned.
+            if (thirdPersonBody != null)
+            {
+                Transform headBone = FPSCameraRig_FindHeadBone(thirdPersonBody.transform);
+                if (headBone != null) rig.SetHeadBone(headBone);
+            }
         }
 
         if (runtimeThirdPersonCamera != null)
@@ -2465,6 +2477,9 @@ public class PlayerController : MonoBehaviour
             }
 
             CacheAnimatorParameters();
+
+            // Notify FPSCameraRig (if present) of the new head bone.
+            NotifyFPSCameraRigHeadBone(thirdPersonBody.transform);
             return;
         }
 
@@ -3598,6 +3613,44 @@ public class PlayerController : MonoBehaviour
             desiredLossyScale.x / Mathf.Max(Mathf.Abs(parentLossyScale.x), 0.0001f),
             desiredLossyScale.y / Mathf.Max(Mathf.Abs(parentLossyScale.y), 0.0001f),
             desiredLossyScale.z / Mathf.Max(Mathf.Abs(parentLossyScale.z), 0.0001f));
+    }
+
+    private void NotifyFPSCameraRigHeadBone(Transform bodyRoot)
+    {
+        if (firstPersonCam == null) return;
+        FPSCameraRig rig = firstPersonCam.GetComponent<FPSCameraRig>();
+        if (rig == null) return;
+        Transform headBone = FPSCameraRig_FindHeadBone(bodyRoot);
+        if (headBone != null) rig.SetHeadBone(headBone);
+    }
+
+    // ── FPSCameraRig integration helpers ─────────────────────────────────────
+
+    /// <summary>
+    /// Searches the body hierarchy for a bone that looks like a head bone.
+    /// Used to automatically anchor the FPS camera in front of the face.
+    /// </summary>
+    private static Transform FPSCameraRig_FindHeadBone(Transform root)
+    {
+        string[] candidates = { "Head", "Bip01 Head", "mixamorig:Head", "head", "Bip_Head" };
+        foreach (string name in candidates)
+        {
+            Transform found = FPSCameraRig_SearchByName(root, name);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static Transform FPSCameraRig_SearchByName(Transform t, string target)
+    {
+        if (t == null) return null;
+        if (string.Equals(t.name, target, System.StringComparison.OrdinalIgnoreCase)) return t;
+        for (int i = 0; i < t.childCount; i++)
+        {
+            Transform result = FPSCameraRig_SearchByName(t.GetChild(i), target);
+            if (result != null) return result;
+        }
+        return null;
     }
 
     private static void SetLayerRecursive(GameObject obj, int layer)
