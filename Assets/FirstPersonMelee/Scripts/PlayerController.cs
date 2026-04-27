@@ -20,6 +20,8 @@ public class PlayerController : MonoBehaviour
     private const float ThirdPersonMinPitch = -12f;
     private const float ThirdPersonMaxPitch = 45f;
     private const float ThirdPersonInitialPitch = 8f;
+    private const float FirstPersonMinPitch = -80f;
+    private const float FirstPersonMaxPitch = 80f;
     private const float ForcedSeparationDistance = 1.0f;
     private const float MeleeImpactRadius = 0.78f;
     private const string PrefKeySicklePos = "Grip.Player.L13.Sickle.Pos";
@@ -118,6 +120,13 @@ public class PlayerController : MonoBehaviour
 
     [Tooltip("Mouse look sensitivity.")]
     public float sensitivity = 100f;
+
+    [Header("Mouse Look Smoothing")]
+    [Tooltip("Higher = snappier; lower = smoother. 18–28 is a good FPS range.")]
+    public float lookSmoothing = 22f;
+
+    [Tooltip("Optional cap on per-frame mouse delta to prevent spikes on low FPS or focus changes.")]
+    public float maxMouseDeltaPerFrame = 60f;
 
     [Header("Combat")]
     [Tooltip("Maximum distance for melee attacks.")]
@@ -259,6 +268,7 @@ public class PlayerController : MonoBehaviour
     // Camera
     private float cameraPitch;
     private float cameraYaw;
+    private Vector2 lookInputSmoothed;
     private Vector3 firstPersonLocalPos;
     private Quaternion firstPersonLocalRot;
     private Camera runtimeThirdPersonCamera;
@@ -317,8 +327,7 @@ public class PlayerController : MonoBehaviour
     //  PUBLIC API
     // ════════════════════════════════════════════════════════════════════════
 
-    // Third-person ONLY — the first-person camera is permanently disabled.
-    public Camera ActiveCamera => runtimeThirdPersonCamera;
+    public Camera ActiveCamera => isThirdPersonActive ? runtimeThirdPersonCamera : firstPersonCam;
     public GameObject GetThirdPersonBody() => thirdPersonBody;
     public bool IsMeleeWeapon => true;
 
@@ -356,16 +365,14 @@ public class PlayerController : MonoBehaviour
             targetControllerCenter = controller.center;
         }
 
-        // ── Third-person ONLY: locate the first-person camera so we can DISABLE it.
-        //    We keep the reference so EnsureThirdPersonCamera can borrow FOV/clip
-        //    settings, but the GameObject is immediately turned off and never shown.
+        // Cache first-person camera transform for restoring when toggling.
         if (firstPersonCam == null)
             firstPersonCam = GetComponentInChildren<Camera>();
         if (firstPersonCam != null)
         {
             firstPersonLocalPos = firstPersonCam.transform.localPosition;
             firstPersonLocalRot = firstPersonCam.transform.localRotation;
-            firstPersonCam.gameObject.SetActive(false);   // ← permanently off
+            firstPersonCam.gameObject.SetActive(false);
         }
 
         CacheFirstPersonWeaponSlot();
@@ -536,6 +543,20 @@ public class PlayerController : MonoBehaviour
         UpdateCombatState();
         UpdateAnimatorParameters();
         HandleWeaponGripDebugTuning();
+
+        // Cursor policy:
+        // - During gameplay: locked + hidden.
+        // - When timeScale is 0 (pause/menus): unlocked + visible (PauseMenuController handles this too).
+        if (Time.timeScale <= 0.0001f)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible   = true;
+        }
+        else
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible   = false;
+        }
     }
 
     private void LateUpdate()
@@ -585,7 +606,17 @@ public class PlayerController : MonoBehaviour
         moveInputRaw = ReadMovementInput();
         moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
         moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, InputSmoothing * Time.deltaTime);
+
+        // Read raw mouse delta (Input System gives pixels-per-frame-ish deltas).
+        // We clamp it to avoid giant spikes (alt-tab, focus changes, or 10 FPS stutters).
         lookInput = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
+        lookInput = Vector2.ClampMagnitude(lookInput, Mathf.Max(1f, maxMouseDeltaPerFrame));
+
+        // Smooth mouse input to remove jitter while keeping responsiveness.
+        // Exponential smoothing is frame-rate independent.
+        float dt = Mathf.Max(0.0001f, Time.unscaledDeltaTime);
+        float k = 1f - Mathf.Exp(-lookSmoothing * dt);
+        lookInputSmoothed = Vector2.Lerp(lookInputSmoothed, lookInput, k);
     }
 
     private void HandleActionInput()
@@ -1044,14 +1075,23 @@ public class PlayerController : MonoBehaviour
         // Convert deg/sec back into the per-mouse-unit input scale we used
         // before so existing input.lookInput numbers continue to feel right.
         float perUnit = rotSpeed * 0.01f;
-        float mouseX = lookInput.x * perUnit * Time.deltaTime;
-        float mouseY = lookInput.y * perUnit * Time.deltaTime;
+        // Use the smoothed input so rotation doesn't jitter on high DPI mice.
+        // Use unscaledDeltaTime so pause/menu timeScale changes don't distort sensitivity.
+        float dt = Mathf.Max(0.0001f, Time.unscaledDeltaTime);
+        float mouseX = lookInputSmoothed.x * perUnit * dt;
+        float mouseY = lookInputSmoothed.y * perUnit * dt;
 
         cameraPitch -= mouseY;
-        // Keep the third-person camera in a grounded shooter range.
-        cameraPitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
-
-        // First-person camera is permanently disabled — no pitch update needed.
+        if (isThirdPersonActive)
+        {
+            // Keep the third-person camera in a grounded shooter range.
+            cameraPitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
+        }
+        else
+        {
+            // Call-of-duty style: wider pitch in first person.
+            cameraPitch = Mathf.Clamp(cameraPitch, FirstPersonMinPitch, FirstPersonMaxPitch);
+        }
 
         cameraYaw += mouseX;
         transform.rotation = Quaternion.Euler(0f, cameraYaw, 0f);
@@ -1062,11 +1102,28 @@ public class PlayerController : MonoBehaviour
             if (orbitCtrl != null)
                 orbitCtrl.pitch = cameraPitch;
         }
+        else if (!isThirdPersonActive && firstPersonCam != null)
+        {
+            // Apply pitch directly to the FPS camera, preserving its base orientation.
+            firstPersonCam.transform.localRotation = firstPersonLocalRot * Quaternion.Euler(cameraPitch, 0f, 0f);
+        }
     }
 
     private void UpdateHeadBob()
     {
-        // Head-bob was a first-person effect. Third-person only — nothing to do.
+        if (isThirdPersonActive) return;
+        if (firstPersonCam == null) return;
+
+        // Simple, clean FPS bob: tied to horizontal speed and grounded state.
+        float speed = new Vector3(actualHorizontalVelocity.x, 0f, actualHorizontalVelocity.z).magnitude;
+        float bobStrength = isGrounded ? Mathf.Clamp01(speed / 6f) : 0f;
+        float bobFreq = Mathf.Lerp(0f, 10.5f, bobStrength);
+
+        float y = Mathf.Sin(Time.time * bobFreq) * 0.03f * bobStrength;
+        float x = Mathf.Cos(Time.time * bobFreq * 0.5f) * 0.02f * bobStrength;
+
+        Vector3 basePos = firstPersonLocalPos;
+        firstPersonCam.transform.localPosition = basePos + new Vector3(x, y, 0f);
     }
 
     private void UpdateCameraZoom()
@@ -1081,7 +1138,10 @@ public class PlayerController : MonoBehaviour
         cameraKickTarget  = Mathf.Lerp(cameraKickTarget, 0f, 14f * Time.deltaTime);
         cameraPitch += cameraKickCurrent * Time.deltaTime;
         // Keep camera kick inside the same grounded shooter range.
-        cameraPitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
+        cameraPitch = Mathf.Clamp(
+            cameraPitch,
+            isThirdPersonActive ? ThirdPersonMinPitch : FirstPersonMinPitch,
+            isThirdPersonActive ? ThirdPersonMaxPitch : FirstPersonMaxPitch);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -2028,8 +2088,14 @@ public class PlayerController : MonoBehaviour
 
     private void TogglePerspective()
     {
-        // Perspective toggle disabled — game is third-person only.
-        // Kept so that any external callers don't cause a compile error.
+        if (GameManager.Instance == null)
+            return;
+        GameManager.PerspectiveMode current = GameManager.Instance.GetPerspectiveMode();
+        GameManager.PerspectiveMode next = current == GameManager.PerspectiveMode.FirstPerson
+            ? GameManager.PerspectiveMode.ThirdPerson
+            : GameManager.PerspectiveMode.FirstPerson;
+        GameManager.Instance.SetPerspectiveMode(next);
+        RefreshGameplayPreferences();
     }
 
     public void RefreshGameplayPreferences()
@@ -2041,14 +2107,53 @@ public class PlayerController : MonoBehaviour
 
     private void ApplyPerspectivePreference()
     {
-        // Game is third-person only — always enable the third-person view.
-        EnableThirdPersonView();
+        GameManager.PerspectiveMode mode = GameManager.Instance != null
+            ? GameManager.Instance.GetPerspectiveMode()
+            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson), 0, 1);
+
+        if (mode == GameManager.PerspectiveMode.FirstPerson)
+            EnableFirstPersonView();
+        else
+            EnableThirdPersonView();
     }
 
     private void EnableFirstPersonView()
     {
-        // First-person view permanently removed — redirect to third-person.
-        EnableThirdPersonView();
+        isThirdPersonActive = false;
+        cameraPitch = 0f;
+
+        if (firstPersonCam == null)
+            firstPersonCam = GetComponentInChildren<Camera>(true);
+
+        if (firstPersonCam != null)
+        {
+            // Snap to a stable head height (prevents "inside floor/body" camera on some prefabs).
+            float headY = controller != null ? Mathf.Clamp(controller.height - 0.18f, 1.35f, 1.85f) : 1.65f;
+            firstPersonLocalPos = new Vector3(firstPersonLocalPos.x, headY, Mathf.Max(firstPersonLocalPos.z, 0.09f));
+            firstPersonCam.transform.localPosition = firstPersonLocalPos;
+            firstPersonCam.transform.localRotation = firstPersonLocalRot;
+            // FPS needs a close near clip so the viewmodel doesn't clip away.
+            firstPersonCam.nearClipPlane = Mathf.Min(firstPersonCam.nearClipPlane, 0.01f);
+            firstPersonCam.tag = "MainCamera";
+            firstPersonCam.gameObject.SetActive(true);
+        }
+
+        if (runtimeThirdPersonCamera != null)
+        {
+            runtimeThirdPersonCamera.tag = "Untagged";
+            runtimeThirdPersonCamera.gameObject.SetActive(false);
+        }
+
+        // Keep the third-person rig ACTIVE so weapon scripts/coroutines keep working,
+        // but hide its renderers so FPS view stays clean.
+        if (thirdPersonBody != null)
+        {
+            thirdPersonBody.SetActive(true);
+            SetThirdPersonRenderersVisible(false);
+        }
+
+        SetFirstPersonRenderersVisible(true);
+        RefreshFirstPersonWeaponModel(equippedWeaponLevel > 0 ? equippedWeaponLevel : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1));
     }
 
     private void EnableThirdPersonView()
@@ -2057,16 +2162,37 @@ public class PlayerController : MonoBehaviour
         EnsureThirdPersonCamera();
         EnsureThirdPersonBody();
 
-        // Keep first-person camera off (was disabled in Awake).
         if (firstPersonCam != null)
+        {
+            firstPersonCam.tag = "Untagged";
             firstPersonCam.gameObject.SetActive(false);
+        }
 
         if (runtimeThirdPersonCamera != null)
+        {
+            runtimeThirdPersonCamera.tag = "MainCamera";
             runtimeThirdPersonCamera.gameObject.SetActive(true);
+        }
 
         SetFirstPersonRenderersVisible(false);
         if (thirdPersonBody != null)
+        {
             thirdPersonBody.SetActive(true);
+            SetThirdPersonRenderersVisible(true);
+        }
+
+        ClearFirstPersonKnifeVisual();
+    }
+
+    private void SetThirdPersonRenderersVisible(bool visible)
+    {
+        if (thirdPersonBody == null) return;
+        Renderer[] rs = thirdPersonBody.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < rs.Length; i++)
+        {
+            if (rs[i] != null)
+                rs[i].enabled = visible;
+        }
     }
 
     private void EnsureThirdPersonCamera()
@@ -2197,8 +2323,6 @@ public class PlayerController : MonoBehaviour
     private void EnsureThirdPersonBody()
     {
         if (thirdPersonBody != null) return;
-
-        SetFirstPersonRenderersVisible(false);
 
         GameObject roninBodyPrefab = Resources.Load<GameObject>("Player/Ronin/source/Ronin");
         if (roninBodyPrefab != null)
@@ -2608,7 +2732,9 @@ public class PlayerController : MonoBehaviour
                 : null);
         ApplyWeaponLiveAnimation(liveAnimDef);
 
-        // RefreshFirstPersonWeaponModel removed — third-person only.
+        // Keep the FPS viewmodel in sync when the player swaps weapons.
+        if (!isThirdPersonActive)
+            RefreshFirstPersonWeaponModel(gameplayLevel);
     }
 
     /// <summary>
@@ -3291,7 +3417,57 @@ public class PlayerController : MonoBehaviour
 
     private void RefreshFirstPersonWeaponModel(int level)
     {
-        // First-person weapon display removed — weapon is on the 3rd-person body only.
+        if (firstPersonCam == null)
+            firstPersonCam = GetComponentInChildren<Camera>(true);
+        if (firstPersonCam == null)
+            return;
+
+        if (firstPersonWeaponSlot == null)
+            CacheFirstPersonWeaponSlot();
+        if (firstPersonWeaponSlot == null)
+            return;
+
+        ClearFirstPersonKnifeVisual();
+
+        // Spawn a lightweight "viewmodel" weapon under the camera for COD-style FPS feel.
+        float _;
+        GameObject prefab = WeaponLoadoutCatalog.LoadPrefabWithFallback(Mathf.Clamp(level, 1, 16), out _);
+        if (prefab == null)
+            return;
+
+        GameObject vm = Instantiate(prefab, firstPersonWeaponSlot, false);
+        vm.name = "FP_WeaponModel";
+        SetLayerRecursive(vm, gameObject.layer);
+
+        foreach (Animator a in vm.GetComponentsInChildren<Animator>(true))
+            a.enabled = false;
+        foreach (Rigidbody rb in vm.GetComponentsInChildren<Rigidbody>(true))
+        {
+            rb.isKinematic = true;
+            rb.useGravity = false;
+        }
+        foreach (Collider c in vm.GetComponentsInChildren<Collider>(true))
+            c.enabled = false;
+
+        // Sensible default placement (keeps the weapon to the lower-right like COD).
+        vm.transform.localPosition = new Vector3(0.28f, -0.22f, 0.62f);
+        vm.transform.localRotation = Quaternion.Euler(-6f, 165f, 2f);
+        vm.transform.localScale    = Vector3.one * 0.32f;
+
+        // A couple of special-case nudges so common weapons look "pure FPS".
+        if (level == 2) // Katana
+        {
+            // Katana is long; keep it lower/right and smaller so it never fills the screen.
+            vm.transform.localPosition = new Vector3(0.36f, -0.28f, 0.78f);
+            vm.transform.localRotation = Quaternion.Euler(-12f, 150f, 6f);
+            vm.transform.localScale    = Vector3.one * 0.22f;
+        }
+
+        // Hide the placeholder mesh renderer if the camera has one.
+        if (firstPersonWeaponMeshRenderer != null)
+            firstPersonWeaponMeshRenderer.enabled = false;
+
+        firstPersonKnifeInstance = vm;
     }
 
     private static void ApplyDesiredLossyScale(Transform target, Vector3 desiredLossyScale)
