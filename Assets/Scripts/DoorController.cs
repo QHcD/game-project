@@ -62,7 +62,7 @@ public class DoorController : MonoBehaviour, IInteractable
 
     private void OnTriggerEnter(Collider other)
     {
-        if (!openOnPlayerTrigger || _hasOpened) return;
+        if (!openOnPlayerTrigger || _isOpen) return;
         if (!string.IsNullOrEmpty(playerTag) && !other.CompareTag(playerTag)) return;
         Open();
     }
@@ -73,7 +73,7 @@ public class DoorController : MonoBehaviour, IInteractable
     /// </summary>
     public void Open()
     {
-        if (_hasOpened && _isOpen) return;
+        if (_isOpen) return;
         _hasOpened = true;
         _isOpen    = true;
 

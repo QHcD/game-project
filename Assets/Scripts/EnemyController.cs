@@ -203,6 +203,14 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _stuckTimer;
     private bool  _isGrounded = true;
     private State _preJumpState;
+
+    // Heartbeat (anti-freeze): if we don't displace meaningfully for
+    // HeartbeatNoMoveThreshold seconds while in a movement state, force a
+    // NavMesh path recompute to the nearest target.
+    private const float HeartbeatNoMoveThreshold = 1.5f;
+    private const float HeartbeatMoveEpsilon     = 0.05f; // metres
+    private float _heartbeatTimer;
+    private Vector3 _heartbeatLastSampledPos;
     private HashSet<int> _animParameterHashes;
     private Transform _activeWeaponSocket;
     private Transform _activeWeaponHandBone;
@@ -413,7 +421,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        RecoverOnlyIfOutOfMap();
+        // Warp logic removed per user request
 
         _attackTimer -= Time.deltaTime;
 
@@ -434,8 +442,72 @@ public class EnemyController : MonoBehaviour, IDamageable
             case State.Jumping: UpdateJumping(); break;
         }
 
-        RecoverOnlyIfOutOfMap();
+        TickHeartbeat();
+        // Warp logic removed per user request
         SyncAnimator();
+    }
+
+    /// <summary>
+    /// Anti-freeze watchdog. While the enemy is in a state that should be
+    /// closing distance (Idle / Patrol / Chase) but its world position has
+    /// barely changed for 1.5 s, kick the NavMeshAgent: clear its current
+    /// path and re-target the nearest valid combatant (or the locked target).
+    /// Attack / Flinch / Jumping / Dead are excluded — they legitimately hold.
+    /// </summary>
+    private void TickHeartbeat()
+    {
+        if (_state == State.Attack || _state == State.Flinch ||
+            _state == State.Jumping || _state == State.Dead)
+        {
+            _heartbeatTimer = 0f;
+            _heartbeatLastSampledPos = transform.position;
+            return;
+        }
+
+        Vector3 here = transform.position;
+        if ((here - _heartbeatLastSampledPos).sqrMagnitude > HeartbeatMoveEpsilon * HeartbeatMoveEpsilon)
+        {
+            _heartbeatTimer = 0f;
+            _heartbeatLastSampledPos = here;
+            return;
+        }
+
+        _heartbeatTimer += Time.deltaTime;
+        if (_heartbeatTimer < HeartbeatNoMoveThreshold) return;
+
+        _heartbeatTimer = 0f;
+        _heartbeatLastSampledPos = here;
+        ForcePathRecomputeToNearestTarget();
+    }
+
+    private void ForcePathRecomputeToNearestTarget()
+    {
+        if (!IsAgentReady()) return;
+
+        Transform target = IsTargetValid(_target)
+            ? _target
+            : FindFfaTarget(Mathf.Max(detectionRadius, aggressiveScanRadius));
+
+        if (target == null)
+        {
+            // Nothing valid to chase — at least re-issue the patrol so the
+            // agent doesn't keep idling against a stale internal path.
+            _agent.ResetPath();
+            TransitionTo(State.Patrol);
+            return;
+        }
+
+        _target = target;
+        _agent.ResetPath();
+        Vector3 dest = target.position;
+        if (NavMesh.SamplePosition(dest, out NavMeshHit navHit, 2.0f, NavMesh.AllAreas))
+            dest = navHit.position;
+
+        _agent.isStopped = false;
+        _agent.SetDestination(dest);
+
+        if (_state != State.Chase && _state != State.Attack)
+            TransitionTo(State.Chase);
     }
 
     private void FixedUpdate()
@@ -502,6 +574,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
+    private float _stuckInChaseTimer;
+
     private void UpdateChase()
     {
         if (HandleOffMeshLinkTraversal())
@@ -529,6 +603,21 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (IsAgentReady())
         {
             if (_agent.isStopped) _agent.isStopped = false;
+
+            if (_agent.velocity.sqrMagnitude < 0.01f)
+            {
+                _stuckInChaseTimer += Time.deltaTime;
+                if (_stuckInChaseTimer >= 1.0f)
+                {
+                    _stuckInChaseTimer = 0f;
+                    _agent.ResetPath();
+                    _agent.SetDestination(_target.position);
+                }
+            }
+            else
+            {
+                _stuckInChaseTimer = 0f;
+            }
 
             // ── Dynamic speed: exceed the player's actual sprint speed ───────
             // Read the player's current max speed at runtime so a future tweak
@@ -659,10 +748,6 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ════════════════════════════════════════════════════════════════════════
 
     private static readonly Collider[] _separationBuffer = new Collider[24];
-
-    [Header("Anti-Magnet Repulsion")]
-    [Tooltip("Distance under which two enemies push each other apart.")]
-    [SerializeField] private float enemyPersonalSpace = 1.0f;
 
     private void ApplyEnemySeparation()
     {
@@ -977,7 +1062,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         if (bestTarget != null)
-            bestTarget.ReceiveDamage(Mathf.RoundToInt(attackDamage), gameObject);
+        {
+            if (!DamageOcclusion.IsBlockedFromPoint(gameObject, bestTarget.gameObject, impactPoint))
+                bestTarget.ReceiveDamage(Mathf.RoundToInt(attackDamage), gameObject);
+        }
     }
 
     private Vector3 GetWeaponImpactPoint(Vector3 center, Vector3 forward)
@@ -1082,6 +1170,12 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        // Door / wall occlusion: a static prop on the Environment layer
+        // between attacker and us cancels the hit (the player can no longer
+        // be tagged through closed doors and the AI returns the courtesy).
+        if (DamageOcclusion.IsBlocked(attackerRoot, gameObject))
+            return;
+
         // ── Record attacker & retaliate immediately ─────────────────────────
         if (attackerRoot != null && attackerRoot != gameObject)
         {

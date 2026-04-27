@@ -1,4 +1,6 @@
+using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -107,6 +109,9 @@ public class GameManager : MonoBehaviour
     public int totalEnemiesSpawned   = 0;
     public int enemiesKilledThisLevel = 0;
 
+    /// <summary>Fired whenever <see cref="enemiesRemaining"/> is updated (spawn init or kill).</summary>
+    public event Action<int> OnEnemiesRemainingChanged;
+
     // ── Custom Match (set by the Custom Match menu) ──────────────────────────
     // When IsCustomMatch is true, GetEnemyCount/LevelTimeLimitSeconds and the
     // active difficulty switch over to these per-session overrides instead of
@@ -124,9 +129,14 @@ public class GameManager : MonoBehaviour
 
     [SerializeField] private float victoryDelaySeconds = 2.5f;
     [SerializeField] private float loadingScreenMinSeconds = 5.5f;
+    [Tooltip("If multiple cameras keep the MainCamera tag, extras are disabled so only one renders (prefers CameraController).")]
+    [SerializeField] private bool enforceSingleMainCameraTag = true;
 
     private bool _levelCompleteTriggered = false;
     private Coroutine _sceneLoadRoutine;
+
+    private AudioSource _matchVoiceAudio;
+    private AudioSource _matchUiAudio;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetStaticsForPlayMode()
@@ -154,7 +164,7 @@ public class GameManager : MonoBehaviour
 
         if (Application.isPlaying)
         {
-            GameManager[] all = Object.FindObjectsByType<GameManager>(FindObjectsSortMode.None);
+            GameManager[] all = UnityEngine.Object.FindObjectsByType<GameManager>(FindObjectsSortMode.None);
             for (int i = 0; i < all.Length; i++)
             {
                 if (all[i] != null && all[i] != this)
@@ -165,9 +175,108 @@ public class GameManager : MonoBehaviour
             }
 
             DontDestroyOnLoad(gameObject);
+
+            SetupProgrammaticMatchAudio();
+            if (GetComponent<MatchCommentator>() == null)
+                gameObject.AddComponent<MatchCommentator>();
         }
 
         LoadPersistedSettings();
+    }
+
+    private void Start()
+    {
+        if (!Application.isPlaying || !enforceSingleMainCameraTag)
+            return;
+        EnforceSingleMainCameraTag();
+    }
+
+    /// <summary>
+    /// Keeps a single enabled <c>MainCamera</c> when duplicates exist (common after merges / prefab copies).
+    /// Does not remove UI or minimap cameras that use other tags.
+    /// </summary>
+    private void EnforceSingleMainCameraTag()
+    {
+        Camera[] cameras = UnityEngine.Object.FindObjectsByType<Camera>(FindObjectsSortMode.None);
+        Camera preferred = null;
+        if (CameraController.Instance != null)
+            preferred = CameraController.Instance.GetComponent<Camera>();
+
+        var mains = new List<Camera>(4);
+        for (int i = 0; i < cameras.Length; i++)
+        {
+            Camera c = cameras[i];
+            if (c == null || !c.isActiveAndEnabled) continue;
+            if (!c.CompareTag("MainCamera")) continue;
+            mains.Add(c);
+        }
+
+        if (mains.Count <= 1)
+            return;
+
+        Camera keep = preferred != null && mains.Contains(preferred) ? preferred : mains[0];
+        for (int i = 0; i < mains.Count; i++)
+        {
+            if (mains[i] != null && mains[i] != keep)
+                mains[i].enabled = false;
+        }
+    }
+
+    /// <summary>Child <c>__MatchVoice</c> — commentary / VO <see cref="PlayMatchVoiceOneShot"/>.</summary>
+    public AudioSource MatchVoiceAudio => _matchVoiceAudio;
+
+    /// <summary>Child <c>__MatchUiSfx</c> — countdown beeps, UI stingers.</summary>
+    public AudioSource MatchUiAudio => _matchUiAudio;
+
+    private void SetupProgrammaticMatchAudio()
+    {
+        _matchVoiceAudio = EnsureChildAudioSource("__MatchVoice", SessionManager.Instance != null
+            ? SessionManager.Instance.VoiceOverMixerGroupName
+            : "VO");
+        _matchUiAudio = EnsureChildAudioSource("__MatchUiSfx", SessionManager.Instance != null
+            ? SessionManager.Instance.MatchUiMixerGroupName
+            : "UI");
+    }
+
+    private AudioSource EnsureChildAudioSource(string childName, string mixerGroupName)
+    {
+        Transform existing = transform.Find(childName);
+        if (existing == null)
+        {
+            GameObject go = new GameObject(childName);
+            go.transform.SetParent(transform, false);
+            existing = go.transform;
+        }
+
+        AudioSource src = existing.GetComponent<AudioSource>();
+        if (src == null)
+            src = existing.gameObject.AddComponent<AudioSource>();
+        src.playOnAwake = false;
+        src.spatialBlend = 0f;
+        src.loop = false;
+
+        if (SessionManager.Instance != null && !string.IsNullOrEmpty(mixerGroupName))
+            SessionManager.Instance.ConfigureMatchAudioSource(src, mixerGroupName);
+
+        return src;
+    }
+
+    /// <summary>VO / commentator lines (overlapping friendly).</summary>
+    public void PlayMatchVoiceOneShot(AudioClip clip, float volumeScale = 1f)
+    {
+        if (!Application.isPlaying || clip == null) return;
+        if (_matchVoiceAudio == null)
+            SetupProgrammaticMatchAudio();
+        _matchVoiceAudio?.PlayOneShot(clip, Mathf.Clamp01(volumeScale));
+    }
+
+    /// <summary>Countdown beeps / GO chime and other non-positional UI audio.</summary>
+    public void PlayMatchUiOneShot(AudioClip clip, float volumeScale = 1f)
+    {
+        if (!Application.isPlaying || clip == null) return;
+        if (_matchUiAudio == null)
+            SetupProgrammaticMatchAudio();
+        _matchUiAudio?.PlayOneShot(clip, Mathf.Clamp01(volumeScale));
     }
 
     private void OnDestroy()
@@ -229,7 +338,7 @@ public class GameManager : MonoBehaviour
     {
         yield return null;
 
-        EnemyController[] enemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        EnemyController[] enemies = UnityEngine.Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
         if (enemies != null && enemies.Length > 0 && totalEnemiesSpawned <= 0)
             InitializeEnemyCount(enemies.Length);
     }
@@ -239,7 +348,7 @@ public class GameManager : MonoBehaviour
         yield return null;
         yield return null;
 
-        EnemyController[] enemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        EnemyController[] enemies = UnityEngine.Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
         if (enemies == null) yield break;
 
         for (int i = 0; i < enemies.Length; i++)
@@ -438,6 +547,8 @@ public class GameManager : MonoBehaviour
         enemiesRemaining       = count;
         enemiesKilledThisLevel = 0;
 
+        OnEnemiesRemainingChanged?.Invoke(enemiesRemaining);
+
         Debug.Log($"[GameManager] InitializeEnemyCount: {count} enemies registered for this level.");
     }
 
@@ -467,6 +578,7 @@ public class GameManager : MonoBehaviour
     {
         enemiesKilledThisLevel++;
         enemiesRemaining = Mathf.Max(0, enemiesRemaining - 1);
+        OnEnemiesRemainingChanged?.Invoke(enemiesRemaining);
 
         if (byPlayer)
             AddScore(100);
@@ -691,6 +803,9 @@ public class GameManager : MonoBehaviour
 
         if (loadingUi != null)
             loadingUi.DestroySelf();
+
+        if (sceneName == "GameScene")
+            yield return MatchStartCountdownUI.Play();
 
         _sceneLoadRoutine = null;
     }

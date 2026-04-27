@@ -563,10 +563,16 @@ public class EndMatchCinematic : MonoBehaviour
 /// </summary>
 public class VictoryPoseDriver : MonoBehaviour
 {
+    private static readonly string[] VictoryTriggerCandidates =
+    {
+        "VictoryDance", "Victory", "Celebrate", "Win", "Taunt",
+    };
+
     private Vector3 _baseScale;
     private Vector3 _basePos;
     private Quaternion _baseRot;
     private bool _running;
+    private bool _animatorDriven;
     private float _t;
 
     public void Begin()
@@ -576,6 +582,35 @@ public class VictoryPoseDriver : MonoBehaviour
         _baseRot   = transform.rotation;
         _running   = true;
         _t         = 0f;
+
+        Animator anim = GetComponentInChildren<Animator>(true);
+        _animatorDriven = anim != null && TrySetVictoryTrigger(anim);
+    }
+
+    private static bool TrySetVictoryTrigger(Animator anim)
+    {
+        if (anim == null || !anim.isActiveAndEnabled) return false;
+        for (int i = 0; i < VictoryTriggerCandidates.Length; i++)
+        {
+            string name = VictoryTriggerCandidates[i];
+            if (!HasParameter(anim, name, AnimatorControllerParameterType.Trigger))
+                continue;
+            anim.ResetTrigger(name);
+            anim.SetTrigger(name);
+            return true;
+        }
+        return false;
+    }
+
+    private static bool HasParameter(Animator anim, string paramName, AnimatorControllerParameterType type)
+    {
+        for (int i = 0; i < anim.parameterCount; i++)
+        {
+            AnimatorControllerParameter p = anim.GetParameter(i);
+            if (p.type == type && p.name == paramName)
+                return true;
+        }
+        return false;
     }
 
     private void LateUpdate()
@@ -583,11 +618,13 @@ public class VictoryPoseDriver : MonoBehaviour
         if (!_running) return;
         _t += Time.unscaledDeltaTime;
 
+        if (_animatorDriven)
+            return;
+
         float scaleK = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(_t / 0.6f));
         Vector3 victoryScale = _baseScale * Mathf.Lerp(1f, 1.15f, scaleK);
         transform.localScale = victoryScale;
 
-        // Vertical bob + slow yaw so the winner looks alive on the podium.
         float bob = Mathf.Sin(_t * 2.6f) * 0.15f;
         transform.position = new Vector3(_basePos.x, _basePos.y + bob, _basePos.z);
         transform.rotation = _baseRot * Quaternion.Euler(0f, _t * 32f, 0f);

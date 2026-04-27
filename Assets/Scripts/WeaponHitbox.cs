@@ -119,6 +119,10 @@ public class WeaponHitbox : MonoBehaviour
         if (hitThisSwing.Contains(id)) return false;
 
         int dmg = damage > 0 ? damage : 25;
+        Vector3 origin = GetWeaponTipWorldPosition();
+        if (DamageOcclusion.IsBlockedFromPoint(resolvedOwner, target.gameObject, origin))
+            return false;
+
         target.ReceiveDamage(dmg, resolvedOwner);
         hitThisSwing.Add(id);
         return true;

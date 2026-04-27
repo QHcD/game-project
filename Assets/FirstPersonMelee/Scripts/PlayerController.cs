@@ -365,6 +365,16 @@ public class PlayerController : MonoBehaviour
         // each time a player spawns. Guarantees the Options-menu slider value
         // applies to the very first frame of mouse-look in GameScene.
         LookSensitivityRuntime.LoadFromPrefs();
+
+        // Any Rigidbody on the player root (legacy prefabs / imported rigs) must
+        // not tip the capsule or add gravity torque — CharacterController owns motion.
+        Rigidbody rootBody = GetComponent<Rigidbody>();
+        if (rootBody != null)
+        {
+            rootBody.isKinematic = true;
+            rootBody.useGravity = false;
+            rootBody.constraints = RigidbodyConstraints.FreezeRotation;
+        }
     }
 
     private void Start()
@@ -508,8 +518,13 @@ public class PlayerController : MonoBehaviour
 
     private void LateUpdate()
     {
-        Vector3 euler = transform.eulerAngles;
-        transform.rotation = Quaternion.Euler(0f, euler.y, 0f);
+        // Winners Circle / end-match cinematic drives the root transform via
+        // VictoryPoseDriver — do not fight it with yaw lock or ground snap.
+        if (EndMatchCinematic.GameplayLocked)
+            return;
+
+        // Strictly lock rotation to yaw only
+        transform.eulerAngles = new Vector3(0f, transform.eulerAngles.y, 0f);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -703,7 +718,6 @@ public class PlayerController : MonoBehaviour
         UpdateStanceCollider();
 
         ClampInsideArena();
-        SnapToArenaFloor();
 
         Vector3 frameDisplacement = transform.position - frameStartPosition;
         frameDisplacement.y = 0f;
@@ -887,10 +901,11 @@ public class PlayerController : MonoBehaviour
         }
 
         if (equippedWeaponHitbox != null)
-            equippedWeaponHitbox.DisableHitbox();
-
-        CancelInvoke(nameof(AttackRaycast));
-        AttackRaycast();
+        {
+            if (weaponHitboxRoutine != null)
+                StopCoroutine(weaponHitboxRoutine);
+            weaponHitboxRoutine = StartCoroutine(PlayerWeaponHitboxWindowRoutine());
+        }
     }
 
     private System.Collections.IEnumerator PlayerWeaponHitboxWindowRoutine()
@@ -1030,6 +1045,28 @@ public class PlayerController : MonoBehaviour
 
         isFlipping = false;
         flipCoroutine = null;
+
+        verticalVelocity.y = -2f;
+        horizontalVelocity *= 0.4f;
+        SnapRootAboveFloorImmediate();
+    }
+
+    private void SnapRootAboveFloorImmediate()
+    {
+        if (controller == null) return;
+
+        Vector3 p = transform.position;
+        Vector3 origin = p + Vector3.up * 0.35f;
+        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 2.8f, ~0, QueryTriggerInteraction.Ignore))
+            return;
+
+        float restY = hit.point.y - controller.center.y + (controller.height * 0.5f) - controller.skinWidth;
+        if (p.y < restY - 0.02f)
+        {
+            controller.enabled = false;
+            transform.position = new Vector3(p.x, restY, p.z);
+            controller.enabled = true;
+        }
     }
 
     private void TryStartSlide()
@@ -1457,6 +1494,8 @@ public class PlayerController : MonoBehaviour
         IDamageable damageable = target.GetComponentInParent<IDamageable>();
         if (damageable != null && damageable.gameObject != gameObject && damageable.IsAlive)
         {
+            if (DamageOcclusion.IsBlocked(gameObject, damageable.gameObject))
+                return false;
             damageable.ReceiveDamage(damage, gameObject);
             return true;
         }
@@ -1709,7 +1748,8 @@ public class PlayerController : MonoBehaviour
 
     private void SnapToArenaFloor()
     {
-        if (controller == null || verticalVelocity.y > 0.1f || isGrounded) return;
+        if (controller == null || verticalVelocity.y > 0.1f) return;
+        if (isFlipping) return;
 
         Vector3 origin   = transform.position + Vector3.up * 0.3f;
         float   castDist = Mathf.Max(maxFloorSnapDistance * 10f, 5f);
@@ -1720,7 +1760,13 @@ public class PlayerController : MonoBehaviour
         float targetY  = hit.point.y;
         float currentY = transform.position.y;
 
-        if (currentY <= targetY + 0.01f) return;
+        // While airborne we only push DOWN (never up) toward the surface.
+        // While grounded we still allow an UPWARD push when the capsule has
+        // sunk through the surface (typical after stance changes that shrink
+        // the controller height). LateUpdate handles micro re-anchoring; this
+        // path covers larger overshoots that need the ramped snap speed.
+        if (isGrounded && currentY >= targetY - 0.02f) return;
+        if (!isGrounded && currentY <= targetY + 0.01f) return;
 
         float dist      = currentY - targetY;
         float snapSpeed = Mathf.Lerp(floorSnapSpeed, floorSnapSpeed * 8f, Mathf.Clamp01(dist / 3f));
@@ -1802,6 +1848,8 @@ public class PlayerController : MonoBehaviour
             {
                 thirdPersonCam = runtimeThirdPersonCamera;
                 existingFollow.target = transform;
+                // Must be MainCamera so Camera.main / interaction rays match gameplay.
+                runtimeThirdPersonCamera.tag = "MainCamera";
                 ApplyThirdPersonCameraSettings(existingFollow, runtimeThirdPersonCamera);
                 DestroyDuplicateThirdPersonCameras(existingFollows, i);
                 return;
