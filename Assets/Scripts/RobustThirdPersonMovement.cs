@@ -14,14 +14,15 @@ public class RobustThirdPersonMovement : MonoBehaviour
     [SerializeField] private Animator animator;
 
     [Header("Movement")]
-    [SerializeField] private float moveSpeed = 4.5f;
-    [SerializeField] private float sprintSpeed = 6.5f;
-    [SerializeField] private float rotationSpeed = 14f;
-    [SerializeField] private float acceleration = 18f;
+    [SerializeField] private float moveSpeed = 5.2f;
+    [SerializeField] private float sprintSpeed = 8.0f;
+    [SerializeField] private float rotationSpeed = 16f;
+    [SerializeField] private float acceleration = 26f;
+    [SerializeField] private float deceleration = 32f;
 
     [Header("Jump / Gravity")]
-    [SerializeField] private float jumpHeight = 1.6f;
-    [SerializeField] private float gravity = -25f;
+    [SerializeField] private float jumpHeight = 1.2f;
+    [SerializeField] private float gravity = -28f;
     [SerializeField] private float groundedOffset = 0.1f;
     [SerializeField] private float groundedRadius = 0.28f;
     [SerializeField] private LayerMask groundLayers = ~0;
@@ -98,7 +99,10 @@ public class RobustThirdPersonMovement : MonoBehaviour
             : 0f;
 
         Vector3 targetVelocity = MoveDirection * targetSpeed;
-        _moveVelocity = Vector3.MoveTowards(_moveVelocity, targetVelocity, acceleration * Time.deltaTime);
+        // Separate accel/decel: ramp up fast, but brake even faster on key release
+        // so the player does not slide past their stopping point.
+        float rate = inputDirection.sqrMagnitude > 0.001f ? acceleration : deceleration;
+        _moveVelocity = Vector3.MoveTowards(_moveVelocity, targetVelocity, rate * Time.deltaTime);
 
         if (MoveDirection.sqrMagnitude > 0.001f)
         {
@@ -142,10 +146,11 @@ public class RobustThirdPersonMovement : MonoBehaviour
             return Vector2.zero;
 
         Vector2 input = Vector2.zero;
-        if (Keyboard.current.wKey.isPressed) input.y += 1f;
-        if (Keyboard.current.sKey.isPressed) input.y -= 1f;
-        if (Keyboard.current.dKey.isPressed) input.x += 1f;
-        if (Keyboard.current.aKey.isPressed) input.x -= 1f;
+        Keyboard k = Keyboard.current;
+        if (k.wKey.isPressed || k.upArrowKey.isPressed || k.numpad8Key.isPressed) input.y += 1f;
+        if (k.sKey.isPressed || k.downArrowKey.isPressed || k.numpad2Key.isPressed) input.y -= 1f;
+        if (k.dKey.isPressed || k.rightArrowKey.isPressed || k.numpad6Key.isPressed) input.x += 1f;
+        if (k.aKey.isPressed || k.leftArrowKey.isPressed || k.numpad4Key.isPressed) input.x -= 1f;
         return input;
     }
 

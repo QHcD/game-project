@@ -1523,17 +1523,41 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 526ed24552cf0d04684295be1f2c8308, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  moveSpeed: 5
-  sprintMultiplier: 1.37
-  gravity: -9.8
+  moveSpeed: 5.2
+  sprintMultiplier: 1.55
+  gravity: -28
   jumpHeight: 1.2
   playerAnimatorController: {fileID: 9100000, guid: e271718b7cc6d4af7a7cb713e7076aeb, type: 2}
   playerAvatar: {fileID: 9000000, guid: 88dc56ed1335a40a28cdeaa63978e7bf, type: 3}
-  acceleration: 12
-  deceleration: 12
+  acceleration: 26
+  deceleration: 32
+  crouchHeight: 1.3
+  proneHeight: 0.7
+  stanceTransitionSpeed: 8
+  crouchSpeedMultiplier: 0.72
+  proneSpeedMultiplier: 0.45
+  slideSpeedMultiplier: 1.6
+  slideDuration: 0.45
+  powerSlideBoost: 6
+  powerSlideCooldown: 0.4
+  mantleUpHeight: 1.1
+  mantleForwardDistance: 1
+  mantleDuration: 0.25
+  thrusterJumpHeight: 2.8
+  thrusterForwardBoost: 5.8
+  thrusterCooldown: 0.8
+  crouchBodyYOffset: -0.28
+  proneBodyYOffset: -0.62
+  flipVerticalImpulse: 1.4
+  flipForwardBoost: 5.5
+  flipDuration: 0.42
+  flipCooldown: 0.9
+  proneCrawlBodyYOffset: -0.05
   firstPersonCam: {fileID: 0}
   thirdPersonCam: {fileID: 0}
   sensitivity: 100
+  lookSmoothing: 22
+  maxMouseDeltaPerFrame: 60
   attackDistance: 3
   attackDelay: 0.4
   attackSpeed: 1
@@ -1561,6 +1585,13 @@ MonoBehaviour:
   arenaFloorHeight: 0.1
   floorSnapSpeed: 14
   maxFloorSnapDistance: 0.45
+  staticObstacleMask:
+    serializedVersion: 2
+    m_Bits: 0
+  wallCollisionPadding: 0.045
+  minMoveClearance: 0.025
+  maxSeparationPushPerFrame: 0.08
+  jumpGroundProbeExtra: 0.14
   equippedWeaponObject: {fileID: 0}
 --- !u!143 &1788623314744564118
 CharacterController:

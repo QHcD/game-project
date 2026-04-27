@@ -52,16 +52,16 @@ public class PlayerController : MonoBehaviour
 
     [Header("Movement")]
     [Tooltip("Base walking speed in units per second.")]
-    public float moveSpeed = 3.5f;
+    public float moveSpeed = 5.2f;
 
     [Tooltip("Multiplier applied when sprint key is held.")]
-    public float sprintMultiplier = 1.37f;
+    public float sprintMultiplier = 1.55f;
 
-    [Tooltip("Gravity acceleration (negative value).")]
-    public float gravity = -22f;
+    [Tooltip("Gravity acceleration (negative value). Stronger gravity = snappier, less floaty landings.")]
+    public float gravity = -28f;
 
-    [Tooltip("Maximum jump height in units. Tuned to a natural human-scale hop instead of the previous heroic launch.")]
-    public float jumpHeight = 1.05f;
+    [Tooltip("Maximum jump height in units. Tuned to a natural human-scale hop.")]
+    public float jumpHeight = 1.2f;
 
     [Header("Animation")]
     [Tooltip("Animator controller for the spawned third-person body.")]
@@ -71,11 +71,11 @@ public class PlayerController : MonoBehaviour
     public Avatar playerAvatar;
 
     [Header("Movement Tuning")]
-    [Tooltip("How fast the character reaches full speed (units/s²).")]
-    public float acceleration = 12f;
+    [Tooltip("How fast the character reaches full speed (units/s²). High value removes the 'wading through mud' feel.")]
+    public float acceleration = 26f;
 
-    [Tooltip("How fast the character brakes to zero (units/s²).")]
-    public float deceleration = 12f;
+    [Tooltip("How fast the character brakes to zero (units/s²). High value stops the player from sliding on key release.")]
+    public float deceleration = 32f;
 
     [Header("Tactical Maneuvers")]
     public float crouchHeight = 1.3f;
@@ -83,10 +83,10 @@ public class PlayerController : MonoBehaviour
     public float stanceTransitionSpeed = 8f;
     public float crouchSpeedMultiplier = 0.72f;
     public float proneSpeedMultiplier = 0.45f;
-    public float slideSpeedMultiplier = 1.8f;
-    public float slideDuration = 0.55f;
-    public float powerSlideBoost = 7.5f;
-    public float powerSlideCooldown = 0.35f;
+    public float slideSpeedMultiplier = 1.6f;
+    public float slideDuration = 0.45f;
+    public float powerSlideBoost = 6.0f;
+    public float powerSlideCooldown = 0.4f;
     public float mantleUpHeight = 1.1f;
     public float mantleForwardDistance = 1.0f;
     public float mantleDuration = 0.25f;
@@ -100,14 +100,14 @@ public class PlayerController : MonoBehaviour
     public float proneBodyYOffset = -0.62f;
 
     [Header("Black Ops 3 Maneuvers")]
-    [Tooltip("Vertical hop applied at the start of a flip (Z key).")]
-    public float flipVerticalImpulse = 6.5f;
-    [Tooltip("Forward boost applied at the start of a flip (Z key).")]
-    public float flipForwardBoost = 7.5f;
-    [Tooltip("How long the flip rotation animation plays (seconds).")]
-    public float flipDuration = 0.65f;
+    [Tooltip("Peak hop height in meters at the start of a flip (Z key). Was 6.5 — that lifted the player ~6.5 m, well above any room ceiling, and was the root cause of the post-flip ground clipping.")]
+    public float flipVerticalImpulse = 1.4f;
+    [Tooltip("Forward boost applied at the start of a flip (Z key). Tuned for a controllable dash, not a launch.")]
+    public float flipForwardBoost = 5.5f;
+    [Tooltip("How long the flip rotation animation plays (seconds). Shorter = faster recovery of player control.")]
+    public float flipDuration = 0.42f;
     [Tooltip("Cooldown between flips (seconds).")]
-    public float flipCooldown = 1.1f;
+    public float flipCooldown = 0.9f;
     [Tooltip("Body Y offset while crawling — tiny because the body lies flat.")]
     public float proneCrawlBodyYOffset = -0.05f;
 
@@ -814,7 +814,7 @@ public class PlayerController : MonoBehaviour
         GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 _);
         Vector3 origin = bottom + Vector3.up * 0.06f;
         return Physics.Raycast(origin, Vector3.down, out _, reach + 0.06f,
-            Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
+            BuildGroundCheckMask(), QueryTriggerInteraction.Ignore);
     }
 
     /// <summary>
@@ -1347,8 +1347,13 @@ public class PlayerController : MonoBehaviour
         isFlipping = false;
         flipCoroutine = null;
 
-        verticalVelocity.y = -2f;
-        horizontalVelocity *= 0.4f;
+        // Do NOT slam vertical velocity to -2: that discontinuity used to trigger
+        // the SnapToArenaFloor downward-teleport bug. Keep whatever velocity the
+        // arc finished with so gravity / the CharacterController land naturally.
+        // Drop nearly all residual horizontal boost so WASD input is responsive
+        // again the instant the flip ends (was 0.4 = 40 % carry-over → felt
+        // uncontrollable).
+        horizontalVelocity *= 0.15f;
         SnapRootAboveFloorImmediate();
     }
 
@@ -1357,17 +1362,37 @@ public class PlayerController : MonoBehaviour
         if (controller == null) return;
 
         Vector3 p = transform.position;
+        // Cast distance must reach the floor even from the flip arc peak (~6.5 m).
+        // Use 10 m so it works regardless of jump / flip height.
         Vector3 origin = p + Vector3.up * 0.35f;
-        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 2.8f, ~0, QueryTriggerInteraction.Ignore))
+        int groundMask = BuildGroundCheckMask();
+        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 10f, groundMask, QueryTriggerInteraction.Ignore))
             return;
 
-        float restY = hit.point.y - controller.center.y + (controller.height * 0.5f) - controller.skinWidth;
+        // Place the capsule bottom exactly on the floor surface (+ skinWidth so
+        // the CC's internal contact offset keeps the player flush, not buried).
+        // Previous formula subtracted skinWidth, which put the capsule 4 cm underground.
+        float restY = hit.point.y - controller.center.y + (controller.height * 0.5f) + controller.skinWidth;
         if (p.y < restY - 0.02f)
         {
             controller.enabled = false;
             transform.position = new Vector3(p.x, restY, p.z);
             controller.enabled = true;
         }
+    }
+
+    // Returns a layermask that covers solid ground but excludes the player's
+    // own capsule so snap raycasts never self-intersect.
+    private static int BuildGroundCheckMask()
+    {
+        int mask = Physics.DefaultRaycastLayers;
+        int playerLayer    = LayerMask.NameToLayer("Player");
+        int characterLayer = LayerMask.NameToLayer("Character");
+        int hittableLayer  = LayerMask.NameToLayer("Hittable");
+        if (playerLayer    >= 0) mask &= ~(1 << playerLayer);
+        if (characterLayer >= 0) mask &= ~(1 << characterLayer);
+        if (hittableLayer  >= 0) mask &= ~(1 << hittableLayer);
+        return mask;
     }
 
     private void TryStartSlide()
@@ -1444,7 +1469,8 @@ public class PlayerController : MonoBehaviour
         if (mantleCoroutine != null) return;
 
         Vector3 origin = transform.position + Vector3.up * 1.0f;
-        if (!Physics.Raycast(origin, transform.forward, out RaycastHit wallHit, 1.1f, ~0, QueryTriggerInteraction.Ignore))
+        int groundMask = BuildGroundCheckMask();
+        if (!Physics.Raycast(origin, transform.forward, out RaycastHit wallHit, 1.1f, groundMask, QueryTriggerInteraction.Ignore))
         {
             // Fallback mini-vault so V always produces a visible maneuver.
             Vector3 fallbackTarget = transform.position + transform.forward * 0.7f + Vector3.up * 0.25f;
@@ -1453,7 +1479,7 @@ public class PlayerController : MonoBehaviour
         }
 
         Vector3 topCheck = wallHit.point + Vector3.up * mantleUpHeight + transform.forward * 0.15f;
-        if (Physics.Raycast(topCheck, Vector3.down, out RaycastHit topHit, mantleUpHeight + 1.2f, ~0, QueryTriggerInteraction.Ignore))
+        if (Physics.Raycast(topCheck, Vector3.down, out RaycastHit topHit, mantleUpHeight + 1.2f, groundMask, QueryTriggerInteraction.Ignore))
         {
             mantleCoroutine = StartCoroutine(MantleRoutine(topHit.point + transform.forward * mantleForwardDistance));
         }
@@ -2026,28 +2052,12 @@ public class PlayerController : MonoBehaviour
 
     private void ClampInsideArena()
     {
-        Vector3 planar = transform.position;
-        planar.y = 0f;
-
-        float maxR = Mathf.Max(1f, arenaBoundaryRadius - controller.radius - arenaBoundaryPadding);
-        if (planar.sqrMagnitude <= maxR * maxR) return;
-
-        Vector3 clamped = planar.normalized * maxR;
-        if (controller != null) controller.enabled = false;
-        transform.position = new Vector3(clamped.x, transform.position.y, clamped.z);
-        if (controller != null) controller.enabled = true;
-
-        if (Vector3.Dot(horizontalVelocity, planar.normalized) > 0f)
-            horizontalVelocity = Vector3.zero;
-
-        float groundedRootY = GetGroundedRootY();
-        if (transform.position.y < groundedRootY - 0.35f || transform.position.y > groundedRootY + 4f)
-        {
-            if (controller != null) controller.enabled = false;
-            transform.position = new Vector3(transform.position.x, groundedRootY, transform.position.z);
-            if (controller != null) controller.enabled = true;
-            verticalVelocity.y = Mathf.Min(verticalVelocity.y, 0f);
-        }
+        // Arena boundary disabled — the map is open for the player to explore
+        // freely.  The CharacterController, NavMesh floor, and level geometry
+        // are sufficient to keep the player in the world without an artificial
+        // invisible circular wall.  The hardcoded arenaFloorHeight Y-clamp
+        // that was here also mismatched real map geometry and contributed to
+        // the player being snapped underground near the boundary.
     }
 
     private float GetGroundedRootY()
@@ -2060,33 +2070,40 @@ public class PlayerController : MonoBehaviour
 
     private void SnapToArenaFloor()
     {
-        if (controller == null || verticalVelocity.y > 0.1f) return;
+        if (controller == null) return;
         if (isFlipping) return;
 
-        Vector3 origin   = transform.position + Vector3.up * 0.3f;
-        float   castDist = Mathf.Max(maxFloorSnapDistance * 10f, 5f);
+        // Only fix the case where the capsule bottom has sunk BELOW the physics
+        // surface — never pull an airborne player downward.  Doing so while
+        // isFlipping just became false caused a 112 m/s force-teleport that
+        // bypassed CharacterController physics and drove the player underground.
+        // Normal falling is handled entirely by gravity in ApplyMovement.
+        if (!isGrounded) return;
+        // Also skip while the player has upward momentum (jumping / start of flip).
+        if (verticalVelocity.y > 0.1f) return;
 
-        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, castDist, ~0, QueryTriggerInteraction.Ignore))
+        int groundMask = BuildGroundCheckMask();
+        Vector3 origin = transform.position + Vector3.up * 0.3f;
+        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit,
+                             maxFloorSnapDistance + 0.4f, groundMask, QueryTriggerInteraction.Ignore))
             return;
 
-        float targetY  = hit.point.y;
-        float currentY = transform.position.y;
+        float capsuleBottomY = transform.position.y + controller.center.y - controller.height * 0.5f;
+        float floorY         = hit.point.y;
 
-        // While airborne we only push DOWN (never up) toward the surface.
-        // While grounded we still allow an UPWARD push when the capsule has
-        // sunk through the surface (typical after stance changes that shrink
-        // the controller height). LateUpdate handles micro re-anchoring; this
-        // path covers larger overshoots that need the ramped snap speed.
-        if (isGrounded && currentY >= targetY - 0.02f) return;
-        if (!isGrounded && currentY <= targetY + 0.01f) return;
+        // Capsule bottom is already at or above the floor — nothing to do.
+        if (capsuleBottomY >= floorY - 0.02f) return;
 
-        float dist      = currentY - targetY;
-        float snapSpeed = Mathf.Lerp(floorSnapSpeed, floorSnapSpeed * 8f, Mathf.Clamp01(dist / 3f));
-        float snappedY  = Mathf.MoveTowards(currentY, targetY, snapSpeed * Time.deltaTime);
+        // Capsule has sunk below the floor surface: lift it back up smoothly.
+        float lift      = floorY - capsuleBottomY;
+        float snapSpeed = Mathf.Lerp(floorSnapSpeed, floorSnapSpeed * 4f, Mathf.Clamp01(lift / 0.5f));
+        float liftDelta = Mathf.MoveTowards(0f, lift, snapSpeed * Time.deltaTime);
 
-        if (controller != null) controller.enabled = false;
-        transform.position = new Vector3(transform.position.x, snappedY, transform.position.z);
-        if (controller != null) controller.enabled = true;
+        controller.enabled = false;
+        transform.position = new Vector3(transform.position.x,
+                                         transform.position.y + liftDelta,
+                                         transform.position.z);
+        controller.enabled = true;
     }
 
     // ════════════════════════════════════════════════════════════════════════
