@@ -217,6 +217,17 @@ public class CameraController : MonoBehaviour
 
         Vector3 lookTarget = GetLookTarget();
         Vector3 currentOffset = GetCurrentOffset();
+        if (!IsFinite(target.position) || !IsFinite(lookTarget) || !IsFinite(currentOffset))
+        {
+            RecoverFromInvalidCameraState();
+            return;
+        }
+        if (!IsFinite(_positionVelocity))
+            _positionVelocity = Vector3.zero;
+        if (!IsFinite(_distanceVelocity))
+            _distanceVelocity = 0f;
+        if (!IsFinite(_fieldOfViewVelocity))
+            _fieldOfViewVelocity = 0f;
 
         // ── Build orbit rotation ─────────────────────────────────────────────
         // Horizontal from the player's Y rotation, vertical from mouse pitch.
@@ -226,6 +237,11 @@ public class CameraController : MonoBehaviour
         // ── Resolve wall collision ───────────────────────────────────────────
         if (enableCollision && IsFinite(desiredPos))
             desiredPos = ResolveCollision(desiredPos, orbitRot, lookTarget, currentOffset);
+        if (!IsFinite(desiredPos))
+        {
+            RecoverFromInvalidCameraState();
+            return;
+        }
 
         // ── Smooth follow ────────────────────────────────────────────────────
         if (!IsFinite(transform.position) || Vector3.Distance(transform.position, desiredPos) > 30f)
@@ -240,7 +256,8 @@ public class CameraController : MonoBehaviour
         UpdateFieldOfView();
 
         // ── Look at spine bone (never at empty space ahead of the player) ────
-        transform.LookAt(lookTarget);
+        if (IsFinite(lookTarget) && (lookTarget - transform.position).sqrMagnitude > 0.0001f)
+            transform.LookAt(lookTarget);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -471,13 +488,32 @@ public class CameraController : MonoBehaviour
         Vector3    desiredPos = lookTarget + orbitRot * currentOffset;
         if (enableCollision)
             desiredPos = ResolveCollision(desiredPos, orbitRot, lookTarget, currentOffset);
+        if (!IsFinite(desiredPos))
+            desiredPos = target.position + Quaternion.Euler(0f, target.eulerAngles.y, 0f) * offset;
 
         transform.position = desiredPos;
         Vector3 fallbackCastOrigin = target.position + Vector3.up * 1.2f;
         Vector3 castOrigin = Vector3.Lerp(fallbackCastOrigin, lookTarget, 0.85f);
         _currentDistance = Vector3.Distance(castOrigin, desiredPos);
         UpdateFieldOfView(immediate: true);
-        transform.LookAt(lookTarget);
+        if (IsFinite(lookTarget) && (lookTarget - transform.position).sqrMagnitude > 0.0001f)
+            transform.LookAt(lookTarget);
+    }
+
+    private void RecoverFromInvalidCameraState()
+    {
+        _positionVelocity = Vector3.zero;
+        _distanceVelocity = 0f;
+        _fieldOfViewVelocity = 0f;
+        _lookTargetInitialized = false;
+        pitch = Mathf.Clamp(float.IsNaN(pitch) || float.IsInfinity(pitch) ? 0f : pitch, minPitch, maxPitch);
+
+        if (target == null || !IsFinite(target.position))
+            return;
+
+        Vector3 fallback = target.position + Quaternion.Euler(0f, target.eulerAngles.y, 0f) * offset;
+        if (IsFinite(fallback))
+            transform.position = fallback;
     }
 
     private Vector3 GetCurrentOffset()
@@ -491,6 +527,11 @@ public class CameraController : MonoBehaviour
         return !float.IsNaN(value.x) && !float.IsInfinity(value.x)
             && !float.IsNaN(value.y) && !float.IsInfinity(value.y)
             && !float.IsNaN(value.z) && !float.IsInfinity(value.z);
+    }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
     }
 
     private void UpdateFieldOfView(bool immediate = false)

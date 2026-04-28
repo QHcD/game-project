@@ -21,8 +21,8 @@ public static class LookSensitivityRuntime
     public const float  MaxSlider    = 7f;
     public const float  DefaultSlider = 3.5f;
 
-    private const float MinMultiplier = 0.20f;
-    private const float MaxMultiplier = 2.20f;
+    private const float MinMultiplier = 0.15f;
+    private const float MaxMultiplier = 10.00f;
 
     /// <summary>Cached multiplier applied to <c>sensitivity</c> in PlayerController.</summary>
     public static float LookMultiplier { get; private set; } = 1f;

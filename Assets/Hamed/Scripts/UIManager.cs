@@ -69,6 +69,9 @@ public class UIManager : MonoBehaviour
         // Gameplay / pause overlays need a consistent EventSystem in every scene.
         EnsureInputSystemEventSystem();
         if (!IsMainMenuLikeScene()) return;
+        Time.timeScale = 1f;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
         CompactifyMainMenuCanvas();
         _mainMenuApplyFramesRemaining = 60;
 
@@ -203,7 +206,6 @@ public class UIManager : MonoBehaviour
 
         // 2) Collect buttons (RuntimeMenuBuilder names them by label text).
         Button continueBtn     = FindButtonByLabel(canvas.transform, "CONTINUE") ?? FindButtonByLabel(canvas.transform, "START");
-        Button customMatchBtn  = FindButtonByLabel(canvas.transform, "CUSTOM MATCH");
         Button selectLevelBtn  = FindButtonByLabel(canvas.transform, "SELECT LEVEL");
         Button storeBtn        = FindButtonByLabel(canvas.transform, "PRISM STORE");
         Button challengesBtn   = FindButtonByLabel(canvas.transform, "CHALLENGES");
@@ -245,14 +247,7 @@ public class UIManager : MonoBehaviour
         // Row 0: Continue (full width)
         ReparentAndLayout(continueBtn, stackRT, preferredHeight: 88f, fullWidth: true);
 
-        // Row 1: Custom Match | Select Level
-        Transform pair1 = CreatePairRow(stackRT, "Pair1_Row");
-        if (customMatchBtn != null)
-        {
-            ReparentAndLayout(customMatchBtn, pair1, preferredHeight: 88f, fullWidth: false);
-            CreatePairSeparator(pair1);
-        }
-        ReparentAndLayout(selectLevelBtn, pair1, preferredHeight: 88f, fullWidth: customMatchBtn == null);
+        ReparentAndLayout(selectLevelBtn, stackRT, preferredHeight: 88f, fullWidth: true);
 
         // Row 2: Prism Store | Challenges
         Transform pair2 = CreatePairRow(stackRT, "Pair2_Row");

@@ -20,9 +20,11 @@ public class PauseMenuController : MonoBehaviour
     private Slider masterVolumeSlider;
     private Slider musicVolumeSlider;
     private Slider sfxVolumeSlider;
+    private Slider mouseSensitivitySlider;
 
     private void Awake()
     {
+        SettingsManager.ApplyDisplayPreferences();
         AudioSettingsRuntime.ApplyListenerVolume();
     }
 
@@ -84,6 +86,8 @@ public class PauseMenuController : MonoBehaviour
     {
         Time.timeScale = 1f;
         isPaused = false;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
         GameManager.Instance?.GoToMainMenu();
     }
 
@@ -168,8 +172,9 @@ public class PauseMenuController : MonoBehaviour
         CreateCycleRow(parent, "DIFFICULTY", new Vector2(0f, 92f), GetDifficultyLabel, CycleDifficulty);
         CreateCycleRow(parent, "CAMERA VIEW", new Vector2(0f, 4f), GetPerspectiveLabel, CyclePerspective);
         CreateCycleRow(parent, "MOVE STYLE", new Vector2(0f, -84f), GetMovementLabel, CycleMovement);
+        mouseSensitivitySlider = CreateSensitivityRow(parent, "MOUSE SENS", new Vector2(0f, -166f));
 
-        CreateButton(parent, "RETURN", new Vector2(0f, -238f), () => ShowPanel(mainPanel));
+        CreateButton(parent, "RETURN", new Vector2(0f, -286f), () => ShowPanel(mainPanel));
     }
 
     private void BuildSettingsPanel(Transform parent)
@@ -293,6 +298,91 @@ public class PauseMenuController : MonoBehaviour
         slider.onValueChanged.AddListener(value =>
         {
             valueLabel.text = Mathf.RoundToInt(value * 100f) + "%";
+        });
+
+        return slider;
+    }
+
+    private Slider CreateSensitivityRow(Transform parent, string label, Vector2 position)
+    {
+        GameObject row = new GameObject("Row_" + label);
+        row.transform.SetParent(parent, false);
+        RectTransform rowRect = row.AddComponent<RectTransform>();
+        rowRect.anchorMin = new Vector2(0.5f, 0.5f);
+        rowRect.anchorMax = new Vector2(0.5f, 0.5f);
+        rowRect.pivot = new Vector2(0.5f, 0.5f);
+        rowRect.sizeDelta = new Vector2(700f, 60f);
+        rowRect.anchoredPosition = position;
+
+        CreateLabel(row.transform, label, 24f, Color.white, new Vector2(-190f, 0f), new Vector2(320f, 42f), false, TextAlignmentOptions.MidlineRight);
+
+        GameObject sliderObj = new GameObject("Slider_" + label);
+        sliderObj.transform.SetParent(row.transform, false);
+        Image sliderBackground = sliderObj.AddComponent<Image>();
+        sliderBackground.color = new Color(0.94f, 0.94f, 0.96f, 1f);
+        RectTransform sliderRect = sliderObj.GetComponent<RectTransform>();
+        sliderRect.anchorMin = new Vector2(0.5f, 0.5f);
+        sliderRect.anchorMax = new Vector2(0.5f, 0.5f);
+        sliderRect.pivot = new Vector2(0.5f, 0.5f);
+        sliderRect.sizeDelta = new Vector2(320f, 18f);
+        sliderRect.anchoredPosition = new Vector2(150f, 0f);
+
+        Slider slider = sliderObj.AddComponent<Slider>();
+        slider.direction = Slider.Direction.LeftToRight;
+        slider.minValue = LookSensitivityRuntime.MinSlider;
+        slider.maxValue = LookSensitivityRuntime.MaxSlider;
+        slider.wholeNumbers = false;
+
+        GameObject fillArea = new GameObject("FillArea");
+        fillArea.transform.SetParent(sliderObj.transform, false);
+        RectTransform fillAreaRect = fillArea.AddComponent<RectTransform>();
+        fillAreaRect.anchorMin = Vector2.zero;
+        fillAreaRect.anchorMax = Vector2.one;
+        fillAreaRect.offsetMin = Vector2.zero;
+        fillAreaRect.offsetMax = new Vector2(-18f, 0f);
+
+        GameObject fill = new GameObject("Fill");
+        fill.transform.SetParent(fillArea.transform, false);
+        Image fillImage = fill.AddComponent<Image>();
+        fillImage.color = new Color(0.30f, 0.55f, 1f, 1f);
+        RectTransform fillRect = fill.GetComponent<RectTransform>();
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = Vector2.one;
+        fillRect.offsetMin = Vector2.zero;
+        fillRect.offsetMax = Vector2.zero;
+
+        GameObject handle = new GameObject("Handle");
+        handle.transform.SetParent(sliderObj.transform, false);
+        Image handleImage = handle.AddComponent<Image>();
+        handleImage.color = Color.white;
+        RectTransform handleRect = handle.GetComponent<RectTransform>();
+        handleRect.sizeDelta = new Vector2(18f, 28f);
+
+        slider.fillRect = fillRect;
+        slider.handleRect = handleRect;
+        slider.targetGraphic = handleImage;
+
+        TextMeshProUGUI valueLabel = new GameObject("Val_" + label).AddComponent<TextMeshProUGUI>();
+        valueLabel.transform.SetParent(row.transform, false);
+        valueLabel.fontSize = 20f;
+        valueLabel.color = new Color(0.82f, 0.90f, 1f, 0.92f);
+        valueLabel.alignment = TextAlignmentOptions.MidlineLeft;
+        if (prismFont != null)
+            valueLabel.font = prismFont;
+        RectTransform valueRect = valueLabel.rectTransform;
+        valueRect.anchorMin = new Vector2(0.5f, 0.5f);
+        valueRect.anchorMax = new Vector2(0.5f, 0.5f);
+        valueRect.pivot = new Vector2(0f, 0.5f);
+        valueRect.sizeDelta = new Vector2(90f, 30f);
+        valueRect.anchoredPosition = new Vector2(320f, 0f);
+
+        LookSensitivityRuntime.LoadFromPrefs();
+        slider.SetValueWithoutNotify(LookSensitivityRuntime.SliderValue);
+        valueLabel.text = LookSensitivityRuntime.SliderValue.ToString("0.0");
+        slider.onValueChanged.AddListener(value =>
+        {
+            LookSensitivityRuntime.SetSliderValue(value, persist: true);
+            valueLabel.text = value.ToString("0.0");
         });
 
         return slider;

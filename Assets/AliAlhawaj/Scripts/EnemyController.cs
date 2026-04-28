@@ -37,13 +37,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Base walking speed (matches PlayerController.moveSpeed = 3.5).")]
     public float moveSpeed        = 3.5f;
     [Tooltip("Chase/sprint speed — slightly faster than the player's sprint (4.8) for aggression.")]
-    public float chaseSpeed       = 5.8f;
+    public float chaseSpeed       = 6.2f;
     [Tooltip("Manual rotation Slerp rate in Attack state (player body uses 8f — we bump slightly for responsiveness).")]
-    public float rotationSpeed    = 12f;
+    public float rotationSpeed    = 16f;
     [Tooltip("NavMeshAgent acceleration. Raised to 40 so the agent reaches full speed in ~0.15 s — matches the player's snappy feel.")]
-    public float agentAcceleration = 40f;
+    public float agentAcceleration = 48f;
     [Tooltip("NavMeshAgent angular speed (deg/sec). 1080 = full turn in ~0.33 s, matching the player body Slerp.")]
-    public float agentAngularSpeed = 1080f;
+    public float agentAngularSpeed = 1440f;
 
     [Header("Flow Field Navigation")]
     [Tooltip("When enabled, chase movement follows the shared flow-field vectors instead of constantly pathing to target positions.")]
@@ -571,6 +571,9 @@ public class EnemyController : MonoBehaviour, IDamageable
             _patrolTimer = patrolRetargetInterval;
             SetRandomPatrolDestination();
         }
+
+        if (_agent.desiredVelocity.sqrMagnitude > 0.05f)
+            FaceDirection(_agent.desiredVelocity);
     }
 
     private float _stuckInChaseTimer;
@@ -667,7 +670,12 @@ public class EnemyController : MonoBehaviour, IDamageable
             }
 
             if (refreshDestination)
-                _destinationRefreshTimer = 0.5f;
+                _destinationRefreshTimer = 0.08f;
+
+            Vector3 faceDirection = _agent.desiredVelocity.sqrMagnitude > 0.05f
+                ? _agent.desiredVelocity
+                : _target.position - transform.position;
+            FaceDirection(faceDirection);
         }
 
         CheckAndJumpIfStuck();
@@ -1755,7 +1763,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         _agent.autoBraking           = false;
         _agent.autoRepath            = true;
         _agent.updatePosition        = true;
-        _agent.updateRotation        = true;
+        _agent.updateRotation        = false;
         _agent.autoTraverseOffMeshLink = false;
     }
 

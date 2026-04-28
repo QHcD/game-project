@@ -294,6 +294,7 @@ public class PlayerController : MonoBehaviour
     private const int MaxMeleeOverlapHits = 32;
     private LayerMask resolvedAttackMask;
     private readonly Collider[] meleeOverlapHits = new Collider[MaxMeleeOverlapHits];
+    private readonly RaycastHit[] meleeRaycastHits = new RaycastHit[MaxMeleeOverlapHits];
 
     // Third-person body
     private GameObject thirdPersonBody;
@@ -527,6 +528,8 @@ public class PlayerController : MonoBehaviour
     {
         if (controller == null)
             return;
+        if (IsUnsafeSpawn(transform.position))
+            TeleportTo(SafeFallbackSpawn);
 
         // Hard anti-flip clamp — unconditional. If anything tilted the root
         // (animator, ragdoll, external script) reset to yaw-only this frame.
@@ -563,6 +566,7 @@ public class PlayerController : MonoBehaviour
         // UpdateCameraZoom removed — zoom is permanently disabled.
         UpdateHeadBob();
         UpdateCameraKick();
+        EnforcePerspectiveVisibility();
         UpdateCombatState();
         UpdateAnimatorParameters();
         HandleWeaponGripDebugTuning();
@@ -1048,7 +1052,7 @@ public class PlayerController : MonoBehaviour
         // gravity below still ticks normally so the player lands.
         if (!isFlipping)
         {
-            Vector3 inputDir     = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
+            Vector3 inputDir = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
             Vector3 targetVelocity = transform.TransformDirection(inputDir) * targetSpeed;
 
             float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
@@ -1120,6 +1124,26 @@ public class PlayerController : MonoBehaviour
 
     private Vector3 GetActualHorizontalVelocity()
         => actualHorizontalVelocity;
+
+    private Vector3 ResolveMoveWorldDirection(Vector2 input)
+    {
+        Vector2 clamped = Vector2.ClampMagnitude(input, 1f);
+        if (clamped.sqrMagnitude < 0.0001f)
+            return Vector3.zero;
+
+        return new Vector3(clamped.x, 0f, clamped.y);
+    }
+
+    private void EnforcePerspectiveVisibility()
+    {
+        if (thirdPersonBody == null)
+            return;
+
+        if (isThirdPersonActive)
+            SetThirdPersonRenderersVisible(true);
+        else
+            SetThirdPersonRenderersVisible(false);
+    }
 
     // ✅ FIX: GetActiveAnimator always returns the live animator from thirdPersonBody
     //         so it works even if the body was spawned after Start()
@@ -1304,7 +1328,9 @@ public class PlayerController : MonoBehaviour
             if (live != null) live.PlayAttack(attackSpeed, attackDelay);
         }
 
-        if (equippedWeaponHitbox != null)
+        bool immediateHit = TryImmediateMeleeStrike();
+
+        if (!immediateHit && equippedWeaponHitbox != null)
         {
             if (weaponHitboxRoutine != null)
                 StopCoroutine(weaponHitboxRoutine);
@@ -1708,6 +1734,109 @@ public class PlayerController : MonoBehaviour
 
     private const float MeleeHitAngle = 60f;   // strict forward-facing cone (half-angle)
 
+    private bool TryImmediateMeleeStrike()
+    {
+        Physics.SyncTransforms();
+
+        Camera cam = ActiveCamera != null ? ActiveCamera : Camera.main;
+        Vector3 origin;
+        Vector3 forward;
+
+        if (cam != null && !isThirdPersonActive)
+        {
+            origin = cam.transform.position + cam.transform.forward * 0.12f;
+            forward = cam.transform.forward;
+        }
+        else
+        {
+            origin = transform.position + Vector3.up * 1.15f + transform.forward * 0.25f;
+            forward = transform.forward;
+        }
+
+        if (forward.sqrMagnitude < 0.0001f)
+            return false;
+        forward.Normalize();
+
+        float radius = Mathf.Clamp(attackRadius * 0.42f, 0.25f, 0.65f);
+        float reach = Mathf.Max(attackDistance + 0.65f, 2.8f);
+        int hitCount = Physics.SphereCastNonAlloc(
+            origin,
+            radius,
+            forward,
+            meleeRaycastHits,
+            reach,
+            ~0,
+            QueryTriggerInteraction.Collide);
+
+        Transform bestTarget = null;
+        Vector3 bestPoint = origin + forward * reach;
+        float bestDistance = float.PositiveInfinity;
+        float nearestBlockerDistance = float.PositiveInfinity;
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            RaycastHit hit = meleeRaycastHits[i];
+            Collider col = hit.collider;
+            if (col == null) continue;
+            if (col.transform == transform || col.transform.IsChildOf(transform)) continue;
+
+            Transform damageRoot = GetDamageTargetTransform(col.transform);
+            if (damageRoot != null)
+            {
+                if (hit.distance < bestDistance)
+                {
+                    bestDistance = hit.distance;
+                    bestTarget = damageRoot;
+                    bestPoint = hit.point.sqrMagnitude > 0.0001f ? hit.point : col.ClosestPoint(origin);
+                }
+                continue;
+            }
+
+            if (!col.isTrigger && IsMeleeBlocker(col))
+                nearestBlockerDistance = Mathf.Min(nearestBlockerDistance, hit.distance);
+        }
+
+        if (bestTarget == null)
+        {
+            Vector3 playerCenter = transform.position + Vector3.up * 1.0f;
+            Vector3 forwardFlat = forward;
+            forwardFlat.y = 0f;
+            if (forwardFlat.sqrMagnitude < 0.0001f)
+                forwardFlat = transform.forward;
+            forwardFlat.y = 0f;
+            if (forwardFlat.sqrMagnitude < 0.0001f)
+                return false;
+            forwardFlat.Normalize();
+
+            if (TryFindBestMeleeTarget(playerCenter, forwardFlat, out bestTarget, out bestPoint))
+                bestDistance = Vector3.Distance(origin, bestPoint);
+        }
+
+        if (bestTarget == null || bestDistance > nearestBlockerDistance + 0.05f)
+            return false;
+
+        if (!TryDamageTargetFromPoint(bestTarget, attackDamage, origin))
+            return false;
+
+        Vector3 hitDirection = bestTarget.position - transform.position;
+        hitDirection.y = 0f;
+        if (hitDirection.sqrMagnitude < 0.001f)
+            hitDirection = forward;
+        ApplyHitReaction(bestTarget, hitDirection.normalized);
+        HitTarget(bestPoint);
+        cameraKickTarget = -1.2f;
+        return true;
+    }
+
+    private bool IsMeleeBlocker(Collider col)
+    {
+        if (col == null || staticObstacleMask.value == 0)
+            return false;
+
+        int layerMask = 1 << col.gameObject.layer;
+        return (staticObstacleMask.value & layerMask) != 0;
+    }
+
     private void AttackMelee()
     {
         // Deterministic melee: one non-alloc sphere at the weapon impact point,
@@ -1936,6 +2065,46 @@ public class PlayerController : MonoBehaviour
         if (damageable != null && damageable.gameObject != gameObject && damageable.IsAlive)
         {
             if (DamageOcclusion.IsBlocked(gameObject, damageable.gameObject))
+                return false;
+            damageable.ReceiveDamage(damage, gameObject);
+            return true;
+        }
+
+        Actor actor = target.GetComponentInParent<Actor>();
+        if (actor != null && actor.gameObject != gameObject)
+        {
+            actor.TakeDamage(damage);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryDamageTargetFromPoint(Transform target, int damage, Vector3 attackOriginWorld)
+    {
+        if (target == null) return false;
+
+        EnemyController enemy = target.GetComponentInParent<EnemyController>();
+        if (enemy != null && enemy.gameObject != gameObject && enemy.IsAlive)
+        {
+            if (DamageOcclusion.IsBlockedFromPoint(gameObject, enemy.gameObject, attackOriginWorld))
+                return false;
+
+            int appliedDamage = Mathf.Max(1, damage);
+            if (GameManager.Instance != null)
+            {
+                int hitsToKill = Mathf.Max(1, GameManager.Instance.GetEnemyHitsToKillByPlayer());
+                appliedDamage = Mathf.Max(1, Mathf.CeilToInt((float)enemy.maxHealth / hitsToKill));
+            }
+
+            enemy.TakeDamage(appliedDamage, byPlayer: true);
+            return true;
+        }
+
+        IDamageable damageable = target.GetComponentInParent<IDamageable>();
+        if (damageable != null && damageable.gameObject != gameObject && damageable.IsAlive)
+        {
+            if (DamageOcclusion.IsBlockedFromPoint(gameObject, damageable.gameObject, attackOriginWorld))
                 return false;
             damageable.ReceiveDamage(damage, gameObject);
             return true;
@@ -3639,18 +3808,18 @@ public class PlayerController : MonoBehaviour
             c.enabled = false;
 
         // ── Weapon viewmodel offset rules (IMG_6923.mov fix) ────────────────
-        // Mandatory offsets: localPosition (0.3, -0.4, 0.6) puts the hilt
-        // in the player's hand and ensures Z > 0 so the weapon is in FRONT
-        // of the camera. localRotation Euler(0, 90, 0) aligns the blade
-        // along the camera's right axis (standard katana draw pose).
-        vm.transform.localPosition = new Vector3(0.3f, -0.4f, 0.6f);
-        vm.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
-        vm.transform.localScale    = Vector3.one * 0.32f;
+        // Mandatory offsets keep the hilt close to the visible right hand
+        // instead of floating in the center of the FPV.
+        vm.transform.localPosition = new Vector3(0.42f, -0.30f, 0.82f);
+        vm.transform.localRotation = Quaternion.Euler(5f, 100f, -18f);
+        vm.transform.localScale    = Vector3.one * 0.12f;
 
         // Per-weapon scale tuning so long blades don't fill the whole screen.
         if (level == 2) // Katana — long blade, needs a tighter scale
         {
-            vm.transform.localScale = Vector3.one * 0.20f;
+            vm.transform.localPosition = new Vector3(0.44f, -0.32f, 0.92f);
+            vm.transform.localRotation = Quaternion.Euler(7f, 96f, -20f);
+            vm.transform.localScale = Vector3.one * 0.095f;
         }
 
         // Hide the placeholder mesh renderer if the camera has one.
