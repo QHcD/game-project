@@ -51,8 +51,9 @@ public class FreeLookFollowCamera : MonoBehaviour
             return;
 
         Vector2 mouseDelta = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
-        _yaw += mouseDelta.x * sensitivityX * Time.deltaTime;
-        _pitch -= mouseDelta.y * sensitivityY * Time.deltaTime;
+        float sensitivityScale = LookSensitivityRuntime.LookMultiplier;
+        _yaw += mouseDelta.x * sensitivityX * sensitivityScale * Time.deltaTime;
+        _pitch -= mouseDelta.y * sensitivityY * sensitivityScale * Time.deltaTime;
         _pitch = Mathf.Clamp(_pitch, minPitch, maxPitch);
 
         Vector3 pivotPosition = target.position + pivotOffset;

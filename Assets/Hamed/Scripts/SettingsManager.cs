@@ -11,6 +11,29 @@ public static class SettingsManager
     public static readonly Color MenuBlue = new Color(0.32f, 0.56f, 0.96f, 1f);
     public static readonly Color MenuBlueDim = new Color(0.22f, 0.40f, 0.72f, 1f);
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void ApplyDisplayPreferencesOnBoot()
+    {
+        ApplyDisplayPreferences();
+    }
+
+    public static void ApplyDisplayPreferences()
+    {
+        int tier = Mathf.Clamp(PlayerPrefs.GetInt("GraphicsTier", 2), 0, 2);
+        int qualityLevel = tier == 0 ? 0 :
+            tier == 1 ? Mathf.Max(0, (QualitySettings.names.Length - 1) / 2) :
+            Mathf.Max(0, QualitySettings.names.Length - 1);
+        QualitySettings.SetQualityLevel(qualityLevel);
+
+        bool fullscreen = PlayerPrefs.GetInt("Fullscreen", 1) == 1;
+        PlayerPrefs.SetInt("GraphicsTier", tier);
+        PlayerPrefs.SetInt("Fullscreen", fullscreen ? 1 : 0);
+        PlayerPrefs.Save();
+
+        if (Screen.fullScreen != fullscreen)
+            Screen.fullScreen = fullscreen;
+    }
+
     public static string FormatVolumePercent(float normalized01)
     {
         int n = Mathf.Clamp(Mathf.RoundToInt(normalized01 * 100f), 0, 100);

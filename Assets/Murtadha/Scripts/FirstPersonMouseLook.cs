@@ -56,8 +56,10 @@ public sealed class FirstPersonMouseLook : MonoBehaviour
         float smoothT = 1f - Mathf.Exp(-smoothing * Time.unscaledDeltaTime);
         _smoothedDelta = Vector2.Lerp(_smoothedDelta, rawDelta, smoothT);
 
-        _yaw += _smoothedDelta.x * mouseSensitivity;
-        _pitch -= _smoothedDelta.y * mouseSensitivity;
+        float effectiveSensitivity = mouseSensitivity * LookSensitivityRuntime.LookMultiplier;
+
+        _yaw += _smoothedDelta.x * effectiveSensitivity;
+        _pitch -= _smoothedDelta.y * effectiveSensitivity;
         _pitch = Mathf.Clamp(_pitch, minPitch, maxPitch);
 
         playerYawRoot.rotation = Quaternion.Euler(0f, _yaw, 0f);

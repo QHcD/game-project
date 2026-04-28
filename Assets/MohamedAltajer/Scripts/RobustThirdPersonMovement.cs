@@ -79,20 +79,7 @@ public class RobustThirdPersonMovement : MonoBehaviour
         Vector3 inputDirection = new Vector3(input.x, 0f, input.y);
         inputDirection = Vector3.ClampMagnitude(inputDirection, 1f);
 
-        if (cameraTransform != null)
-        {
-            Vector3 cameraForward = cameraTransform.forward;
-            Vector3 cameraRight = cameraTransform.right;
-            cameraForward.y = 0f;
-            cameraRight.y = 0f;
-            cameraForward.Normalize();
-            cameraRight.Normalize();
-            MoveDirection = (cameraForward * inputDirection.z + cameraRight * inputDirection.x).normalized;
-        }
-        else
-        {
-            MoveDirection = inputDirection.normalized;
-        }
+        MoveDirection = inputDirection.normalized;
 
         float targetSpeed = inputDirection.sqrMagnitude > 0.001f
             ? (_isSprinting ? sprintSpeed : moveSpeed)

@@ -16,6 +16,10 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
     void Start()
     {
+        Time.timeScale = 1f;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+        SettingsManager.ApplyDisplayPreferences();
         AudioSettingsRuntime.ApplyListenerVolume();
         customFont = ResolveMenuFont();
         EnsureEventSystem();
@@ -24,11 +28,24 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
     void EnsureEventSystem()
     {
-        if (FindFirstObjectByType<EventSystem>() != null)
-            return;
-        GameObject es = new GameObject("EventSystem");
-        es.AddComponent<EventSystem>();
-        es.AddComponent<InputSystemUIInputModule>();
+        EventSystem eventSystem = FindFirstObjectByType<EventSystem>();
+        if (eventSystem == null)
+        {
+            GameObject es = new GameObject("EventSystem");
+            eventSystem = es.AddComponent<EventSystem>();
+        }
+
+        GameObject eventSystemObject = eventSystem.gameObject;
+        StandaloneInputModule legacyModule = eventSystemObject.GetComponent<StandaloneInputModule>();
+        if (legacyModule != null)
+            Destroy(legacyModule);
+
+        InputSystemUIInputModule inputModule = eventSystemObject.GetComponent<InputSystemUIInputModule>();
+        if (inputModule == null)
+            inputModule = eventSystemObject.AddComponent<InputSystemUIInputModule>();
+
+        inputModule.enabled = true;
+        eventSystemObject.SetActive(true);
     }
 
     void BuildCurrentScreen()
@@ -157,7 +174,6 @@ public class RuntimeMenuBuilder : MonoBehaviour
         // Layout order: Continue → [Custom Match | Select Level] → [Prism Store | Challenges]
         //               → Options → Settings → Credits → Quit
         navList.Add(MakeCenteredPillMenuButton(menuPanel, startLabel,       () => GameManager.Instance?.StartRun(continueLevel)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CUSTOM MATCH",   () => ToggleCustomMatch(root)));
         navList.Add(MakeCenteredPillMenuButton(menuPanel, "SELECT LEVEL",   () => ToggleLevelSelect(root)));
         navList.Add(MakeCenteredPillMenuButton(menuPanel, "PRISM STORE",    () => ToggleStore(root)));
         navList.Add(MakeCenteredPillMenuButton(menuPanel, "CHALLENGES",     () => ToggleChallenges(root)));
@@ -169,7 +185,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         MenuNavigationManager.AttachLinear(root.gameObject, navList);
 
         if (!PlayerProfile.HasUsername)
-            ShowNameEntryOverlay(root);
+            ShowNameEntryOverlayEnhanced(root);
     }
 
     // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
@@ -1526,6 +1542,307 @@ public class RuntimeMenuBuilder : MonoBehaviour
         field.ActivateInputField();
     }
 
+    void ShowNameEntryOverlayEnhanced(Transform root)
+    {
+        if (root.Find("NameEntryOverlay") != null) return;
+
+        SetMainMenuElementsVisible(root, false);
+        DestroyOverlay(root, "LevelSelectOverlay");
+        DestroyOverlay(root, "CustomMatchOverlay");
+        DestroyOverlay(root, "StoreOverlay");
+        DestroyOverlay(root, "ChallengesOverlay");
+
+        GameObject overlayObj = new GameObject("NameEntryOverlay");
+        overlayObj.transform.SetParent(root, false);
+        Image overlay = overlayObj.AddComponent<Image>();
+        Stretch(overlay.rectTransform);
+        overlay.color = new Color(0.005f, 0.006f, 0.018f, 0.34f);
+
+        GameObject panelObj = new GameObject("NameEntryPanel");
+        panelObj.transform.SetParent(overlayObj.transform, false);
+        Image panel = panelObj.AddComponent<Image>();
+        panel.color = new Color(0.015f, 0.025f, 0.070f, 0.84f);
+        Outline panelOutline = panelObj.AddComponent<Outline>();
+        panelOutline.effectColor = new Color(0.42f, 0.72f, 1f, 0.88f);
+        panelOutline.effectDistance = new Vector2(3f, -3f);
+        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1100f, 640f), new Vector2(0f, -6f));
+
+        AddNameEntryChrome(panelObj.transform);
+
+        TextMeshProUGUI welcome = MakeText(panelObj.transform, "WELCOME TO", 56, new Color(0.92f, 0.96f, 1f, 1f),
+            new Vector2(0.10f, 0.77f), new Vector2(0.90f, 0.92f), true);
+        welcome.characterSpacing = 8f;
+        AddTextGlow(welcome.gameObject, new Color(0.18f, 0.55f, 1f, 0.85f), new Vector2(0f, -3f));
+
+        TextMeshProUGUI title = MakeText(panelObj.transform, "PRISM-7", 82, new Color(0.98f, 0.99f, 1f, 1f),
+            new Vector2(0.10f, 0.64f), new Vector2(0.90f, 0.80f), true);
+        title.characterSpacing = 6f;
+        AddTextGlow(title.gameObject, new Color(0.82f, 0.20f, 1f, 0.95f), new Vector2(0f, -4f));
+
+        AddNameEntryWing(panelObj.transform, true);
+        AddNameEntryWing(panelObj.transform, false);
+        AddNameEntryDiamond(panelObj.transform);
+
+        TextMeshProUGUI subtitle = MakeText(panelObj.transform,
+            "ENTER THE OPERATIVE NAME SHOWN TO\nYOUR ENEMIES.",
+            25, new Color(0.62f, 0.76f, 1f, 0.96f),
+            new Vector2(0.12f, 0.47f), new Vector2(0.88f, 0.60f), true);
+        subtitle.characterSpacing = 6f;
+
+        GameObject inputObj = new GameObject("NameInput");
+        inputObj.transform.SetParent(panelObj.transform, false);
+        Image inputBg = inputObj.AddComponent<Image>();
+        inputBg.color = new Color(0.010f, 0.018f, 0.036f, 0.96f);
+        Outline inputOutline = inputObj.AddComponent<Outline>();
+        inputOutline.effectColor = new Color(0.40f, 0.78f, 1f, 0.92f);
+        inputOutline.effectDistance = new Vector2(3f, -3f);
+        RectTransform inputRT = inputObj.GetComponent<RectTransform>();
+        inputRT.anchorMin = new Vector2(0.13f, 0.31f);
+        inputRT.anchorMax = new Vector2(0.87f, 0.48f);
+        inputRT.offsetMin = inputRT.offsetMax = Vector2.zero;
+        AddNameInputChrome(inputObj.transform);
+
+        TMP_InputField field = inputObj.AddComponent<TMP_InputField>();
+        field.lineType = TMP_InputField.LineType.SingleLine;
+        field.characterLimit = PlayerProfile.MaxNameLength;
+        field.shouldHideMobileInput = false;
+
+        GameObject textArea = new GameObject("Text Area");
+        textArea.transform.SetParent(inputObj.transform, false);
+        RectTransform taRT = textArea.AddComponent<RectTransform>();
+        taRT.anchorMin = Vector2.zero;
+        taRT.anchorMax = Vector2.one;
+        taRT.offsetMin = new Vector2(34f, 10f);
+        taRT.offsetMax = new Vector2(-34f, -10f);
+        textArea.AddComponent<RectMask2D>();
+
+        GameObject placeholderObj = new GameObject("Placeholder");
+        placeholderObj.transform.SetParent(textArea.transform, false);
+        TextMeshProUGUI placeholder = placeholderObj.AddComponent<TextMeshProUGUI>();
+        placeholder.text = "TYPE NAME...";
+        placeholder.fontSize = 42;
+        placeholder.color = new Color(0.60f, 0.70f, 0.92f, 0.72f);
+        placeholder.alignment = TextAlignmentOptions.Left;
+        placeholder.characterSpacing = 2f;
+        if (customFont != null) placeholder.font = customFont;
+        Stretch(placeholder.rectTransform);
+
+        GameObject textComp = new GameObject("Text");
+        textComp.transform.SetParent(textArea.transform, false);
+        TextMeshProUGUI textTMP = textComp.AddComponent<TextMeshProUGUI>();
+        textTMP.fontSize = 42;
+        textTMP.color = new Color(0.94f, 0.96f, 1f, 1f);
+        textTMP.alignment = TextAlignmentOptions.Left;
+        textTMP.characterSpacing = 2f;
+        if (customFont != null) textTMP.font = customFont;
+        Stretch(textTMP.rectTransform);
+
+        field.textViewport = taRT;
+        field.textComponent = textTMP;
+        field.placeholder = placeholder;
+        field.text = string.Empty;
+
+        TextMeshProUGUI hintLabel = MakeText(panelObj.transform,
+            "MIN " + PlayerProfile.MinNameLength + " CHARACTERS, MAX " + PlayerProfile.MaxNameLength + ".",
+            22, new Color(0.66f, 0.78f, 1f, 0.92f),
+            new Vector2(0.08f, 0.20f), new Vector2(0.92f, 0.27f), true);
+        hintLabel.characterSpacing = 5f;
+
+        Button confirmBtn = MakeNeonActionButton(panelObj.transform, "CONFIRM", "V",
+            new Vector2(0.16f, 0.065f), new Vector2(0.45f, 0.165f),
+            new Color(0.20f, 0.70f, 1f, 1f), new Color(0.02f, 0.16f, 0.30f, 0.88f),
+            () =>
+            {
+                string sanitized = PlayerProfile.Sanitize(field.text);
+                if (string.IsNullOrEmpty(sanitized))
+                {
+                    if (hintLabel != null)
+                    {
+                        hintLabel.text = "NAME TOO SHORT - AT LEAST " + PlayerProfile.MinNameLength + " CHARACTERS.";
+                        hintLabel.color = new Color(1f, 0.45f, 0.45f, 1f);
+                    }
+                    return;
+                }
+                PlayerProfile.SetUsername(sanitized);
+                Destroy(overlayObj);
+                ClearAndRebuildMainMenu(root);
+            });
+
+        Button skipBtn = MakeNeonActionButton(panelObj.transform, "SKIP", ">>",
+            new Vector2(0.55f, 0.065f), new Vector2(0.84f, 0.165f),
+            new Color(1f, 0.25f, 0.95f, 1f), new Color(0.20f, 0.02f, 0.26f, 0.86f),
+            () =>
+            {
+                Destroy(overlayObj);
+                SetMainMenuElementsVisible(root, true);
+            });
+
+        System.Collections.Generic.List<Selectable> nav =
+            new System.Collections.Generic.List<Selectable> { field, confirmBtn, skipBtn };
+        MenuNavigationManager.AttachLinear(overlayObj, nav);
+
+        EventSystem.current?.SetSelectedGameObject(field.gameObject);
+        field.ActivateInputField();
+    }
+
+    void AddNameEntryChrome(Transform panel)
+    {
+        AddPanelGlow(panel, "OuterCyanGlow", new Vector2(1.012f, 1.020f), new Color(0.06f, 0.45f, 1f, 0.12f));
+        AddPanelGlow(panel, "OuterMagentaGlow", new Vector2(1.032f, 1.045f), new Color(1f, 0.12f, 0.90f, 0.10f));
+        AddNeonLine(panel, "TopRail", new Vector2(0.14f, 0.955f), new Vector2(0.86f, 0.963f), new Color(0.34f, 0.74f, 1f, 0.95f));
+        AddNeonLine(panel, "TopRailHot", new Vector2(0.50f, 0.952f), new Vector2(0.86f, 0.960f), new Color(1f, 0.22f, 0.95f, 0.80f));
+        AddNeonLine(panel, "BottomRail", new Vector2(0.18f, 0.036f), new Vector2(0.82f, 0.044f), new Color(0.30f, 0.66f, 1f, 0.60f));
+        AddPanelCorner(panel, "TL", new Vector2(0f, 1f), new Vector2(1f, -1f), new Color(0.32f, 0.78f, 1f, 1f));
+        AddPanelCorner(panel, "TR", new Vector2(1f, 1f), new Vector2(-1f, -1f), new Color(1f, 0.30f, 0.92f, 1f));
+        AddPanelCorner(panel, "BL", new Vector2(0f, 0f), new Vector2(1f, 1f), new Color(0.24f, 0.64f, 1f, 0.85f));
+        AddPanelCorner(panel, "BR", new Vector2(1f, 0f), new Vector2(-1f, 1f), new Color(1f, 0.28f, 0.88f, 0.85f));
+    }
+
+    void AddPanelGlow(Transform parent, string name, Vector2 scale, Color color)
+    {
+        GameObject obj = new GameObject(name);
+        obj.transform.SetParent(parent, false);
+        Image img = obj.AddComponent<Image>();
+        img.color = color;
+        RectTransform rt = obj.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0.5f);
+        rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.sizeDelta = new Vector2(1100f * scale.x, 640f * scale.y);
+        rt.anchoredPosition = Vector2.zero;
+        obj.transform.SetAsFirstSibling();
+    }
+
+    void AddPanelCorner(Transform parent, string name, Vector2 anchor, Vector2 dir, Color color)
+    {
+        AddCornerLine(parent, name + "_H", anchor, new Vector2(116f * dir.x, 0f), color);
+        AddCornerLine(parent, name + "_V", anchor, new Vector2(0f, 88f * dir.y), color);
+    }
+
+    void AddCornerLine(Transform parent, string name, Vector2 anchor, Vector2 size, Color color)
+    {
+        GameObject obj = new GameObject(name);
+        obj.transform.SetParent(parent, false);
+        Image img = obj.AddComponent<Image>();
+        img.color = color;
+        RectTransform rt = obj.GetComponent<RectTransform>();
+        rt.anchorMin = anchor;
+        rt.anchorMax = anchor;
+        rt.pivot = anchor;
+        rt.sizeDelta = new Vector2(Mathf.Abs(size.x) > 0f ? Mathf.Abs(size.x) : 4f, Mathf.Abs(size.y) > 0f ? Mathf.Abs(size.y) : 4f);
+        rt.anchoredPosition = new Vector2(size.x < 0f ? -18f : 18f, size.y < 0f ? -18f : 18f);
+    }
+
+    void AddNeonLine(Transform parent, string name, Vector2 min, Vector2 max, Color color)
+    {
+        GameObject obj = new GameObject(name);
+        obj.transform.SetParent(parent, false);
+        Image img = obj.AddComponent<Image>();
+        img.color = color;
+        RectTransform rt = obj.GetComponent<RectTransform>();
+        rt.anchorMin = min;
+        rt.anchorMax = max;
+        rt.offsetMin = rt.offsetMax = Vector2.zero;
+    }
+
+    void AddTextGlow(GameObject textObject, Color color, Vector2 distance)
+    {
+        Outline glow = textObject.AddComponent<Outline>();
+        glow.effectColor = color;
+        glow.effectDistance = distance;
+    }
+
+    void AddNameEntryWing(Transform parent, bool left)
+    {
+        float x0 = left ? 0.145f : 0.855f;
+        float sign = left ? 1f : -1f;
+        Color color = left ? new Color(0.16f, 0.55f, 1f, 0.92f) : new Color(1f, 0.22f, 0.94f, 0.92f);
+        for (int i = 0; i < 4; i++)
+        {
+            GameObject bar = new GameObject((left ? "Left" : "Right") + "Wing_" + i);
+            bar.transform.SetParent(parent, false);
+            Image img = bar.AddComponent<Image>();
+            img.color = color;
+            RectTransform rt = bar.GetComponent<RectTransform>();
+            float y = 0.765f - i * 0.032f;
+            float x1 = x0 + sign * (0.090f - i * 0.012f);
+            rt.anchorMin = new Vector2(Mathf.Min(x0, x1), y);
+            rt.anchorMax = new Vector2(Mathf.Max(x0, x1), y + 0.018f);
+            rt.offsetMin = rt.offsetMax = Vector2.zero;
+        }
+    }
+
+    void AddNameEntryDiamond(Transform parent)
+    {
+        GameObject obj = new GameObject("PrismDiamond");
+        obj.transform.SetParent(parent, false);
+        Image img = obj.AddComponent<Image>();
+        img.color = new Color(0.76f, 0.34f, 1f, 0.88f);
+        RectTransform rt = obj.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0.605f);
+        rt.anchorMax = new Vector2(0.5f, 0.605f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.sizeDelta = new Vector2(30f, 30f);
+        rt.localRotation = Quaternion.Euler(0f, 0f, 45f);
+        Outline outline = obj.AddComponent<Outline>();
+        outline.effectColor = new Color(0.30f, 0.72f, 1f, 0.95f);
+        outline.effectDistance = new Vector2(3f, -3f);
+    }
+
+    void AddNameInputChrome(Transform input)
+    {
+        AddNeonLine(input, "InputHotEdge", new Vector2(0.56f, 0.00f), new Vector2(1.00f, 0.04f), new Color(1f, 0.20f, 0.94f, 0.85f));
+        AddNeonLine(input, "InputCoolEdge", new Vector2(0.00f, 0.96f), new Vector2(0.42f, 1.00f), new Color(0.30f, 0.78f, 1f, 0.85f));
+        AddNeonLine(input, "InputLeftCut", new Vector2(0.00f, 0.00f), new Vector2(0.020f, 1.00f), new Color(0.32f, 0.78f, 1f, 0.45f));
+        AddNeonLine(input, "InputRightCut", new Vector2(0.980f, 0.00f), new Vector2(1.00f, 1.00f), new Color(1f, 0.24f, 0.92f, 0.45f));
+    }
+
+    Button MakeNeonActionButton(Transform parent, string label, string icon,
+        Vector2 anchorMin, Vector2 anchorMax, Color accent, Color fill,
+        UnityEngine.Events.UnityAction action)
+    {
+        GameObject obj = new GameObject(label + "_NeonBtn");
+        obj.transform.SetParent(parent, false);
+        Image img = obj.AddComponent<Image>();
+        img.color = fill;
+        Outline outline = obj.AddComponent<Outline>();
+        outline.effectColor = accent;
+        outline.effectDistance = new Vector2(3f, -3f);
+
+        Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
+        btn.onClick.AddListener(action);
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = anchorMin;
+        rect.anchorMax = anchorMax;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+
+        AddNeonLine(obj.transform, "ButtonTop", new Vector2(0f, 0.92f), new Vector2(1f, 1f), accent);
+        AddNeonLine(obj.transform, "ButtonBottom", new Vector2(0f, 0f), new Vector2(1f, 0.06f), new Color(accent.r, accent.g, accent.b, 0.48f));
+
+        GameObject iconObj = new GameObject("IconPlate");
+        iconObj.transform.SetParent(obj.transform, false);
+        Image iconPlate = iconObj.AddComponent<Image>();
+        iconPlate.color = accent;
+        RectTransform iconRt = iconObj.GetComponent<RectTransform>();
+        iconRt.anchorMin = new Vector2(0.08f, 0.18f);
+        iconRt.anchorMax = new Vector2(0.26f, 0.82f);
+        iconRt.offsetMin = iconRt.offsetMax = Vector2.zero;
+        TextMeshProUGUI iconLabel = CreateCenteredLabel(iconObj.transform, icon, 28, new Color(0.02f, 0.04f, 0.12f, 1f), true);
+        iconLabel.textWrappingMode = TextWrappingModes.NoWrap;
+
+        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, 31, new Color(0.96f, 0.98f, 1f, 1f), true);
+        labelText.rectTransform.anchorMin = new Vector2(0.26f, 0f);
+        labelText.rectTransform.anchorMax = new Vector2(1f, 1f);
+        labelText.characterSpacing = 3f;
+
+        AttachHoverEffect(obj, labelText, img, fill,
+            new Color(Mathf.Min(1f, fill.r + 0.10f), Mathf.Min(1f, fill.g + 0.12f), Mathf.Min(1f, fill.b + 0.16f), 0.96f),
+            Color.white);
+        return btn;
+    }
+
     /// <summary>
     /// Tears down every direct child of <paramref name="root"/> except the
     /// background plate and rebuilds the main menu UI. Used after the name
@@ -1595,14 +1912,15 @@ public class RuntimeMenuBuilder : MonoBehaviour
         // Live credits readout in the corner.
         TextMeshProUGUI creditsLabel = MakeText(panelObj.transform,
             "CREDITS: " + (SessionManager.Instance != null ? SessionManager.Instance.Credits.ToString("N0") : "0"),
-            26, new Color(0.30f, 0.85f, 1f, 1f),
-            new Vector2(0.62f, 0.88f), new Vector2(0.96f, 0.94f), false);
+            24, new Color(0.30f, 0.85f, 1f, 1f),
+            new Vector2(0.70f, 0.805f), new Vector2(0.96f, 0.855f), false);
+        creditsLabel.alignment = TextAlignmentOptions.Right;
 
         // ── Tabs ────────────────────────────────────────────────────────────
         Button weaponTabBtn = null;
         Button skinTabBtn   = null;
         weaponTabBtn = MakePanelButton(panelObj.transform, "WEAPONS",
-            new Vector2(0.04f, 0.80f), new Vector2(0.24f, 0.88f),
+            new Vector2(0.29f, 0.795f), new Vector2(0.485f, 0.865f),
             () =>
             {
                 _activeStoreTab = StoreTab.Weapons;
@@ -1610,7 +1928,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
                 HighlightTab(weaponTabBtn, skinTabBtn, true);
             });
         skinTabBtn = MakePanelButton(panelObj.transform, "SKINS",
-            new Vector2(0.26f, 0.80f), new Vector2(0.46f, 0.88f),
+            new Vector2(0.515f, 0.795f), new Vector2(0.71f, 0.865f),
             () =>
             {
                 _activeStoreTab = StoreTab.Skins;
@@ -1625,17 +1943,17 @@ public class RuntimeMenuBuilder : MonoBehaviour
         sectionHeader.text = _activeStoreTab == StoreTab.Weapons ? "WEAPONS" : "SKINS";
         sectionHeader.fontSize = 30f;
         sectionHeader.fontStyle = FontStyles.Bold;
-        sectionHeader.alignment = TextAlignmentOptions.Left;
+        sectionHeader.alignment = TextAlignmentOptions.Center;
         sectionHeader.color = new Color(0.92f, 0.94f, 1f, 1f);
         if (customFont != null) sectionHeader.font = customFont;
         RectTransform shRT = sectionHeaderGo.GetComponent<RectTransform>();
-        shRT.anchorMin = new Vector2(0.34f, 0.735f);
-        shRT.anchorMax = new Vector2(0.96f, 0.775f);
+        shRT.anchorMin = new Vector2(0.04f, 0.720f);
+        shRT.anchorMax = new Vector2(0.96f, 0.765f);
         shRT.offsetMin = shRT.offsetMax = Vector2.zero;
 
         RebuildStoreContent(panelObj.transform, creditsLabel);
 
-        RectTransform storeFooter = PrismOrganizedMenuChrome.CreateFooterRow(panelObj.transform, 64f, 14f, 36f);
+        RectTransform storeFooter = PrismOrganizedMenuChrome.CreateFooterRow(panelObj.transform, 64f, 14f, 10f);
         Button returnBtn = PrismOrganizedMenuChrome.AddFooterChipButton(
             storeFooter, "RETURN",
             new Color(0.12f, 0.20f, 0.42f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlineBlue,
@@ -1693,8 +2011,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject contentRoot = new GameObject("StoreContent_" + _activeStoreTab);
         contentRoot.transform.SetParent(panel, false);
         RectTransform crRT = contentRoot.AddComponent<RectTransform>();
-        crRT.anchorMin = new Vector2(0f, 0.13f);
-        crRT.anchorMax = new Vector2(1f, 0.72f);
+        crRT.anchorMin = new Vector2(0f, 0.165f);
+        crRT.anchorMax = new Vector2(1f, 0.695f);
         crRT.offsetMin = crRT.offsetMax = Vector2.zero;
 
         // ─── Preview pane ────────────────────────────────────────────────
@@ -1705,8 +2023,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
         previewOutline.effectColor    = new Color(0.30f, 0.55f, 1f, 0.55f);
         previewOutline.effectDistance = new Vector2(2f, -2f);
         RectTransform previewRT = preview.GetComponent<RectTransform>();
-        previewRT.anchorMin = new Vector2(0.04f, 0.05f);
-        previewRT.anchorMax = new Vector2(0.30f, 0.95f);
+        previewRT.anchorMin = new Vector2(0.06f, 0.06f);
+        previewRT.anchorMax = new Vector2(0.32f, 0.94f);
         previewRT.offsetMin = previewRT.offsetMax = Vector2.zero;
 
         TextMeshProUGUI previewName = MakeText(preview.transform, "", 28,
@@ -1736,8 +2054,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
         TextMeshProUGUI[] statusLabels = new TextMeshProUGUI[SessionManager.Weapons.Length];
 
         const float topY    = 0.95f;
-        const float rowH    = 0.135f;
-        const float rowGap  = 0.010f;
+        const float rowH    = 0.118f;
+        const float rowGap  = 0.008f;
         for (int i = 0; i < SessionManager.Weapons.Length; i++)
         {
             int idx = i;
@@ -1750,8 +2068,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
             Image rowImg = row.AddComponent<Image>();
             rowImg.color = new Color(0.16f, 0.20f, 0.30f, 0.95f);
             RectTransform rowRT = row.GetComponent<RectTransform>();
-            rowRT.anchorMin = new Vector2(0.34f, yMin);
-            rowRT.anchorMax = new Vector2(0.96f, yMax);
+            rowRT.anchorMin = new Vector2(0.38f, yMin);
+            rowRT.anchorMax = new Vector2(0.94f, yMax);
             rowRT.offsetMin = rowRT.offsetMax = Vector2.zero;
 
             // Icon — coloured swatch with the weapon's glyph letter inside.
@@ -1766,19 +2084,19 @@ public class RuntimeMenuBuilder : MonoBehaviour
             MakeText(icon.transform, w.Glyph, 38, new Color(0f, 0f, 0f, 0.9f),
                 new Vector2(0f, 0f), new Vector2(1f, 1f), true);
 
-            MakeText(row.transform, w.Name, 26, new Color(0.94f, 0.96f, 1f, 1f),
+            MakeText(row.transform, w.Name, 23, new Color(0.94f, 0.96f, 1f, 1f),
                 new Vector2(0.17f, 0.55f), new Vector2(0.66f, 0.95f), false);
 
             string statLine = "DMG ×" + w.DamageMul.ToString("0.00") + "   SPD ×" + w.AttackSpeedMul.ToString("0.00");
-            MakeText(row.transform, statLine, 18, new Color(0.66f, 0.74f, 0.92f, 0.95f),
+            MakeText(row.transform, statLine, 16, new Color(0.66f, 0.74f, 0.92f, 0.95f),
                 new Vector2(0.17f, 0.18f), new Vector2(0.62f, 0.45f), false);
 
             string priceLabel = w.Price <= 0 ? "FREE" : w.Price.ToString("N0") + " CR";
-            MakeText(row.transform, priceLabel, 22, new Color(0.30f, 0.85f, 1f, 1f),
+            MakeText(row.transform, priceLabel, 19, new Color(0.30f, 0.85f, 1f, 1f),
                 new Vector2(0.66f, 0.55f), new Vector2(0.84f, 0.95f), false);
 
             TextMeshProUGUI statusLabel = MakeText(row.transform, "",
-                20, new Color(0.66f, 0.74f, 0.92f, 0.95f),
+                18, new Color(0.66f, 0.74f, 0.92f, 0.95f),
                 new Vector2(0.66f, 0.05f), new Vector2(0.96f, 0.50f), false);
             statusLabels[idx] = statusLabel;
 
@@ -1868,8 +2186,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
             Image rowImg = row.AddComponent<Image>();
             rowImg.color = new Color(0.16f, 0.20f, 0.30f, 0.95f);
             RectTransform rowRT = row.GetComponent<RectTransform>();
-            rowRT.anchorMin = new Vector2(0.34f, yMin);
-            rowRT.anchorMax = new Vector2(0.96f, yMax);
+            rowRT.anchorMin = new Vector2(0.38f, yMin);
+            rowRT.anchorMax = new Vector2(0.94f, yMax);
             rowRT.offsetMin = rowRT.offsetMax = Vector2.zero;
 
             GameObject swatch = new GameObject("Swatch");
