@@ -53,7 +53,7 @@ public class GameManager : MonoBehaviour
     }
 
     private static readonly string[] LevelWeaponNames = {
-        "Tactical Knife", "Katana", "Shovel", "Baseball Bat", "Nunchucks",
+        "Tactical Knife", "Razor Katana", "Shovel", "Baseball Bat", "Nunchucks",
         "Wrench", "Crowbar", "Hammer", "Axe", "Spear",
         "Nailed Plank", "Saw", "Sickle", "Morgenstern", "L3FTE",
         "Riot Shield"
