@@ -180,7 +180,7 @@ public class UIManager : MonoBehaviour
     /// • COMPLETELY destroys the top-left ProfileHeader panel
     /// • Rebuilds a compact zero-gap button stack in the requested order:
     ///   Continue → [Custom Match | Select Level] → [Prism Store | Challenges]
-    ///   → Options → Settings → Credits → Quit
+    ///   → Settings → Credits → Quit
     /// </summary>
     public static void CompactifyMainMenuCanvas()
     {
@@ -209,14 +209,13 @@ public class UIManager : MonoBehaviour
         Button selectLevelBtn  = FindButtonByLabel(canvas.transform, "SELECT LEVEL");
         Button storeBtn        = FindButtonByLabel(canvas.transform, "PRISM STORE");
         Button challengesBtn   = FindButtonByLabel(canvas.transform, "CHALLENGES");
-        Button optionsBtn      = FindButtonByLabel(canvas.transform, "OPTIONS");
         Button settingsBtn     = FindButtonByLabel(canvas.transform, "SETTINGS");
         Button creditsBtn      = FindButtonByLabel(canvas.transform, "CREDITS");
         Button quitBtn         = FindButtonByLabel(canvas.transform, "QUIT");
 
         // Core buttons required; Custom Match is optional (added by RuntimeMenuBuilder update).
         if (continueBtn == null || selectLevelBtn == null || storeBtn == null ||
-            challengesBtn == null || optionsBtn == null || settingsBtn == null ||
+            challengesBtn == null || settingsBtn == null ||
             creditsBtn == null || quitBtn == null)
             return;
 
@@ -255,8 +254,7 @@ public class UIManager : MonoBehaviour
         CreatePairSeparator(pair2);
         ReparentAndLayout(challengesBtn, pair2, preferredHeight: 88f, fullWidth: false);
 
-        // Rows 3-6: Options, Settings, Credits, Quit (all full width, zero gap)
-        ReparentAndLayout(optionsBtn,  stackRT, preferredHeight: 88f, fullWidth: true);
+        // Rows 3-5: Settings, Credits, Quit (all full width, zero gap)
         ReparentAndLayout(settingsBtn, stackRT, preferredHeight: 88f, fullWidth: true);
         ReparentAndLayout(creditsBtn,  stackRT, preferredHeight: 88f, fullWidth: true);
         ReparentAndLayout(quitBtn,     stackRT, preferredHeight: 88f, fullWidth: true);
@@ -394,7 +392,7 @@ public class UIManager : MonoBehaviour
             string txt = t != null ? (t.text ?? string.Empty).Trim().ToUpperInvariant() : string.Empty;
             if (txt == "CONTINUE" || txt == "START" || txt == "CUSTOM MATCH" ||
                 txt == "SELECT LEVEL" || txt == "PRISM STORE" || txt == "CHALLENGES" ||
-                txt == "OPTIONS" || txt == "SETTINGS" || txt == "CREDITS" || txt == "QUIT")
+                txt == "SETTINGS" || txt == "CREDITS" || txt == "QUIT")
             {
                 b.gameObject.SetActive(false);
             }

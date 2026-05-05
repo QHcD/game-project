@@ -10,7 +10,6 @@ public class PauseMenuController : MonoBehaviour
 {
     private GameObject pauseCanvas;
     private GameObject mainPanel;
-    private GameObject optionsPanel;
     private GameObject settingsPanel;
     private bool isPaused;
     private TMP_FontAsset prismFont;
@@ -125,11 +124,9 @@ public class PauseMenuController : MonoBehaviour
         overlay.color = new Color(0.02f, 0.02f, 0.06f, 0.72f);
 
         mainPanel = CreatePausePanel("PausePanel_Main", new Vector2(760f, 700f));
-        optionsPanel = CreatePausePanel("PausePanel_Options", new Vector2(860f, 720f));
-        settingsPanel = CreatePausePanel("PausePanel_Settings", new Vector2(860f, 720f));
+        settingsPanel = CreatePausePanel("PausePanel_Settings", new Vector2(900f, 920f));
 
         BuildMainPanel(mainPanel.transform);
-        BuildOptionsPanel(optionsPanel.transform);
         BuildSettingsPanel(settingsPanel.transform);
     }
 
@@ -159,41 +156,43 @@ public class PauseMenuController : MonoBehaviour
 
         CreateButton(parent, "RESUME", new Vector2(0f, 92f), ResumeGame);
         CreateButton(parent, "RESTART", new Vector2(0f, 2f), RestartGame);
-        CreateButton(parent, "OPTIONS", new Vector2(0f, -88f), () => ShowPanel(optionsPanel));
-        CreateButton(parent, "SETTINGS", new Vector2(0f, -178f), () => ShowPanel(settingsPanel));
-        CreateButton(parent, "QUIT", new Vector2(0f, -268f), QuitGame);
-    }
-
-    private void BuildOptionsPanel(Transform parent)
-    {
-        CreateLabel(parent, "OPTIONS", 56f, new Color(0.78f, 0.84f, 1f, 1f), new Vector2(0f, 258f), new Vector2(500f, 76f), true);
-        CreateLabel(parent, "ADJUST THE CURRENT MATCH WITHOUT LEAVING GAMEPLAY.", 20f, new Color(0.72f, 0.84f, 1f, 0.88f), new Vector2(0f, 208f), new Vector2(620f, 34f), false);
-
-        CreateCycleRow(parent, "DIFFICULTY", new Vector2(0f, 92f), GetDifficultyLabel, CycleDifficulty);
-        CreateCycleRow(parent, "CAMERA VIEW", new Vector2(0f, 4f), GetPerspectiveLabel, CyclePerspective);
-        CreateCycleRow(parent, "MOVE STYLE", new Vector2(0f, -84f), GetMovementLabel, CycleMovement);
-        mouseSensitivitySlider = CreateSensitivityRow(parent, "MOUSE SENS", new Vector2(0f, -166f));
-
-        CreateButton(parent, "RETURN", new Vector2(0f, -286f), () => ShowPanel(mainPanel));
+        CreateButton(parent, "SETTINGS", new Vector2(0f, -88f), () => ShowPanel(settingsPanel));
+        CreateButton(parent, "QUIT", new Vector2(0f, -178f), QuitGame);
     }
 
     private void BuildSettingsPanel(Transform parent)
     {
-        CreateLabel(parent, "SETTINGS", 56f, new Color(0.78f, 0.84f, 1f, 1f), new Vector2(0f, 258f), new Vector2(500f, 76f), true);
-        CreateLabel(parent, "TUNE DISPLAY AND AUDIO, THEN DROP RIGHT BACK INTO THE MATCH.", 20f, new Color(0.72f, 0.84f, 1f, 0.88f), new Vector2(0f, 208f), new Vector2(690f, 34f), false);
+        CreateLabel(parent, "SETTINGS", 56f, new Color(0.78f, 0.84f, 1f, 1f), new Vector2(0f, 408f), new Vector2(500f, 76f), true);
+        CreateLabel(parent, "AUDIO, VIDEO, CONTROLS AND GAMEPLAY IN ONE PLACE.", 18f, new Color(0.72f, 0.84f, 1f, 0.88f), new Vector2(0f, 358f), new Vector2(720f, 32f), false);
 
-        masterVolumeSlider = CreateSliderRow(parent, "MASTER VOL", new Vector2(0f, 104f), AudioSettingsRuntime.MasterKey, value =>
+        CreateLabel(parent, "AUDIO", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, 312f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
+
+        masterVolumeSlider = CreateSliderRow(parent, "MASTER VOL", new Vector2(0f, 252f), AudioSettingsRuntime.MasterKey, value =>
         {
             AudioSettingsRuntime.ApplyListenerVolume();
+            AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent();
         });
 
-        musicVolumeSlider = CreateSliderRow(parent, "MUSIC VOL", new Vector2(0f, 24f), AudioSettingsRuntime.MusicKey, null);
-        sfxVolumeSlider = CreateSliderRow(parent, "SFX VOL", new Vector2(0f, -56f), AudioSettingsRuntime.SfxKey, null);
+        musicVolumeSlider = CreateSliderRow(parent, "MUSIC VOL", new Vector2(0f, 182f), AudioSettingsRuntime.MusicKey,
+            _ => { AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent(); });
+        sfxVolumeSlider = CreateSliderRow(parent, "SFX VOL", new Vector2(0f, 112f), AudioSettingsRuntime.SfxKey, null);
 
-        CreateCycleRow(parent, "GRAPHICS", new Vector2(0f, -136f), GetGraphicsLabel, CycleGraphics);
-        CreateCycleRow(parent, "FULLSCREEN", new Vector2(0f, -214f), GetFullscreenLabel, ToggleFullscreen);
+        CreateLabel(parent, "VIDEO", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, 58f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
 
-        CreateButton(parent, "RETURN", new Vector2(0f, -292f), () => ShowPanel(mainPanel));
+        CreateCycleRow(parent, "GRAPHICS", new Vector2(0f, -2f), GetGraphicsLabel, CycleGraphics);
+        CreateCycleRow(parent, "FULLSCREEN", new Vector2(0f, -74f), GetFullscreenLabel, ToggleFullscreen);
+
+        CreateLabel(parent, "CONTROLS", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, -136f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
+
+        CreateCycleRow(parent, "MOVE STYLE", new Vector2(0f, -198f), GetMovementLabel, CycleMovement);
+        mouseSensitivitySlider = CreateSensitivityRow(parent, "MOUSE SENS", new Vector2(0f, -270f));
+
+        CreateLabel(parent, "GAMEPLAY", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, -334f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
+
+        CreateCycleRow(parent, "DIFFICULTY", new Vector2(0f, -396f), GetDifficultyLabel, CycleDifficulty);
+        CreateCycleRow(parent, "CAMERA VIEW", new Vector2(0f, -468f), GetPerspectiveLabel, CyclePerspective);
+
+        CreateButton(parent, "RETURN", new Vector2(0f, -558f), () => ShowPanel(mainPanel));
     }
 
     private void CreateCycleRow(Transform parent, string label, Vector2 position, System.Func<string> getValue, UnityEngine.Events.UnityAction onCycle)
@@ -463,7 +462,6 @@ public class PauseMenuController : MonoBehaviour
     private void ShowPanel(GameObject targetPanel)
     {
         if (mainPanel != null) mainPanel.SetActive(targetPanel == mainPanel);
-        if (optionsPanel != null) optionsPanel.SetActive(targetPanel == optionsPanel);
         if (settingsPanel != null) settingsPanel.SetActive(targetPanel == settingsPanel);
     }
 
