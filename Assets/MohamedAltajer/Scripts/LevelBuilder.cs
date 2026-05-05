@@ -317,7 +317,7 @@ public class LevelBuilder : MonoBehaviour
                 plane.SetActive(true);
                 plane.transform.position   = Vector3.zero;
                 plane.transform.localScale = new Vector3(6f, 1f, 6f);
-                ForceGroundVisible(plane);
+                HideNavOnlySurface(plane);
             }
 
             BuildArena(arenaRoot);
@@ -471,8 +471,16 @@ public class LevelBuilder : MonoBehaviour
         for (int i = 0; i < knownGroundNames.Length; i++)
         {
             GameObject ground = GameObject.Find(knownGroundNames[i]);
-            if (ground != null)
-                foundVisibleGround |= ForceGroundVisible(ground);
+            if (ground == null)
+                continue;
+
+            if (IsNavOnlySurfaceName(ground.name))
+            {
+                HideNavOnlySurface(ground);
+                continue;
+            }
+
+            foundVisibleGround |= ForceGroundVisible(ground);
         }
 
         if (fallbackParent != null)
@@ -496,8 +504,8 @@ public class LevelBuilder : MonoBehaviour
         fallbackGround.transform.SetParent(fallbackParent, false);
         fallbackGround.transform.localPosition = new Vector3(0f, -0.05f, 0f);
         fallbackGround.transform.localScale = new Vector3(44f, 0.1f, 44f);
-        ForceGroundVisible(fallbackGround);
-        Debug.LogWarning("[LevelBuilder] No visible ground found; created VisibleGround_Fallback.");
+        HideNavOnlySurface(fallbackGround);
+        Debug.LogWarning("[LevelBuilder] No visible ground found; created hidden VisibleGround_Fallback for physics/NavMesh only.");
     }
 
     private static bool ForceGroundVisible(GameObject groundObject)
@@ -521,6 +529,51 @@ public class LevelBuilder : MonoBehaviour
         }
 
         return hasRenderer;
+    }
+
+    private static void HideNavOnlySurface(GameObject surface)
+    {
+        if (surface == null)
+            return;
+
+        surface.SetActive(true);
+
+        Renderer[] renderers = surface.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer rend = renderers[i];
+            if (rend == null)
+                continue;
+
+            rend.enabled = false;
+            rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            rend.receiveShadows = false;
+        }
+
+        Collider[] colliders = surface.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            if (colliders[i] != null)
+                colliders[i].enabled = true;
+        }
+
+        int envLayer = LayerMask.NameToLayer("Environment");
+        if (envLayer >= 0)
+            SetLayerRecursive(surface, envLayer);
+    }
+
+    private static bool IsNavOnlySurfaceName(string objectName)
+    {
+        if (string.IsNullOrEmpty(objectName))
+            return false;
+
+        string lower = objectName.ToLowerInvariant();
+        return lower == "plane"
+            || lower.Contains("physicsfloor")
+            || lower.Contains("physics_floor")
+            || lower.Contains("visibleground_fallback")
+            || lower.Contains("navmesh")
+            || lower.Contains("debug");
     }
 
     private static bool LooksLikeGround(string objectName)
