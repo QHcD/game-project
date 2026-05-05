@@ -44,7 +44,8 @@ public static class SettingsManager
     public static void ApplyFullscreenToggleGraphic(Toggle toggle, TextMeshProUGUI mark, TMP_FontAsset font)
     {
         if (toggle == null || mark == null) return;
-        mark.text = "\u2713";
+        // Avoid missing-glyph warnings with some TMP fonts (✓ U+2713 is not always included).
+        mark.text = "ON";
         mark.fontSize = 22f;
         mark.fontStyle = FontStyles.Bold;
         mark.alignment = TextAlignmentOptions.Center;

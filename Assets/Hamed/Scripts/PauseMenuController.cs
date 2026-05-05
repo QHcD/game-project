@@ -489,29 +489,19 @@ public class PauseMenuController : MonoBehaviour
 
     private string GetPerspectiveLabel()
     {
-        GameManager.PerspectiveMode mode = GameManager.Instance != null
-            ? GameManager.Instance.GetPerspectiveMode()
-            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", 0), 0, 1);
-        return mode == GameManager.PerspectiveMode.FirstPerson ? "FIRST PERSON" : "THIRD PERSON";
+        // Third-person only.
+        return "THIRD PERSON";
     }
 
     private void CyclePerspective()
     {
-        GameManager.PerspectiveMode current = GameManager.Instance != null
-            ? GameManager.Instance.GetPerspectiveMode()
-            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson), 0, 1);
-
-        GameManager.PerspectiveMode next = current == GameManager.PerspectiveMode.FirstPerson
-            ? GameManager.PerspectiveMode.ThirdPerson
-            : GameManager.PerspectiveMode.FirstPerson;
-
+        // Third-person only: keep the button functional (re-applies runtime prefs),
+        // but do not allow toggling to first-person.
         if (GameManager.Instance != null)
-        {
-            GameManager.Instance.SetPerspectiveMode(next);
-        }
+            GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
         else
         {
-            PlayerPrefs.SetInt("PerspectiveMode", (int)next);
+            PlayerPrefs.SetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson);
             PlayerPrefs.Save();
         }
 

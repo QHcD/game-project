@@ -2,12 +2,12 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
 using Photon.Pun;
 using Photon.Realtime;
 #endif
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
 public class PhotonLauncher : MonoBehaviourPunCallbacks
 #else
 public class PhotonLauncher : MonoBehaviour
@@ -49,15 +49,35 @@ public class PhotonLauncher : MonoBehaviour
 
     public void Connect()
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         MultiplayerMode.SetMultiplayer();
         ApplyPlayerName();
         SetButtonsInteractable(false);
 
         if (PhotonNetwork.IsConnectedAndReady)
         {
-            SetStatus("Connected. Joining random room...");
-            JoinRandomRoom();
+            // If we are already connected, ensure we're in the lobby before any room ops.
+            if (!PhotonNetwork.InLobby)
+            {
+                SetStatus("Connecting... (joining lobby)");
+                PhotonNetwork.JoinLobby();
+                return;
+            }
+
+            // Already in lobby — execute any pending action.
+            if (pendingCreateRoom)
+            {
+                CreateRoom();
+                return;
+            }
+            if (pendingJoinRandom || autoJoinRandomAfterConnect)
+            {
+                JoinRandomRoom();
+                return;
+            }
+
+            SetButtonsInteractable(true);
+            SetStatus("Joined lobby");
             return;
         }
 
@@ -74,16 +94,25 @@ public class PhotonLauncher : MonoBehaviour
 
     public void JoinRandomRoom()
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         MultiplayerMode.SetMultiplayer();
         ApplyPlayerName();
         autoJoinRandomAfterConnect = true;
+        pendingJoinRandom = true;
+        pendingCreateRoom = false;
 
         if (!PhotonNetwork.IsConnectedAndReady)
         {
-            pendingJoinRandom = true;
-            pendingCreateRoom = false;
+            SetStatus("Connecting...");
             Connect();
+            return;
+        }
+
+        if (!PhotonNetwork.InLobby)
+        {
+            SetButtonsInteractable(false);
+            SetStatus("Connecting... (joining lobby)");
+            PhotonNetwork.JoinLobby();
             return;
         }
 
@@ -98,16 +127,25 @@ public class PhotonLauncher : MonoBehaviour
 
     public void CreateRoom()
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         MultiplayerMode.SetMultiplayer();
         ApplyPlayerName();
         autoJoinRandomAfterConnect = false;
+        pendingCreateRoom = true;
+        pendingJoinRandom = false;
 
         if (!PhotonNetwork.IsConnectedAndReady)
         {
-            pendingJoinRandom = false;
-            pendingCreateRoom = true;
+            SetStatus("Connecting...");
             Connect();
+            return;
+        }
+
+        if (!PhotonNetwork.InLobby)
+        {
+            SetButtonsInteractable(false);
+            SetStatus("Connecting... (joining lobby)");
+            PhotonNetwork.JoinLobby();
             return;
         }
 
@@ -122,27 +160,37 @@ public class PhotonLauncher : MonoBehaviour
 #endif
     }
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
     public override void OnConnectedToMaster()
     {
-        SetButtonsInteractable(true);
-        SetStatus("Connected to master.");
+        SetButtonsInteractable(false);
+        SetStatus("Connecting... (joining lobby)");
         PhotonNetwork.JoinLobby();
-
-        if (pendingCreateRoom)
-            CreateRoom();
-        else if (pendingJoinRandom || autoJoinRandomAfterConnect)
-            JoinRandomRoom();
     }
 
     public override void OnJoinedLobby()
     {
-        SetStatus("In lobby. Join or create a room.");
+        SetStatus("Joined lobby");
+        SetButtonsInteractable(true);
+
+        // Execute any pending action once we're actually in the lobby.
+        if (pendingCreateRoom)
+        {
+            CreateRoom();
+            return;
+        }
+        if (pendingJoinRandom || autoJoinRandomAfterConnect)
+        {
+            JoinRandomRoom();
+            return;
+        }
     }
 
     public override void OnJoinRandomFailed(short returnCode, string message)
     {
-        SetStatus("No room found. Creating one...");
+        // Common flow: no room exists yet. Create one with the requested max players.
+        maxPlayers = 8;
+        SetStatus("No room found. Creating room...");
         CreateRoom();
     }
 
@@ -173,7 +221,7 @@ public class PhotonLauncher : MonoBehaviour
         string playerName = playerNameInput != null ? playerNameInput.text : string.Empty;
         playerName = string.IsNullOrWhiteSpace(playerName) ? $"Player{Random.Range(1000, 9999)}" : playerName.Trim();
         PlayerProfile.SetUsername(playerName);
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         PhotonNetwork.NickName = playerName;
 #endif
     }

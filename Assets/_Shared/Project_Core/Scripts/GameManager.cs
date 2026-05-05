@@ -155,7 +155,8 @@ public class GameManager : MonoBehaviour
     {
         if (Instance != null && Instance != this)
         {
-            Debug.LogWarning($"[GameManager] Duplicate destroyed: \"{gameObject.name}\". Only one GameManager allowed.");
+            // Scenes may still contain an extra GameManager. We destroy duplicates to keep gameplay stable.
+            // Avoid spamming warnings; the proper fix is removing the extra scene instance.
             DestroyImmediate(gameObject);
             return;
         }
@@ -169,7 +170,6 @@ public class GameManager : MonoBehaviour
             {
                 if (all[i] != null && all[i] != this)
                 {
-                    Debug.LogWarning($"[GameManager] Sibling duplicate destroyed: \"{all[i].gameObject.name}\".");
                     DestroyImmediate(all[i].gameObject);
                 }
             }
@@ -289,7 +289,14 @@ public class GameManager : MonoBehaviour
     {
         difficulty      = PlayerPrefs.GetString("Difficulty", difficulty);
         selectedMap     = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", (int)selectedMap), 0, 1);
-        perspectiveMode = (PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)perspectiveMode), 0, 1);
+        // Third-person only: if older saves stored FirstPerson, ignore and overwrite.
+        perspectiveMode = PerspectiveMode.ThirdPerson;
+        int persistedPerspective = Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)PerspectiveMode.ThirdPerson), 0, 1);
+        if (persistedPerspective != (int)PerspectiveMode.ThirdPerson)
+        {
+            PlayerPrefs.SetInt("PerspectiveMode", (int)PerspectiveMode.ThirdPerson);
+            PlayerPrefs.Save();
+        }
         movementScheme  = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", (int)movementScheme), 0, 1);
         currentLevel    = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
     }
@@ -396,8 +403,9 @@ public class GameManager : MonoBehaviour
 
     public void SetPerspectiveMode(PerspectiveMode mode)
     {
-        perspectiveMode = mode;
-        PlayerPrefs.SetInt("PerspectiveMode", (int)mode);
+        // Third-person only.
+        perspectiveMode = PerspectiveMode.ThirdPerson;
+        PlayerPrefs.SetInt("PerspectiveMode", (int)PerspectiveMode.ThirdPerson);
         PlayerPrefs.Save();
     }
 
