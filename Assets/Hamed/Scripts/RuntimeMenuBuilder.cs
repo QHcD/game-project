@@ -1,3 +1,6 @@
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -12,7 +15,24 @@ public class RuntimeMenuBuilder : MonoBehaviour
     public TMP_FontAsset customFont;
     public AudioClip lobbyMusicClip;
 
+    // Matches GameManager.LevelWeaponNames for UI when Instance is briefly unavailable.
+    private static readonly string[] LevelWeaponNamesFallback = {
+        "Tactical Knife", "Razor Katana", "Shovel", "Baseball Bat", "Nunchucks",
+        "Wrench", "Crowbar", "Hammer", "Axe", "Spear",
+        "Nailed Plank", "Saw", "Sickle", "Morgenstern", "L3FTE",
+        "Riot Shield"
+    };
+
     private AudioSource lobbyAudioSource;
+    bool _lobbyMusicLoadRoutineActive;
+
+    static string GetWeaponNameForUiTile(int level)
+    {
+        if (GameManager.Instance != null)
+            return GameManager.Instance.GetWeaponNameForLevel(level);
+        int idx = Mathf.Clamp(level - 1, 0, LevelWeaponNamesFallback.Length - 1);
+        return LevelWeaponNamesFallback[idx];
+    }
 
     void Start()
     {
@@ -198,7 +218,6 @@ public class RuntimeMenuBuilder : MonoBehaviour
             return;
         }
 
-        // Tear down any other overlay before showing multiplayer.
         DestroyOverlay(root, "LevelSelectOverlay");
         DestroyOverlay(root, "CustomMatchOverlay");
         DestroyOverlay(root, "StoreOverlay");
@@ -209,51 +228,90 @@ public class RuntimeMenuBuilder : MonoBehaviour
         overlayObj.transform.SetParent(root, false);
         Image overlay = overlayObj.AddComponent<Image>();
         Stretch(overlay.rectTransform);
-        overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.12f);
+        overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.14f);
 
+        // ── Panel ─────────────────────────────────────────────────────────────
         GameObject panelObj = new GameObject("MultiplayerPanel");
         panelObj.transform.SetParent(overlayObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        panel.color = new Color(0.14f, 0.20f, 0.36f, 0.62f);
+        panel.color = new Color(0.06f, 0.10f, 0.22f, 0.96f);
         Outline panelOutline = panelObj.AddComponent<Outline>();
-        panelOutline.effectColor = new Color(0.12f, 0.20f, 0.40f, 0.75f);
-        panelOutline.effectDistance = new Vector2(2f, -2f);
-        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 760f), new Vector2(0f, -6f));
+        panelOutline.effectColor = new Color(0.30f, 0.55f, 1f, 0.90f);
+        panelOutline.effectDistance = new Vector2(3f, -3f);
+        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1040f, 820f), new Vector2(0f, -8f));
 
+        // Fade the panel in on open
+        CanvasGroup panelCG = panelObj.AddComponent<CanvasGroup>();
+        UIAnimationHelper.FadeIn(panelCG, 0.22f);
+
+        // ── Title ─────────────────────────────────────────────────────────────
         MakeText(panelObj.transform, "MULTIPLAYER", 64, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
+            new Vector2(0.05f, 0.755f), new Vector2(0.95f, 0.935f), true);
 
+        // Subtitle — premium / COD-style (ASCII only).
+        MakeText(panelObj.transform, "DEPLOY ONLINE - UP TO 8 OPERATORS", 21f,
+            new Color(0.48f, 0.66f, 1f, 0.82f),
+            new Vector2(0.08f, 0.665f), new Vector2(0.92f, 0.725f), false);
+
+        // ── Name input ────────────────────────────────────────────────────────
         TMP_InputField nameInput = CreateMultiplayerNameInput(panelObj.transform);
-        TextMeshProUGUI status = MakeText(panelObj.transform, "Enter your name, then play online.", 24f,
-            new Color(0.78f, 0.86f, 1f, 0.92f), new Vector2(0.08f, 0.16f), new Vector2(0.92f, 0.24f), false);
 
-        // Launcher driver (Photon flow lives in PhotonLauncher).
+        // ── Status area: connection text + animated dots (no instructional copy).
+        TextMeshProUGUI status = MakeText(panelObj.transform,
+            "",
+            24f, new Color(0.78f, 0.88f, 1f, 0.95f),
+            new Vector2(0.08f, 0.118f), new Vector2(0.71f, 0.182f), false);
+        status.alignment = TextAlignmentOptions.Left;
+        status.margin = new Vector4(10f, 0f, 0f, 0f);
+
+        TextMeshProUGUI dotsLabel = MakeText(panelObj.transform, "",
+            26f, new Color(0.55f, 0.80f, 1f, 0.95f),
+            new Vector2(0.73f, 0.118f), new Vector2(0.94f, 0.182f), false);
+        dotsLabel.alignment = TextAlignmentOptions.Left;
+
+        // ── Photon launcher ───────────────────────────────────────────────────
         GameObject launcherObj = new GameObject("PhotonLauncher");
         launcherObj.transform.SetParent(overlayObj.transform, false);
         PhotonLauncher launcher = launcherObj.AddComponent<PhotonLauncher>();
         launcher.playerNameInput = nameInput;
         launcher.statusText = status;
 
-        Button connectBtn = MakePanelButton(panelObj.transform, "CONNECT / PLAY ONLINE",
-            new Vector2(0.20f, 0.62f), new Vector2(0.80f, 0.72f),
-            launcher.ConnectAndPlayOnline, 30f, true, true);
-        Button joinBtn = MakePanelButton(panelObj.transform, "JOIN RANDOM ROOM",
-            new Vector2(0.20f, 0.49f), new Vector2(0.80f, 0.59f),
-            launcher.JoinRandomRoom, 30f, true, true);
-        Button createBtn = MakePanelButton(panelObj.transform, "CREATE ROOM",
-            new Vector2(0.20f, 0.36f), new Vector2(0.80f, 0.46f),
-            launcher.CreateRoom, 30f, true, true);
+        // ── Buttons (neon gradient tiers + rim glow hover) ─────────────────────
+        Button connectBtn = MakeMultiplayerNeonButton(panelObj.transform, "CONNECT / PLAY ONLINE",
+            new Vector2(0.15f, 0.415f), new Vector2(0.85f, 0.495f),
+            launcher.ConnectAndPlayOnline, 28f, true,
+            new Color(0.05f, 0.38f, 0.95f, 1f), new Color(0.10f, 0.55f, 1f, 1f),
+            new Color(0.35f, 0.85f, 1f, 1f),
+            new Color(0.25f, 0.72f, 1f, 0.95f), new Color(0.55f, 0.95f, 1f, 1f));
+        Button joinBtn = MakeMultiplayerNeonButton(panelObj.transform, "JOIN RANDOM ROOM",
+            new Vector2(0.15f, 0.315f), new Vector2(0.85f, 0.395f),
+            launcher.JoinRandomRoom, 28f, true,
+            new Color(0.05f, 0.24f, 0.68f, 1f), new Color(0.08f, 0.36f, 0.88f, 1f),
+            new Color(0.22f, 0.62f, 0.98f, 1f),
+            new Color(0.18f, 0.58f, 0.92f, 0.55f), new Color(0.42f, 0.78f, 1f, 0.95f));
+        Button createBtn = MakeMultiplayerNeonButton(panelObj.transform, "CREATE ROOM",
+            new Vector2(0.15f, 0.215f), new Vector2(0.85f, 0.295f),
+            launcher.CreateRoom, 28f, true,
+            new Color(0.16f, 0.08f, 0.58f, 1f), new Color(0.28f, 0.14f, 0.78f, 1f),
+            new Color(0.62f, 0.38f, 1f, 1f),
+            new Color(0.48f, 0.30f, 1f, 0.75f), new Color(0.78f, 0.55f, 1f, 1f));
         Button backBtn = MakePanelButton(panelObj.transform, "BACK",
-            new Vector2(0.39f, 0.055f), new Vector2(0.61f, 0.145f),
+            new Vector2(0.38f, 0.038f), new Vector2(0.62f, 0.108f),
             () =>
             {
                 Destroy(overlayObj);
                 SetMainMenuElementsVisible(root, true);
-            }, 32f, false, true);
+            }, 30f, false, true);
 
         launcher.connectButton = connectBtn;
         launcher.joinRandomButton = joinBtn;
         launcher.createRoomButton = createBtn;
+
+        // Animated dots: watch connectBtn — when it goes non-interactable
+        // (i.e. Photon is working) the dots start cycling automatically.
+        MultiplayerLoadingDots dots = launcherObj.AddComponent<MultiplayerLoadingDots>();
+        dots.dotsLabel = dotsLabel;
+        dots.watchButton = connectBtn;
 
         var nav = new System.Collections.Generic.List<Selectable>(5);
         nav.Add(nameInput);
@@ -269,23 +327,24 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject inputObj = new GameObject("PlayerNameInput");
         inputObj.transform.SetParent(parent, false);
         Image image = inputObj.AddComponent<Image>();
-        image.color = new Color(0.02f, 0.08f, 0.18f, 0.85f);
+        image.color = new Color(0.028f, 0.042f, 0.088f, 0.94f);
         Outline outline = inputObj.AddComponent<Outline>();
-        outline.effectColor = new Color(0.35f, 0.65f, 1f, 0.55f);
-        outline.effectDistance = new Vector2(2f, -2f);
+        outline.effectColor = new Color(0.28f, 0.78f, 1f, 0.72f);
+        outline.effectDistance = new Vector2(1.5f, -1.5f);
 
         RectTransform rect = inputObj.GetComponent<RectTransform>();
-        rect.anchorMin = new Vector2(0.18f, 0.735f);
-        rect.anchorMax = new Vector2(0.82f, 0.815f);
+        // ~68px tall on 820px panel (0.083), centered under subtitle; tighter horizontal margins.
+        rect.anchorMin = new Vector2(0.16f, 0.568f);
+        rect.anchorMax = new Vector2(0.84f, 0.651f);
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
         TMP_InputField input = inputObj.AddComponent<TMP_InputField>();
-        TextMeshProUGUI text = CreateCenteredLabel(inputObj.transform, PlayerProfile.HasUsername ? PlayerProfile.Username : string.Empty, 30f, Color.white, true);
+        TextMeshProUGUI text = CreateCenteredLabel(inputObj.transform, PlayerProfile.HasUsername ? PlayerProfile.Username : string.Empty, 26f, new Color(0.94f, 0.98f, 1f, 1f), true);
         text.alignment = TextAlignmentOptions.MidlineLeft;
-        text.margin = new Vector4(22f, 0f, 22f, 0f);
-        TextMeshProUGUI placeholder = CreateCenteredLabel(inputObj.transform, "PLAYER NAME", 28f, new Color(0.55f, 0.72f, 1f, 0.55f), false);
+        text.margin = new Vector4(18f, 10f, 18f, 10f);
+        TextMeshProUGUI placeholder = CreateCenteredLabel(inputObj.transform, "PLAYER NAME", 24f, new Color(0.55f, 0.72f, 1f, 0.48f), false);
         placeholder.alignment = TextAlignmentOptions.MidlineLeft;
-        placeholder.margin = new Vector4(22f, 0f, 22f, 0f);
+        placeholder.margin = new Vector4(18f, 10f, 18f, 10f);
 
         input.textComponent = text;
         input.placeholder = placeholder;
@@ -327,7 +386,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             int level  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
             title = "LEVEL COMPLETE";
             subtitle = "TOP OPERATIVE:  " + winnerName.ToUpperInvariant() + "  (" + winnerKills + " KILLS)"
-                     + (winnerIsPlayer ? "  •  +500 CR BONUS" : "")
+                     + (winnerIsPlayer ? "   +500 CR BONUS" : "")
                      + "\nSTARS  " + stars + " / 3"
                      + "\nSCORE  " + score
                      + "\nLEVEL  " + level
@@ -492,27 +551,33 @@ public class RuntimeMenuBuilder : MonoBehaviour
         panelOutline.effectColor = new Color(0.12f, 0.20f, 0.40f, 0.75f);
         panelOutline.effectDistance = new Vector2(2f, -2f);
 
-        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 760f), new Vector2(0f, -6f));
+        // Tight panel: grid uses a fixed 4x4 size; avoid excess empty chrome.
+        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 798f), new Vector2(0f, -6f));
 
         MakeText(panelObj.transform, "SELECT LEVEL", 64, new Color(0.94f, 0.94f, 1f, 1f),
             new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
 
-        GameObject gridObj = new GameObject("Grid");
+        // Unity: never use AddComponent<RectTransform>() on a plain GameObject — it is invalid.
+        // Grid must be created with a RectTransform so GridLayoutGroup lays out all 16 cells.
+        GameObject gridObj = new GameObject("Grid", typeof(RectTransform));
         gridObj.transform.SetParent(panelObj.transform, false);
-        RectTransform gridRT = gridObj.AddComponent<RectTransform>();
+        RectTransform gridRT = gridObj.GetComponent<RectTransform>();
         gridRT.anchorMin = new Vector2(0.5f, 0.5f);
         gridRT.anchorMax = new Vector2(0.5f, 0.5f);
         gridRT.pivot = new Vector2(0.5f, 0.5f);
-        gridRT.sizeDelta = new Vector2(620f, 520f);
-        gridRT.anchoredPosition = new Vector2(0f, -42f);
+        // 4 * 160 + 3 * 18 + 40 padding = 734; 4 * 130 + 3 * 18 + 40 = 614
+        gridRT.sizeDelta = new Vector2(736f, 614f);
+        gridRT.anchoredPosition = new Vector2(0f, -20f);
 
         GridLayoutGroup grid = gridObj.AddComponent<GridLayoutGroup>();
-        grid.cellSize = new Vector2(130f, 115f);
-        grid.spacing = new Vector2(14f, 14f);
-        grid.padding = new RectOffset(13, 13, 13, 13);
+        grid.cellSize = new Vector2(160f, 130f);
+        grid.spacing = new Vector2(18f, 18f);
+        grid.padding = new RectOffset(20, 20, 20, 20);
         grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
         grid.constraintCount = 4;
         grid.childAlignment = TextAnchor.MiddleCenter;
+        grid.startCorner = GridLayoutGroup.Corner.UpperLeft;
+        grid.startAxis = GridLayoutGroup.Axis.Horizontal;
 
         System.Collections.Generic.List<Selectable> tileSelectables =
             new System.Collections.Generic.List<Selectable>(GameManager.TotalLevels + 1);
@@ -567,53 +632,116 @@ public class RuntimeMenuBuilder : MonoBehaviour
         if (existing != null) Destroy(existing.gameObject);
     }
 
-    // ─── LEVEL TILE ───────────────────────────────────────────────────────────────
-    // Level select tiles use the Main Menu blue palette so they read as
-    // "this menu and the main menu are the same theme":
-    //   • Unlocked  → cyan-blue fill, dark-blue label, blue glow on hover
-    //   • Selected  → brighter blue with white label
-    //   • Locked    → desaturated dim slate
+    // ─── LEVEL TILE ─────────────────────────────────────────────────────────
+    // Level number, weapon name from catalog (ASCII), status line LOCKED/CURRENT/CLEARED.
+    // Locked tiles stay clickable — shake on click. No star Unicode (font-safe).
     Button MakeLevelTile(Transform parent, int level, bool isUnlocked, bool isCurrent,
         UnityEngine.Events.UnityAction action)
     {
-        // Restore the older, cleaner Select Level styling:
-        // - Unlocked: light gray tiles with dark border
-        // - Current: purple highlight
-        // - Locked: dim gray
-        Color unlockedFill   = new Color(0.86f, 0.88f, 0.92f, 1f);
-        Color unlockedHover  = new Color(0.95f, 0.96f, 0.99f, 1f);
-        Color currentFill    = new Color(0.60f, 0.33f, 0.82f, 1f);
-        Color lockedFill     = new Color(0.52f, 0.56f, 0.62f, 0.55f);
-        Color borderDark     = new Color(0.10f, 0.14f, 0.22f, 0.70f);
-        Color labelDark      = new Color(0.12f, 0.14f, 0.18f, 1f);
-        Color labelLocked    = new Color(0.18f, 0.20f, 0.26f, 0.55f);
+        bool isCompleted = isUnlocked && !isCurrent &&
+                           level < (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
+
+        Color cardFill = isCompleted ? new Color(0.10f, 0.18f, 0.13f, 0.98f)
+                       : isCurrent   ? new Color(0.20f, 0.11f, 0.38f, 0.98f)
+                       : isUnlocked  ? new Color(0.10f, 0.13f, 0.22f, 0.98f)
+                                     : new Color(0.06f, 0.07f, 0.10f, 0.98f);
+
+        Color borderCol = isCompleted ? new Color(0.32f, 0.82f, 0.42f, 0.72f)
+                        : isCurrent   ? new Color(0.62f, 0.38f, 1.00f, 0.95f)
+                        : isUnlocked  ? new Color(0.30f, 0.52f, 0.94f, 0.56f)
+                                      : new Color(0.26f, 0.28f, 0.34f, 0.38f);
 
         GameObject obj = new GameObject("Level_" + level);
         obj.transform.SetParent(parent, false);
 
         Image img = obj.AddComponent<Image>();
-        img.color = isCurrent ? currentFill : isUnlocked ? unlockedFill : lockedFill;
-
-        Button btn = obj.AddComponent<Button>();
-        btn.targetGraphic = img;
-        btn.interactable = isUnlocked;
-        if (isUnlocked) btn.onClick.AddListener(action);
+        img.color = cardFill;
 
         Outline border = obj.AddComponent<Outline>();
-        border.effectColor = borderDark;
-        border.effectDistance = new Vector2(2f, -2f);
+        border.effectColor = borderCol;
+        border.effectDistance = (isCurrent || isCompleted)
+            ? new Vector2(3f, -3f)
+            : new Vector2(2f, -2f);
 
-        Color numColor = isCurrent ? Color.white
-            : isUnlocked ? labelDark
-            : labelLocked;
+        UICardHoverEffect hover = obj.AddComponent<UICardHoverEffect>();
+        hover.glowOutline = border;
+        hover.state = !isUnlocked ? UICardHoverEffect.CardState.Locked
+                    : isCompleted ? UICardHoverEffect.CardState.Owned
+                    : UICardHoverEffect.CardState.Normal;
 
-        TextMeshProUGUI lbl = CreateCenteredLabel(obj.transform, level.ToString(), 44, numColor, true);
-
+        // Allow clicks on locked tiles so the shake fires
+        Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
+        btn.interactable = true;
+        ColorBlock cb = btn.colors;
+        cb.normalColor = cb.highlightedColor = cb.selectedColor = new Color(0f, 0f, 0f, 0f);
+        cb.pressedColor = new Color(1f, 1f, 1f, 0.08f);
+        btn.colors = cb;
         if (isUnlocked)
-            AttachHoverEffect(obj, lbl, img,
-                img.color,
-                unlockedHover,
-                Color.white);
+            btn.onClick.AddListener(action);
+        else
+            btn.onClick.AddListener(() => UIAnimationHelper.Shake(obj.transform));
+
+        float hueBar = (level * 37f % 360f) / 360f;
+
+        GameObject accentTop = new GameObject("AccentTop");
+        accentTop.transform.SetParent(obj.transform, false);
+        Image accentTopImg = accentTop.AddComponent<Image>();
+        accentTopImg.color = Color.HSVToRGB(hueBar, 0.40f, isUnlocked ? 0.62f : 0.26f);
+        RectTransform accentTopRt = accentTop.GetComponent<RectTransform>();
+        accentTopRt.anchorMin = new Vector2(0.04f, 0.88f);
+        accentTopRt.anchorMax = new Vector2(0.96f, 0.97f);
+        accentTopRt.offsetMin = accentTopRt.offsetMax = Vector2.zero;
+
+        GameObject accentSide = new GameObject("AccentSide");
+        accentSide.transform.SetParent(obj.transform, false);
+        Image accentSideImg = accentSide.AddComponent<Image>();
+        accentSideImg.color = new Color(0.35f, 0.75f, 1f, isUnlocked ? 0.34f : 0.11f);
+        RectTransform accentSideRt = accentSide.GetComponent<RectTransform>();
+        accentSideRt.anchorMin = new Vector2(0f, 0.07f);
+        accentSideRt.anchorMax = new Vector2(0.028f, 0.84f);
+        accentSideRt.offsetMin = accentSideRt.offsetMax = Vector2.zero;
+
+        Color numCol = isUnlocked ? new Color(0.94f, 0.96f, 1f, 1f)
+                                  : new Color(0.42f, 0.44f, 0.50f, 0.72f);
+        TextMeshProUGUI lbl = CreateCenteredLabel(obj.transform, level.ToString(), 37, numCol, true);
+        lbl.rectTransform.anchorMin = new Vector2(0.06f, 0.54f);
+        lbl.rectTransform.anchorMax = new Vector2(0.94f, 0.82f);
+        lbl.rectTransform.offsetMin = lbl.rectTransform.offsetMax = Vector2.zero;
+
+        string weaponUpper = GetWeaponNameForUiTile(level).ToUpperInvariant();
+        TextMeshProUGUI weaponLbl = CreateCenteredLabel(obj.transform, weaponUpper, 12,
+            isUnlocked
+                ? new Color(0.72f, 0.82f, 0.98f, 0.92f)
+                : new Color(0.38f, 0.41f, 0.48f, 0.52f),
+            false);
+        weaponLbl.fontStyle = FontStyles.Bold;
+        weaponLbl.textWrappingMode = TextWrappingModes.Normal;
+        weaponLbl.overflowMode = TextOverflowModes.Ellipsis;
+        weaponLbl.raycastTarget = false;
+        weaponLbl.rectTransform.anchorMin = new Vector2(0.07f, 0.26f);
+        weaponLbl.rectTransform.anchorMax = new Vector2(0.93f, 0.52f);
+        weaponLbl.rectTransform.offsetMin = weaponLbl.rectTransform.offsetMax = Vector2.zero;
+
+        string statusText = "";
+        Color statusCol = Color.white;
+        if (!isUnlocked) { statusText = "LOCKED"; statusCol = new Color(0.92f, 0.45f, 0.45f, 0.92f); }
+        else if (isCurrent) { statusText = "CURRENT"; statusCol = new Color(0.45f, 0.95f, 1f, 0.95f); }
+        else if (isCompleted) { statusText = "CLEARED"; statusCol = new Color(0.45f, 0.95f, 0.55f, 0.88f); }
+
+        // Plain new GameObject() only has Transform — no RectTransform (throws MissingComponentException).
+        GameObject statusGo = new GameObject("StatusLine", typeof(RectTransform));
+        statusGo.transform.SetParent(obj.transform, false);
+        RectTransform statusRt = statusGo.GetComponent<RectTransform>();
+        if (statusRt != null)
+        {
+            statusRt.anchorMin = new Vector2(0.05f, 0.03f);
+            statusRt.anchorMax = new Vector2(0.95f, 0.17f);
+            statusRt.offsetMin = statusRt.offsetMax = Vector2.zero;
+        }
+        TextMeshProUGUI statusLbl = CreateCenteredLabel(statusGo.transform, statusText, 11, statusCol, true);
+        statusLbl.raycastTarget = false;
+        statusGo.SetActive(!string.IsNullOrEmpty(statusText));
 
         return btn;
     }
@@ -845,6 +973,86 @@ public class RuntimeMenuBuilder : MonoBehaviour
         return btn;
     }
 
+    /// <summary>Multiplayer panel: two-tone fill, thin neon outline, hover scale + brighter rim (see MenuButtonHoverEffect).</summary>
+    Button MakeMultiplayerNeonButton(Transform parent, string label,
+        Vector2 anchorMin, Vector2 anchorMax,
+        UnityEngine.Events.UnityAction action,
+        float labelFontSize,
+        bool autoSizeSingleLine,
+        Color normalFill, Color hoverFill,
+        Color topSheenRgb,
+        Color normalOutline, Color hoverOutline)
+    {
+        GameObject obj = new GameObject(label + "_Btn");
+        obj.transform.SetParent(parent, false);
+
+        Image img = obj.AddComponent<Image>();
+        img.color = normalFill;
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = anchorMin;
+        rect.anchorMax = anchorMax;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+
+        GameObject sheenObj = new GameObject("TopSheen", typeof(RectTransform));
+        sheenObj.transform.SetParent(obj.transform, false);
+        RectTransform sheenRt = sheenObj.GetComponent<RectTransform>();
+        sheenRt.anchorMin = new Vector2(0f, 0.52f);
+        sheenRt.anchorMax = new Vector2(1f, 1f);
+        sheenRt.offsetMin = Vector2.zero;
+        sheenRt.offsetMax = Vector2.zero;
+        Image sheen = sheenObj.AddComponent<Image>();
+        sheen.color = new Color(topSheenRgb.r, topSheenRgb.g, topSheenRgb.b, 0.26f);
+        sheen.raycastTarget = false;
+
+        Outline outline = obj.AddComponent<Outline>();
+        outline.effectColor = normalOutline;
+        outline.effectDistance = new Vector2(1.5f, -1.5f);
+
+        Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
+        btn.onClick.AddListener(action);
+
+        Color textCol = new Color(0.93f, 0.98f, 1f, 1f);
+        TextMeshProUGUI labelText = CreateCenteredLabel(obj.transform, label, labelFontSize, textCol, true);
+        labelText.fontStyle = FontStyles.Bold;
+        if (autoSizeSingleLine)
+        {
+            labelText.textWrappingMode = TextWrappingModes.NoWrap;
+            labelText.enableAutoSizing = true;
+            labelText.fontSizeMin = 14;
+            labelText.fontSizeMax = Mathf.RoundToInt(labelFontSize);
+            labelText.overflowMode = TextOverflowModes.Truncate;
+        }
+
+        MenuButtonHoverEffect hover = obj.AddComponent<MenuButtonHoverEffect>();
+        hover.label = labelText;
+        hover.background = img;
+        hover.normalTextColor = textCol;
+        hover.hoverTextColor = new Color(1f, 1f, 1f, 1f);
+        hover.normalBackgroundColor = normalFill;
+        hover.hoverBackgroundColor = hoverFill;
+        hover.hoverScale = new Vector3(1.05f, 1.05f, 1f);
+        hover.normalScale = Vector3.one;
+        hover.neonOutline = outline;
+        hover.normalOutlineColor = normalOutline;
+        hover.hoverOutlineColor = hoverOutline;
+
+        if (autoSizeSingleLine)
+        {
+            labelText.ForceMeshUpdate();
+            float w = Mathf.Clamp(labelText.GetPreferredValues().x + 56f, 120f, 820f);
+            float cx = (anchorMin.x + anchorMax.x) * 0.5f;
+            rect.anchorMin = new Vector2(cx, anchorMin.y);
+            rect.anchorMax = new Vector2(cx, anchorMax.y);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.offsetMin = rect.offsetMax = Vector2.zero;
+            rect.sizeDelta = new Vector2(w, 0f);
+        }
+
+        return btn;
+    }
+
     TextMeshProUGUI CreateCenteredLabel(Transform parent, string text,
         float size, Color color, bool bold)
     {
@@ -916,79 +1124,147 @@ public class RuntimeMenuBuilder : MonoBehaviour
     }
 
     // ─── LOBBY MUSIC ──────────────────────────────────────────────────────────────
+    private struct LobbyLoadCandidate
+    {
+        public string Url;
+        public AudioType Type;
+    }
+
     void SetupLobbyMusic()
     {
-        // Stop any existing lobby music
-        StopLobbyMusic();
-
-        // Try Inspector-assigned clip first
         AudioClip clip = lobbyMusicClip;
-
-        // Fallback: load from Resources
         if (clip == null)
             clip = Resources.Load<AudioClip>("MainMenu_LobbyTheme");
 
-        if (clip == null)
+        if (clip != null)
         {
-            // Fallback: load from file via UnityWebRequest
-            string oggInAudio = System.IO.Path.Combine(Application.dataPath, "Audio", "MainMenu_LobbyTheme.ogg");
-            string wavInAudio = System.IO.Path.Combine(Application.dataPath, "Audio", "MainMenu_LobbyTheme.wav");
-
-            string loadPath = null;
-            AudioType loadType = AudioType.OGGVORBIS;
-
-            if (System.IO.File.Exists(oggInAudio))
-            {
-                loadPath = oggInAudio;
-                loadType = AudioType.OGGVORBIS;
-            }
-            else if (System.IO.File.Exists(wavInAudio))
-            {
-                loadPath = wavInAudio;
-                loadType = AudioType.WAV;
-            }
-
-            if (loadPath != null)
-            {
-                StartCoroutine(LoadAndPlayLobbyMusic(loadPath, loadType));
-                return;
-            }
-            else
-            {
-                Debug.LogWarning("[RuntimeMenuBuilder] MainMenu_LobbyTheme audio not found. No lobby music will play.");
-                return;
-            }
+            PlayLobbyClip(clip);
+            return;
         }
 
-        PlayLobbyClip(clip);
+        if (!TryDispatchLobbyMusicFromDiskCoroutine())
+        {
+            Debug.LogWarning(
+                "[RuntimeMenuBuilder] MainMenu_LobbyTheme: no clip. Assign lobbyMusicClip, add Resources/MainMenu_LobbyTheme (audio), "
+                + "or place MainMenu_LobbyTheme (.ogg|.wav|.mp3) under StreamingAssets or Assets/Audio/.");
+            AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent();
+        }
     }
 
-    System.Collections.IEnumerator LoadAndPlayLobbyMusic(string filePath, AudioType audioType)
+    bool TryDispatchLobbyMusicFromDiskCoroutine()
     {
-        string fileUrl = "file:///" + filePath.Replace("\\", "/");
-        using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip(fileUrl, audioType))
-        {
-            yield return www.SendWebRequest();
+        if (_lobbyMusicLoadRoutineActive)
+            return true;
 
-            if (www.result == UnityWebRequest.Result.Success)
+        LobbyLoadCandidate[] tries = BuildLobbyLoadCandidatesFromDiskOrStreaming();
+        if (tries == null || tries.Length == 0)
+            return false;
+
+        StartCoroutine(LoadLobbyMusicCandidatesCoroutine(tries));
+        return true;
+    }
+
+    LobbyLoadCandidate[] BuildLobbyLoadCandidatesFromDiskOrStreaming()
+    {
+        var list = new List<LobbyLoadCandidate>(8);
+
+#if UNITY_ANDROID && !UNITY_EDITOR || UNITY_WEBGL && !UNITY_EDITOR
+        AddStreamingUrlCandidates(list);
+#else
+        void AddFileIfPresent(string absolutePath, AudioType t)
+        {
+            if (!File.Exists(absolutePath)) return;
+            list.Add(new LobbyLoadCandidate { Url = FileUrl(absolutePath), Type = t });
+        }
+
+        void AddVariantsInFolder(string folder)
+        {
+            if (string.IsNullOrEmpty(folder)) return;
+            AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.ogg"), AudioType.OGGVORBIS);
+            AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.wav"), AudioType.WAV);
+            AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.mp3"), AudioType.MPEG);
+        }
+
+        AddVariantsInFolder(Path.Combine(Application.dataPath, "Audio"));
+        AddVariantsInFolder(Application.streamingAssetsPath);
+#endif
+        return list.Count == 0 ? null : list.ToArray();
+    }
+
+#if UNITY_ANDROID && !UNITY_EDITOR || UNITY_WEBGL && !UNITY_EDITOR
+    void AddStreamingUrlCandidates(List<LobbyLoadCandidate> list)
+    {
+        string streamingRoot = Application.streamingAssetsPath.TrimEnd('/').Replace("\\", "/");
+        list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.ogg", Type = AudioType.OGGVORBIS });
+        list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.wav", Type = AudioType.WAV });
+        list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.mp3", Type = AudioType.MPEG });
+    }
+#endif
+
+    static string FileUrl(string absolutePath)
+    {
+        return "file:///" + absolutePath.Replace("\\", "/");
+    }
+
+    IEnumerator LoadLobbyMusicCandidatesCoroutine(LobbyLoadCandidate[] tries)
+    {
+        _lobbyMusicLoadRoutineActive = true;
+
+        for (int i = 0; i < tries.Length; i++)
+        {
+            using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip(tries[i].Url, tries[i].Type))
             {
-                AudioClip clip = DownloadHandlerAudioClip.GetContent(www);
-                if (clip != null)
-                {
-                    clip.name = "MainMenu_LobbyTheme";
-                    PlayLobbyClip(clip);
-                }
-            }
-            else
-            {
-                Debug.LogWarning("[RuntimeMenuBuilder] Failed to load lobby music: " + www.error);
+                yield return www.SendWebRequest();
+
+                if (www.result != UnityWebRequest.Result.Success)
+                    continue;
+
+                AudioClip loaded = DownloadHandlerAudioClip.GetContent(www);
+                if (loaded == null)
+                    continue;
+
+                loaded.name = "MainMenu_LobbyTheme";
+                PlayLobbyClip(loaded);
+                _lobbyMusicLoadRoutineActive = false;
+                yield break;
             }
         }
+
+        _lobbyMusicLoadRoutineActive = false;
+        Debug.LogWarning(
+            "[RuntimeMenuBuilder] Could not load MainMenu_LobbyTheme from disk/StreamingAssets. "
+            + "Add the audio file or assign lobbyMusicClip on RuntimeMenuBuilder in the Main Menu scene.");
+
+        AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent();
+    }
+
+    void ApplyLobbyAudioSourceSettings(AudioClip clip)
+    {
+        lobbyAudioSource.clip = clip;
+        lobbyAudioSource.loop = true;
+        lobbyAudioSource.playOnAwake = false;
+        lobbyAudioSource.mute = false;
+        lobbyAudioSource.spatialBlend = 0f;
+        lobbyAudioSource.ignoreListenerPause = false;
+        lobbyAudioSource.volume = AudioSettingsRuntime.ScaledMusic(AudioSettingsRuntime.MenuLobbyMusicDesignMix);
+    }
+
+    void LogMenuMusicStarted(AudioClip clip)
+    {
+        float effectiveApprox = lobbyAudioSource != null ? lobbyAudioSource.volume * AudioListener.volume : 0f;
+        Debug.Log(
+            $"[RuntimeMenuBuilder] Menu music started: clip={clip.name}, sourceVolume={lobbyAudioSource.volume:F3}, "
+            + $"musicPref={AudioSettingsRuntime.MusicVolume:F3}, masterListener={AudioListener.volume:F3}, effective~={effectiveApprox:F3}, loop=true");
     }
 
     void PlayLobbyClip(AudioClip clip)
     {
-        // Create a persistent audio source
+        if (clip == null)
+        {
+            Debug.LogWarning("[RuntimeMenuBuilder] Menu music skipped: AudioClip reference is null.");
+            return;
+        }
+
         GameObject musicObj = GameObject.Find("LobbyMusic");
         if (musicObj == null)
         {
@@ -1000,21 +1276,33 @@ public class RuntimeMenuBuilder : MonoBehaviour
         if (lobbyAudioSource == null)
             lobbyAudioSource = musicObj.AddComponent<AudioSource>();
 
-        lobbyAudioSource.clip = clip;
-        lobbyAudioSource.loop = true;
-        lobbyAudioSource.volume = AudioSettingsRuntime.ScaledMusic(0.5f);
-        lobbyAudioSource.playOnAwake = false;
+        if (lobbyAudioSource.isPlaying && lobbyAudioSource.clip == clip)
+        {
+            ApplyLobbyAudioSourceSettings(clip);
+            LogMenuMusicStarted(clip);
+            return;
+        }
 
-        if (!lobbyAudioSource.isPlaying)
-            lobbyAudioSource.Play();
+        if (lobbyAudioSource.isPlaying)
+            lobbyAudioSource.Stop();
+
+        ApplyLobbyAudioSourceSettings(clip);
+        lobbyAudioSource.Play();
+        LogMenuMusicStarted(clip);
     }
 
     void StopLobbyMusic()
     {
-        if (lobbyAudioSource != null && lobbyAudioSource.isPlaying)
-        {
-            lobbyAudioSource.Stop();
-        }
+        GameObject go = GameObject.Find("LobbyMusic");
+        if (go == null)
+            return;
+
+        AudioSource src = go.GetComponent<AudioSource>();
+        if (src != null && src.isPlaying)
+            src.Stop();
+
+        if (lobbyAudioSource != null && lobbyAudioSource.gameObject == go)
+            lobbyAudioSource = src;
     }
 
     void OnDestroy()
@@ -2146,9 +2434,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         // ─── Rows ────────────────────────────────────────────────────────
         if (_activeStoreTab == StoreTab.Weapons)
-            BuildWeaponRows(contentRoot.transform, creditsLabel, previewImg, previewName, previewSubtitle, previewGlyph);
+            BuildWeaponCards(contentRoot.transform, creditsLabel, previewImg, previewName, previewSubtitle, previewGlyph);
         else
-            BuildSkinRows(contentRoot.transform, creditsLabel, previewImg, previewName, previewSubtitle, previewGlyph);
+            BuildSkinCards(contentRoot.transform, creditsLabel, previewImg, previewName, previewSubtitle, previewGlyph);
 
         if (hdr != null)
             hdr.SetAsLastSibling();
@@ -2381,6 +2669,368 @@ public class RuntimeMenuBuilder : MonoBehaviour
             // Skin preview just uses the colour swatch (no glyph).
             previewGlyph.text = "";
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  STORE — CARD-BASED GRID (AAA upgrade)
+    //  Replaces the old flat-row layout with 2-column scrollable cards.
+    //  Each card: colour-strip icon | name | stats | price | status badge.
+    //  UICardHoverEffect drives glow + scale; state colour = equipped/locked/owned.
+    // ════════════════════════════════════════════════════════════════════════
+
+    void BuildWeaponCards(Transform parent, TextMeshProUGUI creditsLabel,
+        Image previewImg, TextMeshProUGUI previewName,
+        TextMeshProUGUI previewSubtitle, TextMeshProUGUI previewGlyph)
+    {
+        UICardHoverEffect[] effects = new UICardHoverEffect[SessionManager.Weapons.Length];
+        TextMeshProUGUI[]   status  = new TextMeshProUGUI[SessionManager.Weapons.Length];
+        Image[]             bgImgs  = new Image[SessionManager.Weapons.Length];
+        GameObject[]        cards   = new GameObject[SessionManager.Weapons.Length];
+
+        ScrollRect scroll = BuildCardScroll(parent, new Vector2(0.36f, 0f), new Vector2(1f, 1f));
+        Transform grid = scroll.content;
+
+        for (int i = 0; i < SessionManager.Weapons.Length; i++)
+        {
+            int idx = i;
+            WeaponDefinition w = SessionManager.Weapons[i];
+
+            GameObject card = new GameObject("WCard_" + w.Id);
+            card.transform.SetParent(grid, false);
+            cards[idx] = card;
+
+            Image cardImg = card.AddComponent<Image>();
+            cardImg.color = new Color(0.13f, 0.17f, 0.26f, 0.97f);
+            bgImgs[idx] = cardImg;
+
+            Outline glow = card.AddComponent<Outline>();
+            glow.effectColor = new Color(0.22f, 0.28f, 0.42f, 0.50f);
+            glow.effectDistance = new Vector2(3f, -3f);
+
+            UICardHoverEffect hover = card.AddComponent<UICardHoverEffect>();
+            hover.glowOutline = glow;
+            effects[idx] = hover;
+
+            Button btn = card.AddComponent<Button>();
+            btn.targetGraphic = cardImg;
+            ColorBlock cb = btn.colors;
+            cb.normalColor = cb.highlightedColor = cb.selectedColor = new Color(0f, 0f, 0f, 0f);
+            cb.pressedColor = new Color(1f, 1f, 1f, 0.08f);
+            btn.colors = cb;
+
+            // Left colour strip with glyph
+            BuildCardStrip(card.transform, w.Tint, w.Glyph);
+
+            // Name
+            TextMeshProUGUI nameLbl = MakeCardLabel(card.transform, w.Name.ToUpperInvariant(),
+                19, new Color(0.94f, 0.96f, 1f, 1f), TextAlignmentOptions.Left, true);
+            SetCardRect(nameLbl.rectTransform, 0.13f, 0.56f, 0.74f, 0.96f);
+
+            // Stats
+            string stats = "DMG ×" + w.DamageMul.ToString("0.00") +
+                           "  SPD ×" + w.AttackSpeedMul.ToString("0.00");
+            TextMeshProUGUI statsLbl = MakeCardLabel(card.transform, stats,
+                13, new Color(0.58f, 0.72f, 0.92f, 0.95f), TextAlignmentOptions.Left, false);
+            SetCardRect(statsLbl.rectTransform, 0.13f, 0.28f, 0.74f, 0.54f);
+
+            // Price
+            string priceStr = w.Price <= 0 ? "FREE" : w.Price.ToString("N0") + " CR";
+            TextMeshProUGUI priceLbl = MakeCardLabel(card.transform, priceStr,
+                14, new Color(0.30f, 0.85f, 1f, 1f), TextAlignmentOptions.Left, false);
+            SetCardRect(priceLbl.rectTransform, 0.13f, 0.05f, 0.55f, 0.26f);
+
+            // Status badge (right side)
+            TextMeshProUGUI statusLbl = MakeCardLabel(card.transform, "",
+                13, Color.white, TextAlignmentOptions.Right, true);
+            SetCardRect(statusLbl.rectTransform, 0.55f, 0.05f, 0.97f, 0.96f);
+            status[idx] = statusLbl;
+
+            btn.onClick.AddListener(() =>
+            {
+                SessionManager s = SessionManager.Instance;
+                if (s == null) return;
+                if (!s.IsWeaponUnlocked(w.Id)) { if (s.TryBuyWeapon(w.Id)) s.EquipWeapon(w.Id); }
+                else                           { s.EquipWeapon(w.Id); }
+                UIAnimationHelper.PunchScale(card.transform);
+                RefreshWeaponCards(status, effects, bgImgs, creditsLabel,
+                    previewImg, previewName, previewSubtitle, previewGlyph);
+            });
+        }
+
+        RefreshWeaponCards(status, effects, bgImgs, creditsLabel,
+            previewImg, previewName, previewSubtitle, previewGlyph);
+    }
+
+    void RefreshWeaponCards(TextMeshProUGUI[] status, UICardHoverEffect[] effects,
+        Image[] bgImgs, TextMeshProUGUI creditsLabel,
+        Image previewImg, TextMeshProUGUI previewName,
+        TextMeshProUGUI previewSubtitle, TextMeshProUGUI previewGlyph)
+    {
+        SessionManager s = SessionManager.Instance;
+        if (s == null) return;
+        if (creditsLabel != null)
+            creditsLabel.text = "CREDITS: " + s.Credits.ToString("N0");
+
+        for (int i = 0; i < SessionManager.Weapons.Length && i < status.Length; i++)
+        {
+            WeaponDefinition w = SessionManager.Weapons[i];
+            string badge; Color badgeCol; UICardHoverEffect.CardState state; Color bg;
+            if (s.EquippedWeaponId == w.Id)
+            {
+                badge = "EQUIPPED"; badgeCol = new Color(0.30f, 0.95f, 0.55f, 1f);
+                state = UICardHoverEffect.CardState.Equipped;
+                bg = new Color(0.12f, 0.22f, 0.15f, 0.97f);
+            }
+            else if (s.IsWeaponUnlocked(w.Id))
+            {
+                badge = "OWNED"; badgeCol = new Color(0.30f, 0.85f, 1f, 1f);
+                state = UICardHoverEffect.CardState.Owned;
+                bg = new Color(0.13f, 0.17f, 0.26f, 0.97f);
+            }
+            else if (s.Credits >= w.Price)
+            {
+                badge = "BUY"; badgeCol = new Color(0.95f, 0.85f, 0.30f, 1f);
+                state = UICardHoverEffect.CardState.Normal;
+                bg = new Color(0.13f, 0.17f, 0.26f, 0.97f);
+            }
+            else
+            {
+                badge = "LOCKED"; badgeCol = new Color(0.90f, 0.45f, 0.45f, 1f);
+                state = UICardHoverEffect.CardState.Locked;
+                bg = new Color(0.09f, 0.10f, 0.14f, 0.97f);
+            }
+            if (status[i]  != null) { status[i].text  = badge; status[i].color = badgeCol; }
+            if (effects[i] != null) effects[i].state   = state;
+            if (bgImgs[i]  != null) bgImgs[i].color    = bg;
+        }
+        ApplyWeaponPreview(s.EquippedWeapon, previewImg, previewName, previewSubtitle, previewGlyph);
+    }
+
+    void ApplyWeaponPreview(WeaponDefinition w, Image img, TextMeshProUGUI name,
+        TextMeshProUGUI subtitle, TextMeshProUGUI glyph)
+    {
+        if (img     != null) img.color     = w.Tint;
+        if (name    != null) name.text     = w.Name.ToUpperInvariant();
+        if (subtitle!= null) subtitle.text = "EQUIPPED WEAPON";
+        if (glyph   != null) { glyph.text  = w.Glyph; glyph.color = new Color(0f, 0f, 0f, 0.85f); }
+    }
+
+    void BuildSkinCards(Transform parent, TextMeshProUGUI creditsLabel,
+        Image previewImg, TextMeshProUGUI previewName,
+        TextMeshProUGUI previewSubtitle, TextMeshProUGUI previewGlyph)
+    {
+        UICardHoverEffect[] effects = new UICardHoverEffect[SessionManager.Skins.Length];
+        TextMeshProUGUI[]   status  = new TextMeshProUGUI[SessionManager.Skins.Length];
+        Image[]             bgImgs  = new Image[SessionManager.Skins.Length];
+        GameObject[]        cards   = new GameObject[SessionManager.Skins.Length];
+
+        ScrollRect scroll = BuildCardScroll(parent, new Vector2(0.36f, 0f), new Vector2(1f, 1f));
+        Transform grid = scroll.content;
+
+        for (int i = 0; i < SessionManager.Skins.Length; i++)
+        {
+            int idx = i;
+            KatanaSkin skin = SessionManager.Skins[i];
+
+            GameObject card = new GameObject("SCard_" + skin.Id);
+            card.transform.SetParent(grid, false);
+            cards[idx] = card;
+
+            Image cardImg = card.AddComponent<Image>();
+            cardImg.color = new Color(0.13f, 0.17f, 0.26f, 0.97f);
+            bgImgs[idx] = cardImg;
+
+            Outline glow = card.AddComponent<Outline>();
+            glow.effectColor = new Color(0.22f, 0.28f, 0.42f, 0.50f);
+            glow.effectDistance = new Vector2(3f, -3f);
+
+            UICardHoverEffect hover = card.AddComponent<UICardHoverEffect>();
+            hover.glowOutline = glow;
+            effects[idx] = hover;
+
+            Button btn = card.AddComponent<Button>();
+            btn.targetGraphic = cardImg;
+            ColorBlock cb = btn.colors;
+            cb.normalColor = cb.highlightedColor = cb.selectedColor = new Color(0f, 0f, 0f, 0f);
+            cb.pressedColor = new Color(1f, 1f, 1f, 0.08f);
+            btn.colors = cb;
+
+            // Colour swatch strip (no glyph for skins)
+            BuildCardStrip(card.transform, skin.Color, string.Empty);
+
+            // Name
+            TextMeshProUGUI nameLbl = MakeCardLabel(card.transform, skin.Name.ToUpperInvariant(),
+                19, new Color(0.94f, 0.96f, 1f, 1f), TextAlignmentOptions.Left, true);
+            SetCardRect(nameLbl.rectTransform, 0.13f, 0.52f, 0.80f, 0.95f);
+
+            // Price
+            string priceStr = skin.Price <= 0 ? "FREE" : skin.Price.ToString("N0") + " CR";
+            TextMeshProUGUI priceLbl = MakeCardLabel(card.transform, priceStr,
+                14, new Color(0.30f, 0.85f, 1f, 1f), TextAlignmentOptions.Left, false);
+            SetCardRect(priceLbl.rectTransform, 0.13f, 0.06f, 0.55f, 0.38f);
+
+            // Status badge
+            TextMeshProUGUI statusLbl = MakeCardLabel(card.transform, "",
+                13, Color.white, TextAlignmentOptions.Right, true);
+            SetCardRect(statusLbl.rectTransform, 0.55f, 0.06f, 0.97f, 0.95f);
+            status[idx] = statusLbl;
+
+            btn.onClick.AddListener(() =>
+            {
+                SessionManager s = SessionManager.Instance;
+                if (s == null) return;
+                if (!s.IsSkinUnlocked(skin.Id)) { if (s.TryBuySkin(skin.Id)) s.EquipSkin(skin.Id); }
+                else                            { s.EquipSkin(skin.Id); }
+                UIAnimationHelper.PunchScale(card.transform);
+                RefreshSkinCards(status, effects, bgImgs, creditsLabel,
+                    previewImg, previewName, previewSubtitle, previewGlyph);
+            });
+        }
+
+        RefreshSkinCards(status, effects, bgImgs, creditsLabel,
+            previewImg, previewName, previewSubtitle, previewGlyph);
+    }
+
+    void RefreshSkinCards(TextMeshProUGUI[] status, UICardHoverEffect[] effects,
+        Image[] bgImgs, TextMeshProUGUI creditsLabel,
+        Image previewImg, TextMeshProUGUI previewName,
+        TextMeshProUGUI previewSubtitle, TextMeshProUGUI previewGlyph)
+    {
+        SessionManager s = SessionManager.Instance;
+        if (s == null) return;
+        if (creditsLabel != null)
+            creditsLabel.text = "CREDITS: " + s.Credits.ToString("N0");
+
+        for (int i = 0; i < SessionManager.Skins.Length && i < status.Length; i++)
+        {
+            KatanaSkin skin = SessionManager.Skins[i];
+            string badge; Color badgeCol; UICardHoverEffect.CardState state; Color bg;
+            if (s.EquippedSkinId == skin.Id)
+            {
+                badge = "EQUIPPED"; badgeCol = new Color(0.30f, 0.95f, 0.55f, 1f);
+                state = UICardHoverEffect.CardState.Equipped;
+                bg = new Color(0.12f, 0.22f, 0.15f, 0.97f);
+            }
+            else if (s.IsSkinUnlocked(skin.Id))
+            {
+                badge = "OWNED"; badgeCol = new Color(0.30f, 0.85f, 1f, 1f);
+                state = UICardHoverEffect.CardState.Owned;
+                bg = new Color(0.13f, 0.17f, 0.26f, 0.97f);
+            }
+            else if (s.Credits >= skin.Price)
+            {
+                badge = "BUY"; badgeCol = new Color(0.95f, 0.85f, 0.30f, 1f);
+                state = UICardHoverEffect.CardState.Normal;
+                bg = new Color(0.13f, 0.17f, 0.26f, 0.97f);
+            }
+            else
+            {
+                badge = "LOCKED"; badgeCol = new Color(0.90f, 0.45f, 0.45f, 1f);
+                state = UICardHoverEffect.CardState.Locked;
+                bg = new Color(0.09f, 0.10f, 0.14f, 0.97f);
+            }
+            if (status[i]  != null) { status[i].text  = badge; status[i].color = badgeCol; }
+            if (effects[i] != null) effects[i].state   = state;
+            if (bgImgs[i]  != null) bgImgs[i].color    = bg;
+        }
+        KatanaSkin eq = s.FindSkin(s.EquippedSkinId) ?? SessionManager.Skins[0];
+        if (previewImg     != null) previewImg.color     = eq.Color;
+        if (previewName    != null) previewName.text     = eq.Name.ToUpperInvariant();
+        if (previewSubtitle!= null) previewSubtitle.text = "EQUIPPED SKIN";
+        if (previewGlyph   != null) previewGlyph.text    = string.Empty;
+    }
+
+    // ── Card builder helpers ──────────────────────────────────────────────────
+
+    ScrollRect BuildCardScroll(Transform parent, Vector2 anchorMin, Vector2 anchorMax)
+    {
+        GameObject scrollGo = new GameObject("CardScroll");
+        scrollGo.transform.SetParent(parent, false);
+        RectTransform scrollRT = scrollGo.AddComponent<RectTransform>();
+        scrollRT.anchorMin = anchorMin;
+        scrollRT.anchorMax = anchorMax;
+        scrollRT.offsetMin = new Vector2(6f, 4f);
+        scrollRT.offsetMax = new Vector2(-6f, -4f);
+
+        ScrollRect scroll = scrollGo.AddComponent<ScrollRect>();
+        scroll.horizontal = false;
+        scroll.vertical = true;
+        scroll.movementType = ScrollRect.MovementType.Clamped;
+        scroll.scrollSensitivity = 34f;
+
+        GameObject viewport = new GameObject("Viewport");
+        viewport.transform.SetParent(scrollGo.transform, false);
+        RectTransform vpRT = viewport.AddComponent<RectTransform>();
+        Stretch(vpRT);
+        viewport.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0f);
+        viewport.AddComponent<RectMask2D>();
+
+        GameObject gridGo = new GameObject("CardGrid");
+        gridGo.transform.SetParent(viewport.transform, false);
+        RectTransform gridRT = gridGo.AddComponent<RectTransform>();
+        gridRT.anchorMin = new Vector2(0f, 1f);
+        gridRT.anchorMax = new Vector2(1f, 1f);
+        gridRT.pivot = new Vector2(0.5f, 1f);
+        gridRT.anchoredPosition = Vector2.zero;
+        gridRT.sizeDelta = Vector2.zero;
+
+        GridLayoutGroup grid = gridGo.AddComponent<GridLayoutGroup>();
+        grid.cellSize = new Vector2(268f, 126f);
+        grid.spacing = new Vector2(10f, 10f);
+        grid.padding = new RectOffset(10, 10, 10, 10);
+        grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+        grid.constraintCount = 2;
+        grid.childAlignment = TextAnchor.UpperLeft;
+
+        ContentSizeFitter csf = gridGo.AddComponent<ContentSizeFitter>();
+        csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+
+        scroll.viewport = vpRT;
+        scroll.content = gridRT;
+        return scroll;
+    }
+
+    void BuildCardStrip(Transform card, Color stripColor, string glyphText)
+    {
+        GameObject strip = new GameObject("Strip");
+        strip.transform.SetParent(card, false);
+        Image stripImg = strip.AddComponent<Image>();
+        stripImg.color = stripColor;
+        RectTransform rt = strip.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0f, 0f);
+        rt.anchorMax = new Vector2(0.11f, 1f);
+        rt.offsetMin = rt.offsetMax = Vector2.zero;
+        if (!string.IsNullOrEmpty(glyphText))
+        {
+            TextMeshProUGUI g = MakeCardLabel(strip.transform, glyphText,
+                28, new Color(0f, 0f, 0f, 0.85f), TextAlignmentOptions.Center, true);
+            Stretch(g.rectTransform);
+        }
+    }
+
+    TextMeshProUGUI MakeCardLabel(Transform parent, string text, float size,
+        Color color, TextAlignmentOptions align, bool bold)
+    {
+        GameObject obj = new GameObject("CL_" + text.Substring(0, Mathf.Min(text.Length, 6)));
+        obj.transform.SetParent(parent, false);
+        TextMeshProUGUI tmp = obj.AddComponent<TextMeshProUGUI>();
+        tmp.text = text;
+        tmp.fontSize = size;
+        tmp.color = color;
+        tmp.alignment = align;
+        tmp.overflowMode = TextOverflowModes.Ellipsis;
+        tmp.raycastTarget = false;
+        if (bold) tmp.fontStyle = FontStyles.Bold;
+        if (customFont != null) tmp.font = customFont;
+        return tmp;
+    }
+
+    void SetCardRect(RectTransform rt, float x0, float y0, float x1, float y1)
+    {
+        rt.anchorMin = new Vector2(x0, y0);
+        rt.anchorMax = new Vector2(x1, y1);
+        rt.offsetMin = rt.offsetMax = Vector2.zero;
     }
 
     // ════════════════════════════════════════════════════════════════════════

@@ -16,6 +16,11 @@ public class MenuButtonHoverEffect : MonoBehaviour, IPointerEnterHandler, IPoint
     public Vector3 pressedScale = new Vector3(0.98f, 0.98f, 1f);
     public float animationSpeed = 10f;
 
+    /// <summary>Optional menu rim glow; when set, outline color animates with hover.</summary>
+    public Outline neonOutline;
+    public Color normalOutlineColor = new Color(0.45f, 0.78f, 1f, 0.65f);
+    public Color hoverOutlineColor = new Color(0.78f, 0.96f, 1f, 1f);
+
     bool isHovered;
     bool isPressed;
     /// <summary>When true, menu keyboard navigation keeps this item visually highlighted.</summary>
@@ -73,5 +78,11 @@ public class MenuButtonHoverEffect : MonoBehaviour, IPointerEnterHandler, IPoint
 
         if (background != null)
             background.color = Color.Lerp(background.color, targetBackground, step);
+
+        if (neonOutline != null)
+        {
+            Color targetOutline = highlight ? hoverOutlineColor : normalOutlineColor;
+            neonOutline.effectColor = Color.Lerp(neonOutline.effectColor, targetOutline, step);
+        }
     }
 }

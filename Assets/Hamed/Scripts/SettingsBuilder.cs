@@ -118,7 +118,7 @@ public class SettingsBuilder : MonoBehaviour
         masterSlider = MakeSliderRow(panel.transform, "MASTER VOLUME:", 188f, AudioSettingsRuntime.MasterKey,
             out masterVolumeValueLabel, value => { AudioSettingsRuntime.ApplyListenerVolume(); });
         musicSlider = MakeSliderRow(panel.transform, "MUSIC VOLUME:", 128f, AudioSettingsRuntime.MusicKey,
-            out musicVolumeValueLabel, null);
+            out musicVolumeValueLabel, _ => { AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent(); });
         sfxSlider = MakeSliderRow(panel.transform, "SFX VOLUME:", 68f, AudioSettingsRuntime.SfxKey,
             out sfxVolumeValueLabel, null);
 
