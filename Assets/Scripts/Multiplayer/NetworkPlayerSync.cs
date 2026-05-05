@@ -1,10 +1,10 @@
 using UnityEngine;
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
 using Photon.Pun;
 #endif
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
 public class NetworkPlayerSync : MonoBehaviourPun, IPunObservable
 #else
 public class NetworkPlayerSync : MonoBehaviour
@@ -22,7 +22,7 @@ public class NetworkPlayerSync : MonoBehaviour
     {
         get
         {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
             return photonView != null && photonView.Owner != null
                 ? $"photon:{photonView.Owner.ActorNumber}"
                 : MatchStatsManager.BuildCombatantId(this);
@@ -49,7 +49,7 @@ public class NetworkPlayerSync : MonoBehaviour
 
     private void Update()
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         if (photonView != null && !photonView.IsMine)
         {
             transform.position = Vector3.Lerp(transform.position, networkPosition, remoteLerpSpeed * Time.deltaTime);
@@ -60,7 +60,7 @@ public class NetworkPlayerSync : MonoBehaviour
 
     public void ApplyDamageToNetworkPlayer(int damage, GameObject attackerRoot)
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         if (photonView == null)
             return;
 
@@ -71,7 +71,7 @@ public class NetworkPlayerSync : MonoBehaviour
 #endif
     }
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
     [PunRPC]
     private void RpcApplyDamage(int damage, int attackerActorNumber, string attackerName)
     {
@@ -139,7 +139,7 @@ public class NetworkPlayerSync : MonoBehaviour
             return;
 
         string displayName = "PLAYER";
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         if (photonView != null && photonView.Owner != null && !string.IsNullOrWhiteSpace(photonView.Owner.NickName))
             displayName = photonView.Owner.NickName;
         else

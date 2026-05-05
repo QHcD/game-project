@@ -351,7 +351,7 @@ public class PlayerController : MonoBehaviour
     //  PUBLIC API
     // ════════════════════════════════════════════════════════════════════════
 
-    public Camera ActiveCamera => isThirdPersonActive ? runtimeThirdPersonCamera : firstPersonCam;
+    public Camera ActiveCamera => runtimeThirdPersonCamera;
     public GameObject GetThirdPersonBody() => thirdPersonBody;
     public bool IsMeleeWeapon => true;
     public int GetEquippedWeaponLevel() => equippedWeaponLevel > 0 ? equippedWeaponLevel : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
@@ -2335,7 +2335,7 @@ public class PlayerController : MonoBehaviour
 
     private bool IsRemoteNetworkPlayer()
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         return MultiplayerMode.IsMultiplayer && photonView != null && !photonView.IsMine;
 #else
         return false;
@@ -2344,7 +2344,7 @@ public class PlayerController : MonoBehaviour
 
     private void DisableRemotePlayerLocalSystems()
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         if (!IsRemoteNetworkPlayer())
             return;
 
@@ -2367,7 +2367,7 @@ public class PlayerController : MonoBehaviour
 
     private bool TryDamageNetworkPlayer(Transform target, int damage)
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         if (!MultiplayerMode.IsMultiplayer || photonView == null || !photonView.IsMine)
             return false;
 
@@ -2388,13 +2388,13 @@ public class PlayerController : MonoBehaviour
 
     private void SendNetworkAttackVisual()
     {
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         if (MultiplayerMode.IsMultiplayer && photonView != null && photonView.IsMine)
             photonView.RPC(nameof(RpcPlayRemoteAttackVisual), RpcTarget.Others);
 #endif
     }
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
     [PunRPC]
     private void RpcPlayRemoteAttackVisual()
     {
@@ -2703,13 +2703,15 @@ public class PlayerController : MonoBehaviour
 
     private void TogglePerspective()
     {
-        if (GameManager.Instance == null)
-            return;
-        GameManager.PerspectiveMode current = GameManager.Instance.GetPerspectiveMode();
-        GameManager.PerspectiveMode next = current == GameManager.PerspectiveMode.FirstPerson
-            ? GameManager.PerspectiveMode.ThirdPerson
-            : GameManager.PerspectiveMode.FirstPerson;
-        GameManager.Instance.SetPerspectiveMode(next);
+        // Third-person only.
+        if (GameManager.Instance != null)
+            GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
+        else
+        {
+            PlayerPrefs.SetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson);
+            PlayerPrefs.Save();
+        }
+
         RefreshGameplayPreferences();
     }
 
@@ -2722,14 +2724,16 @@ public class PlayerController : MonoBehaviour
 
     private void ApplyPerspectivePreference()
     {
-        GameManager.PerspectiveMode mode = GameManager.Instance != null
-            ? GameManager.Instance.GetPerspectiveMode()
-            : (GameManager.PerspectiveMode)Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson), 0, 1);
-
-        if (mode == GameManager.PerspectiveMode.FirstPerson)
-            EnableFirstPersonView();
+        // Third-person only: ignore persisted preference and force the correct camera.
+        if (GameManager.Instance != null)
+            GameManager.Instance.SetPerspectiveMode(GameManager.PerspectiveMode.ThirdPerson);
         else
-            EnableThirdPersonView();
+        {
+            PlayerPrefs.SetInt("PerspectiveMode", (int)GameManager.PerspectiveMode.ThirdPerson);
+            PlayerPrefs.Save();
+        }
+
+        EnableThirdPersonView();
     }
 
     private void EnableFirstPersonView()

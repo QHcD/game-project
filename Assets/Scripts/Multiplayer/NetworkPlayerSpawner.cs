@@ -1,11 +1,11 @@
 using UnityEngine;
 using UnityEngine.AI;
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
 using Photon.Pun;
 #endif
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
 public class NetworkPlayerSpawner : MonoBehaviourPunCallbacks
 #else
 public class NetworkPlayerSpawner : MonoBehaviour
@@ -20,13 +20,25 @@ public class NetworkPlayerSpawner : MonoBehaviour
     public LayerMask obstacleMask = ~0;
     private static bool statsResetForCurrentMultiplayerScene;
 
-    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-    private static void EnsureSpawnerForMultiplayerScene()
+    // Same fix as PhotonServiceRunner: AfterSceneLoad fires once at startup on the
+    // menu (IsMultiplayer false), so the spawner was never created when the
+    // multiplayer scene loaded → scene Player at its editor position was used →
+    // player appeared outside/under the map. Subscribe via BeforeSceneLoad so
+    // OnAnySceneLoaded fires for every subsequent scene transition.
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void RegisterSceneLoadedHook()
+    {
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnAnySceneLoaded;
+    }
+
+    private static void OnAnySceneLoaded(
+        UnityEngine.SceneManagement.Scene scene,
+        UnityEngine.SceneManagement.LoadSceneMode mode)
     {
         if (!MultiplayerMode.IsMultiplayer)
             return;
 
-        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != MultiplayerMode.MultiplayerSceneName)
+        if (scene.name != MultiplayerMode.MultiplayerSceneName)
             return;
 
         if (FindFirstObjectByType<NetworkPlayerSpawner>() != null)
@@ -43,9 +55,10 @@ public class NetworkPlayerSpawner : MonoBehaviour
             MatchStatsManager.Instance.ResetMatch();
             statsResetForCurrentMultiplayerScene = true;
         }
+        DisableScenePlayer();
         DisableAiEnemies();
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
         if (PhotonNetwork.InRoom)
             SpawnLocalPlayer();
 #else
@@ -53,7 +66,7 @@ public class NetworkPlayerSpawner : MonoBehaviour
 #endif
     }
 
-#if PHOTON_UNITY_NETWORKING
+#if PUN_2_OR_NEWER
     public override void OnJoinedRoom()
     {
         SpawnLocalPlayer();
@@ -102,6 +115,12 @@ public class NetworkPlayerSpawner : MonoBehaviour
                 return safe;
         }
 
+        // Last resort: raycast straight down from high above the spawner origin
+        // to land on actual geometry, preventing spawn underground/out of bounds.
+        Vector3 above = new Vector3(origin.x, origin.y + 300f, origin.z);
+        if (Physics.Raycast(above, Vector3.down, out RaycastHit groundHit, 600f, ~0, QueryTriggerInteraction.Ignore))
+            return groundHit.point + Vector3.up * 0.1f;
+
         return origin + Vector3.up;
     }
 
@@ -138,6 +157,28 @@ public class NetworkPlayerSpawner : MonoBehaviour
             return false;
 
         return !Physics.CheckSphere(center, capsuleRadius + obstacleClearance, obstacleMask, QueryTriggerInteraction.Ignore);
+    }
+
+    private void DisableScenePlayer()
+    {
+        // Disable any PlayerController that has no PhotonView — these are
+        // scene-placed (non-network) players baked into the editor scene.
+        // Leaving them active caused the local player to be the scene object
+        // at its editor position (often 0,0,0 / underground) instead of the
+        // PhotonNetwork.Instantiate-spawned one.
+        PlayerController[] players = FindObjectsByType<PlayerController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        foreach (PlayerController pc in players)
+        {
+#if PUN_2_OR_NEWER
+            if (pc.GetComponent<PhotonView>() == null)
+            {
+                pc.gameObject.SetActive(false);
+                Debug.Log("[NetworkPlayerSpawner] Disabled scene Player: " + pc.gameObject.name);
+            }
+#else
+            pc.gameObject.SetActive(false);
+#endif
+        }
     }
 
     private void DisableAiEnemies()
