@@ -804,7 +804,10 @@ public class LevelBuilder : MonoBehaviour
             enemyObject.transform.position = agentSpawn;
 
             // NavMeshAgent
+            // IMPORTANT: add the agent disabled first, snap onto NavMesh, then enable.
+            // This prevents "Failed to create agent because it is not close enough to the NavMesh".
             NavMeshAgent agent = EnsureComponent<NavMeshAgent>(enemyObject);
+            if (agent.enabled) agent.enabled = false;
             agent.speed                  = chaseSpeed;
             agent.acceleration           = 14f;
             agent.angularSpeed           = 360f;
@@ -846,6 +849,8 @@ public class LevelBuilder : MonoBehaviour
             controller.maxHealth   = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
 
             // Snap the agent onto the nearest NavMesh position before it begins moving.
+            enemyObject.transform.position = agentSpawn;
+            agent.enabled = true;
             PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn);
             Debug.Log($"[LevelBuilder] Enemy_{i + 1} spawned at {agentSpawn}");
 
@@ -1179,8 +1184,11 @@ public class LevelBuilder : MonoBehaviour
         // ── Find safe spawn on OPEN ground (not inside buildings) ──────────
         // Try many candidate positions spread across the arena. For each one,
         // check NavMesh AND verify there's open sky above (no roof/wall).
+        // 2026-05: also validate against environment colliders so the player
+        // never spawns intersecting tanks/walls/props (the #1 "stuck at start"
+        // issue reported in melee FFA).
         Vector3 safeSpawn = _navMeshReady
-            ? FindRandomOpenSpawnPoint(SafeFallbackSpawn)
+            ? FindValidatedPlayerSpawnPoint(SafeFallbackSpawn, playerController)
             : SafeFallbackSpawn;
         Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn}");
 
@@ -1511,6 +1519,170 @@ public class LevelBuilder : MonoBehaviour
             return lastHit.position + Vector3.up * 0.1f;
 
         return SafeFallbackSpawn;
+    }
+
+    /// <summary>
+    /// Like <see cref="FindRandomOpenSpawnPoint"/> but also guarantees the player capsule
+    /// is not intersecting environment colliders and is not too close to enemies/props.
+    /// </summary>
+    private static Vector3 FindValidatedPlayerSpawnPoint(Vector3 fallback, PlayerController playerController)
+    {
+        Vector3 baseSpawn = FindRandomOpenSpawnPoint(fallback);
+
+        // Use the player's live CharacterController if available (authoritative capsule).
+        CharacterController cc = playerController != null ? playerController.GetComponent<CharacterController>() : null;
+        float radius = cc != null ? Mathf.Max(0.2f, cc.radius) : 0.4f;
+        float height = cc != null ? Mathf.Max(radius * 2f, cc.height) : 2.0f;
+        Vector3 center = cc != null ? cc.center : new Vector3(0f, height * 0.5f, 0f);
+
+        // Environment layers to avoid. We intentionally include everything except characters
+        // so we don't spawn inside tanks/walls/stairs/props even if they are on Default.
+        int hittable = ResolveHittableLayer();
+        int mask = ~0;
+        if (hittable >= 0) mask &= ~(1 << hittable);
+
+        // Try multiple nearby offsets; the first that passes all checks wins.
+        Vector3[] offsets =
+        {
+            Vector3.zero,
+            new Vector3( 2f, 0f,  0f), new Vector3(-2f, 0f,  0f),
+            new Vector3( 0f, 0f,  2f), new Vector3( 0f, 0f, -2f),
+            new Vector3( 3f, 0f,  3f), new Vector3(-3f, 0f, -3f),
+            new Vector3( 3f, 0f, -3f), new Vector3(-3f, 0f,  3f),
+            new Vector3( 5f, 0f,  0f), new Vector3( 0f, 0f,  5f),
+        };
+        Shuffle(offsets);
+
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            Vector3 candidate = baseSpawn + offsets[i];
+            if (!NavMesh.SamplePosition(candidate, out NavMeshHit navHit, 3.0f, NavMesh.AllAreas))
+                continue;
+            Vector3 pos = navHit.position + Vector3.up * 0.1f;
+
+            if (!TryProjectToGround(pos, out Vector3 ground, 6f, mask))
+                continue;
+
+            ground += Vector3.up * 0.02f;
+
+            if (!IsCapsuleSpawnClear(ground, center, radius, height, mask, minObstacleDistance: 1.0f))
+                continue;
+
+            if (!IsFarFromEnemies(ground, minEnemyDistance: 6.0f))
+                continue;
+
+            // Explicit no-spawn zones by name (tanks/walls/stairs/ramps/containers).
+            if (!IsFarFromNamedObstacles(ground, minDistance: 4.0f))
+                continue;
+
+            return ground;
+        }
+
+        // Last resort: pull to nearest NavMesh and accept (better than spawning inside geometry).
+        if (NavMesh.SamplePosition(baseSpawn, out NavMeshHit last, 10f, NavMesh.AllAreas))
+            return last.position + Vector3.up * 0.1f;
+
+        return SafeFallbackSpawn;
+    }
+
+    private static bool TryProjectToGround(Vector3 origin, out Vector3 ground, float maxDistance, int mask)
+    {
+        ground = origin;
+        Vector3 start = origin + Vector3.up * 2.5f;
+        if (Physics.Raycast(start, Vector3.down, out RaycastHit hit, maxDistance, mask, QueryTriggerInteraction.Ignore))
+        {
+            ground = hit.point;
+            return true;
+        }
+        return false;
+    }
+
+    private static readonly Collider[] _spawnOverlapBuffer = new Collider[64];
+
+    private static bool IsCapsuleSpawnClear(
+        Vector3 worldPosition,
+        Vector3 capsuleCenterLocal,
+        float radius,
+        float height,
+        int mask,
+        float minObstacleDistance)
+    {
+        // Build capsule in world space.
+        float half = Mathf.Max(0f, (height * 0.5f) - radius);
+        Vector3 center = worldPosition + capsuleCenterLocal;
+        Vector3 p1 = center + Vector3.up * half;
+        Vector3 p2 = center - Vector3.up * half;
+
+        int hitCount = Physics.OverlapCapsuleNonAlloc(
+            p1, p2,
+            radius + Mathf.Max(0f, minObstacleDistance),
+            _spawnOverlapBuffer,
+            mask,
+            QueryTriggerInteraction.Ignore);
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider c = _spawnOverlapBuffer[i];
+            if (c == null) continue;
+            if (!c.enabled) continue;
+            if (c.isTrigger) continue;
+            // Reject any solid overlap.
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsFarFromEnemies(Vector3 pos, float minEnemyDistance)
+    {
+        EnemyController[] enemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        float minSq = minEnemyDistance * minEnemyDistance;
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            EnemyController e = enemies[i];
+            if (e == null || !e.IsAlive) continue;
+            Vector3 d = e.transform.position - pos;
+            d.y = 0f;
+            if (d.sqrMagnitude < minSq)
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsFarFromNamedObstacles(Vector3 pos, float minDistance)
+    {
+        string[] keywords = { "Tank", "WaterTank", "Container", "Wall", "Stairs", "Ramp" };
+        Collider[] all = Object.FindObjectsByType<Collider>(FindObjectsSortMode.None);
+        float minSq = minDistance * minDistance;
+
+        for (int i = 0; i < all.Length; i++)
+        {
+            Collider c = all[i];
+            if (c == null || !c.enabled || c.isTrigger) continue;
+
+            // Skip characters (player/enemies) — handled by separate distance checks.
+            if (c.GetComponentInParent<IDamageable>() != null) continue;
+
+            string n = c.gameObject.name;
+            bool match = false;
+            for (int k = 0; k < keywords.Length; k++)
+            {
+                if (n.IndexOf(keywords[k], System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    match = true;
+                    break;
+                }
+            }
+            if (!match) continue;
+
+            Vector3 closest = c.ClosestPoint(pos);
+            Vector3 d = closest - pos;
+            d.y = 0f;
+            if (d.sqrMagnitude < minSq)
+                return false;
+        }
+
+        return true;
     }
 
     private static Vector3 FindOpenSpawnPoint(Vector3 fallback)

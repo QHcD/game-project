@@ -14,15 +14,22 @@ public class RobustThirdPersonMovement : MonoBehaviour
     [SerializeField] private Animator animator;
 
     [Header("Movement")]
-    [SerializeField] private float moveSpeed = 5.2f;
-    [SerializeField] private float sprintSpeed = 8.0f;
-    [SerializeField] private float rotationSpeed = 16f;
-    [SerializeField] private float acceleration = 26f;
-    [SerializeField] private float deceleration = 32f;
+    [SerializeField] private float moveSpeed = 7.0f;
+    [SerializeField] private float sprintSpeed = 12.0f;
+    [SerializeField] private float rotationSpeed = 40f;
+    [SerializeField] private bool instantAcceleration = true;
+    [SerializeField] private float acceleration = 9999f;
+    [SerializeField] private float deceleration = 9999f;
+
+    [Header("Slide (Warzone-style)")]
+    [SerializeField] private bool enableSlide = true;
+    [SerializeField] private float slideDuration = 0.45f;
+    [SerializeField] private float slideSpeedMultiplier = 1.25f;
+    [SerializeField] private float slideCooldown = 0.35f;
 
     [Header("Jump / Gravity")]
-    [SerializeField] private float jumpHeight = 1.2f;
-    [SerializeField] private float gravity = -28f;
+    [SerializeField] private float jumpHeight = 2.5f;
+    [SerializeField] private float gravity = -32f;
     [SerializeField] private float groundedOffset = 0.1f;
     [SerializeField] private float groundedRadius = 0.28f;
     [SerializeField] private LayerMask groundLayers = ~0;
@@ -32,6 +39,9 @@ public class RobustThirdPersonMovement : MonoBehaviour
     private float _verticalVelocity;
     private bool _isGrounded;
     private bool _isSprinting;
+    private bool _isSliding;
+    private float _slideTimer;
+    private float _nextSlideTime;
 
     public Vector3 MoveDirection { get; private set; }
     public bool IsGrounded => _isGrounded;
@@ -81,17 +91,41 @@ public class RobustThirdPersonMovement : MonoBehaviour
 
         MoveDirection = inputDirection.normalized;
 
-        float targetSpeed = inputDirection.sqrMagnitude > 0.001f
-            ? (_isSprinting ? sprintSpeed : moveSpeed)
-            : 0f;
+        // Slide trigger: crouch while sprinting + grounded.
+        if (enableSlide && _isGrounded && !_isSliding && Time.time >= _nextSlideTime)
+        {
+            bool crouchPressed = Keyboard.current != null && Keyboard.current.leftCtrlKey.wasPressedThisFrame;
+            if (crouchPressed && _isSprinting && inputDirection.sqrMagnitude > 0.2f)
+            {
+                _isSliding = true;
+                _slideTimer = slideDuration;
+            }
+        }
+
+        float baseSpeed = _isSprinting ? sprintSpeed : moveSpeed;
+        float targetSpeed = inputDirection.sqrMagnitude > 0.001f ? baseSpeed : 0f;
 
         Vector3 targetVelocity = MoveDirection * targetSpeed;
-        // Separate accel/decel: ramp up fast, but brake even faster on key release
-        // so the player does not slide past their stopping point.
-        float rate = inputDirection.sqrMagnitude > 0.001f ? acceleration : deceleration;
-        _moveVelocity = Vector3.MoveTowards(_moveVelocity, targetVelocity, rate * Time.deltaTime);
+        if (_isSliding)
+        {
+            // Maintain forward momentum during slide; full air-control is handled elsewhere.
+            Vector3 forward = transform.forward;
+            forward.y = 0f;
+            forward = forward.sqrMagnitude > 0.001f ? forward.normalized : MoveDirection;
+            _moveVelocity = forward * (sprintSpeed * Mathf.Max(1f, slideSpeedMultiplier));
+        }
+        else if (instantAcceleration)
+        {
+            // Instant acceleration/deceleration: no ramp-up.
+            _moveVelocity = targetVelocity;
+        }
+        else
+        {
+            float rate = inputDirection.sqrMagnitude > 0.001f ? acceleration : deceleration;
+            _moveVelocity = Vector3.MoveTowards(_moveVelocity, targetVelocity, rate * Time.deltaTime);
+        }
 
-        if (MoveDirection.sqrMagnitude > 0.001f)
+        if (MoveDirection.sqrMagnitude > 0.001f && !_isSliding)
         {
             Quaternion targetRotation = Quaternion.LookRotation(MoveDirection, Vector3.up);
             transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
@@ -109,9 +143,26 @@ public class RobustThirdPersonMovement : MonoBehaviour
 
     private void ApplyMovement()
     {
+        // 100% air control: always allow full horizontal direction changes mid-air.
+        // Because we use a CharacterController (not Rigidbody), we can simply
+        // apply the requested horizontal velocity every frame.
         Vector3 finalVelocity = _moveVelocity;
         finalVelocity.y = _verticalVelocity;
         _controller.Move(finalVelocity * Time.deltaTime);
+    }
+
+    private void LateUpdate()
+    {
+        // Slide timer & cooldown.
+        if (_isSliding)
+        {
+            _slideTimer -= Time.deltaTime;
+            if (_slideTimer <= 0f)
+            {
+                _isSliding = false;
+                _nextSlideTime = Time.time + slideCooldown;
+            }
+        }
     }
 
     private void UpdateAnimator()

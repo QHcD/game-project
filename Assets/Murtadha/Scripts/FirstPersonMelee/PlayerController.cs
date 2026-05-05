@@ -51,16 +51,23 @@ public class PlayerController : MonoBehaviour
 
     [Header("Movement")]
     [Tooltip("Base walking speed in units per second.")]
-    public float moveSpeed = 5.2f;
+    public float moveSpeed = 8.5f;
 
     [Tooltip("Multiplier applied when sprint key is held.")]
-    public float sprintMultiplier = 1.55f;
+    public float sprintMultiplier = 2f;
 
     [Tooltip("Gravity acceleration (negative value). Stronger gravity = snappier, less floaty landings.")]
     public float gravity = -28f;
 
     [Tooltip("Maximum jump height in units. Tuned to a natural human-scale hop.")]
     public float jumpHeight = 1.2f;
+
+    [Header("Movement Input Debug")]
+    [Tooltip("Left stick input below this magnitude is ignored so controller drift cannot bias movement.")]
+    [Range(0f, 1f)] public float gamepadMoveDeadzone = 0.2f;
+
+    [Tooltip("Temporary: logs raw and camera-relative movement when W-only is pressed.")]
+    public bool debugWOnlyMovement = true;
 
     [Header("Animation")]
     [Tooltip("Animator controller for the spawned third-person body.")]
@@ -122,7 +129,7 @@ public class PlayerController : MonoBehaviour
 
     [Header("Mouse Look Smoothing")]
     [Tooltip("Higher = snappier; lower = smoother. 18–28 is a good FPS range.")]
-    public float lookSmoothing = 22f;
+    public float lookSmoothing = 80f;
 
     [Tooltip("Optional cap on per-frame mouse delta to prevent spikes on low FPS or focus changes.")]
     public float maxMouseDeltaPerFrame = 60f;
@@ -132,7 +139,7 @@ public class PlayerController : MonoBehaviour
     public float attackDistance = 3f;
 
     [Tooltip("Delay before damage is applied after attack input.")]
-    public float attackDelay = 0.4f;
+    public float attackDelay = 0.05f;
 
     [Tooltip("Speed multiplier for attack animations.")]
     public float attackSpeed = 1f;
@@ -272,6 +279,7 @@ public class PlayerController : MonoBehaviour
     private Quaternion firstPersonLocalRot;
     private Camera runtimeThirdPersonCamera;
     private bool isThirdPersonActive;
+    private float nextWOnlyMoveDebugLogTime;
 
     // Head bob
     private float headBobTimer;
@@ -340,10 +348,10 @@ public class PlayerController : MonoBehaviour
         // ── Near clip — set before any camera becomes active so the weapon
         // viewmodel never disappears on the very first frame.
         if (Camera.main != null)
-            Camera.main.nearClipPlane = 0.01f;
+            Camera.main.nearClipPlane = 0.1f;
         foreach (Camera cam in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
-            if (cam != null && cam.nearClipPlane > 0.01f)
-                cam.nearClipPlane = 0.01f;
+            if (cam != null && cam.nearClipPlane < 0.1f)
+                cam.nearClipPlane = 0.1f;
 
         // Force the project-wide layer collision matrix to allow Player ↔
         // Enemies overlap so the manual separation push below sees them. The
@@ -600,16 +608,34 @@ public class PlayerController : MonoBehaviour
         // outside of a deliberate flip/prone pose, snap it back to its cached base.
         if (!isFlipping && thirdPersonBody != null && !isProne)
         {
-            Vector3 bw = thirdPersonBody.transform.eulerAngles;
-            float xDev = Mathf.Abs(Mathf.DeltaAngle(bw.x, 0f));
-            float zDev = Mathf.Abs(Mathf.DeltaAngle(bw.z, 0f));
-            if (xDev > 8f || zDev > 8f)
-                thirdPersonBody.transform.localRotation = thirdPersonBodyBaseLocalRotation;
+            NormalizeThirdPersonBodyLocalRotation();
         }
 
         SnapCharacterToGroundNavMesh();
         SnapToArenaFloor();
         EnforceGroundYLock();
+    }
+
+    private void NormalizeThirdPersonBodyLocalRotation()
+    {
+        if (thirdPersonBody == null)
+            return;
+
+        if (!wasMoving)
+        {
+            thirdPersonBody.transform.localRotation = Quaternion.Slerp(
+                thirdPersonBody.transform.localRotation,
+                thirdPersonBodyBaseLocalRotation,
+                18f * Time.deltaTime);
+            return;
+        }
+
+        Vector3 currentLocalEuler = thirdPersonBody.transform.localEulerAngles;
+        Vector3 baseLocalEuler = thirdPersonBodyBaseLocalRotation.eulerAngles;
+        thirdPersonBody.transform.localRotation = Quaternion.Euler(
+            baseLocalEuler.x,
+            currentLocalEuler.y,
+            baseLocalEuler.z);
     }
 
     // ── Anti-Sink + Anti-Flip enforcement (runs every physics tick) ────────
@@ -770,7 +796,7 @@ public class PlayerController : MonoBehaviour
     /// Keyboard (WASD + arrows + numpad) takes priority when any movement key is held.
     /// Otherwise a drifting gamepad stick can dominate with X-only input and remove forward/back.
     /// </summary>
-    private static Vector2 ReadMovementInput()
+    private Vector2 ReadMovementInput()
     {
         Vector2 keyboard = ReadKeyboardMovementVector();
         if (keyboard.sqrMagnitude > 0.0001f)
@@ -779,7 +805,8 @@ public class PlayerController : MonoBehaviour
         if (Gamepad.current != null)
         {
             Vector2 stick = Gamepad.current.leftStick.ReadValue();
-            if (stick.sqrMagnitude > 0.0001f)
+            float deadzone = Mathf.Clamp01(gamepadMoveDeadzone);
+            if (stick.magnitude >= deadzone)
                 return Vector2.ClampMagnitude(stick, 1f);
         }
 
@@ -1052,8 +1079,9 @@ public class PlayerController : MonoBehaviour
         // gravity below still ticks normally so the player lands.
         if (!isFlipping)
         {
-            Vector3 inputDir = new Vector3(moveInputSmoothed.x, 0f, moveInputSmoothed.y);
-            Vector3 targetVelocity = transform.TransformDirection(inputDir) * targetSpeed;
+            Vector3 moveDirection = GetCameraRelativeMoveDirection(moveInputSmoothed);
+            DebugWOnlyMovement(moveDirection);
+            Vector3 targetVelocity = moveDirection * targetSpeed;
 
             float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
             horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
@@ -1117,9 +1145,50 @@ public class PlayerController : MonoBehaviour
                 thirdPersonBody.transform.rotation = Quaternion.Slerp(
                     thirdPersonBody.transform.rotation,
                     Quaternion.Euler(0f, targetY, 0f),
-                    8f * Time.deltaTime);
+                    40f * Time.deltaTime);
             }
         }
+    }
+
+    private Vector3 GetCameraRelativeMoveDirection(Vector2 input)
+    {
+        input = Vector2.ClampMagnitude(input, 1f);
+        if (input.sqrMagnitude < 0.0001f)
+            return Vector3.zero;
+
+        Quaternion yawOnlyBasis = Quaternion.Euler(0f, cameraYaw, 0f);
+        Vector3 forward = yawOnlyBasis * Vector3.forward;
+        Vector3 right = yawOnlyBasis * Vector3.right;
+
+        Vector3 moveDirection = (right * input.x) + (forward * input.y);
+        moveDirection.y = 0f;
+        return moveDirection.sqrMagnitude > 1f
+            ? moveDirection.normalized
+            : moveDirection;
+    }
+
+    private void DebugWOnlyMovement(Vector3 moveDirection)
+    {
+        if (!debugWOnlyMovement || Time.time < nextWOnlyMoveDebugLogTime)
+            return;
+
+        if (!IsKeyboardWOnlyMovement())
+            return;
+
+        nextWOnlyMoveDebugLogTime = Time.time + 0.35f;
+        Debug.Log($"[PlayerController] W-only moveInputRaw={moveInputRaw} finalMoveDirection={moveDirection}");
+    }
+
+    private static bool IsKeyboardWOnlyMovement()
+    {
+        if (Keyboard.current == null) return false;
+
+        Keyboard k = Keyboard.current;
+        bool forward = k.wKey.isPressed || k.upArrowKey.isPressed || k.numpad8Key.isPressed;
+        bool back = k.sKey.isPressed || k.downArrowKey.isPressed || k.numpad2Key.isPressed;
+        bool left = k.aKey.isPressed || k.leftArrowKey.isPressed || k.numpad4Key.isPressed;
+        bool right = k.dKey.isPressed || k.rightArrowKey.isPressed || k.numpad6Key.isPressed;
+        return forward && !back && !left && !right;
     }
 
     private Vector3 GetActualHorizontalVelocity()
@@ -1347,7 +1416,7 @@ public class PlayerController : MonoBehaviour
 
         equippedWeaponHitbox.EnableHitbox();
 
-        yield return new WaitForSeconds(0.22f);
+        yield return new WaitForSeconds(0.12f);
 
         equippedWeaponHitbox.DisableHitbox();
         weaponHitboxRoutine = null;
@@ -2466,8 +2535,8 @@ public class PlayerController : MonoBehaviour
             firstPersonLocalPos = new Vector3(firstPersonLocalPos.x, headY, Mathf.Max(firstPersonLocalPos.z, 0.09f));
             firstPersonCam.transform.localPosition = firstPersonLocalPos;
             firstPersonCam.transform.localRotation = firstPersonLocalRot;
-            // Hard minimum near clip — eliminates near-surface geometry bleeding.
-            firstPersonCam.nearClipPlane = 0.01f;
+            // Keep a safe near clip to avoid seeing inside meshes.
+            firstPersonCam.nearClipPlane = 0.1f;
             firstPersonCam.tag = "MainCamera";
             firstPersonCam.gameObject.SetActive(true);
 
@@ -2611,9 +2680,10 @@ public class PlayerController : MonoBehaviour
 
         follow.target = transform;
         follow.offset = new Vector3(0.45f, 1.45f, -4.65f);
-        follow.smoothSpeed = 20f;
+        follow.smoothSpeed = 60f;
         follow.lookHeight = 1.55f;
         follow.lookTargetLocalOffset = Vector3.zero;
+        follow.lookTargetSmoothSpeed = 60f;
         follow.minPitch = ThirdPersonMinPitch;
         follow.maxPitch = ThirdPersonMaxPitch;
         follow.pitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
@@ -2623,7 +2693,7 @@ public class PlayerController : MonoBehaviour
         follow.collisionRadius = 0.2f;
         follow.wallPadding = 0.16f;
         follow.pullInSpeed = 0.035f;
-        follow.recoverySmoothTime = 0.12f;
+        follow.recoverySmoothTime = 0.06f;
         follow.closeDistanceFailsafe = 0.5f;
         follow.closeSpaceHeightBoost = 0.35f;
         follow.closeSpaceFieldOfView = 76f;
