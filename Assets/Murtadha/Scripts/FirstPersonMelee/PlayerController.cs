@@ -2,6 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.InputSystem;
+#if PHOTON_UNITY_NETWORKING
+using Photon.Pun;
+#endif
 
 /// <summary>
 /// Main player controller — melee-only.
@@ -231,6 +234,16 @@ public class PlayerController : MonoBehaviour
     [Tooltip("Extra downward ray distance beyond step/skin width so Space still registers as grounded when the CharacterController flag flickers.")]
     public float jumpGroundProbeExtra = 0.14f;
 
+    [Header("Safe Spawn")]
+    [Tooltip("Extra clearance around the player capsule when validating spawn points against walls/buildings/obstacles.")]
+    public float safeSpawnObstacleClearance = 0.45f;
+    [Tooltip("How far around the requested spawn point to search for a valid NavMesh position.")]
+    public float safeSpawnSearchRadius = 18f;
+    [Tooltip("Maximum candidate positions to try before falling back to the safest sampled point.")]
+    public int safeSpawnMaxAttempts = 72;
+    [Tooltip("How far a candidate may be adjusted to the nearest NavMesh surface.")]
+    public float safeSpawnNavMeshSampleRadius = 4f;
+
     // ════════════════════════════════════════════════════════════════════════
     //  PRIVATE STATE
     // ════════════════════════════════════════════════════════════════════════
@@ -313,6 +326,9 @@ public class PlayerController : MonoBehaviour
     private WeaponHitbox equippedWeaponHitbox;
     private Coroutine weaponHitboxRoutine;
     private bool gripTuningMode;
+#if PHOTON_UNITY_NETWORKING
+    private PhotonView photonView;
+#endif
 
     private Transform firstPersonWeaponSlot;
     private MeshRenderer firstPersonWeaponMeshRenderer;
@@ -338,6 +354,7 @@ public class PlayerController : MonoBehaviour
     public Camera ActiveCamera => isThirdPersonActive ? runtimeThirdPersonCamera : firstPersonCam;
     public GameObject GetThirdPersonBody() => thirdPersonBody;
     public bool IsMeleeWeapon => true;
+    public int GetEquippedWeaponLevel() => equippedWeaponLevel > 0 ? equippedWeaponLevel : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
 
     // ════════════════════════════════════════════════════════════════════════
     //  LIFECYCLE
@@ -345,6 +362,9 @@ public class PlayerController : MonoBehaviour
 
     private void Awake()
     {
+#if PHOTON_UNITY_NETWORKING
+        photonView = GetComponent<PhotonView>();
+#endif
         // ── Near clip — set before any camera becomes active so the weapon
         // viewmodel never disappears on the very first frame.
         if (Camera.main != null)
@@ -430,10 +450,10 @@ public class PlayerController : MonoBehaviour
 
         // ── 1. Snap player above the floor ──
         if (controller != null) controller.enabled = false;
-        Vector3 startPos = IsUnsafeSpawn(transform.position)
+        Vector3 requestedStart = IsUnsafeSpawn(transform.position)
             ? SafeFallbackSpawn
             : transform.position;
-        startPos.y = Mathf.Max(startPos.y, SafeFallbackSpawn.y);
+        Vector3 startPos = ResolveSafeSpawnPosition(requestedStart);
         transform.position = startPos;
         transform.rotation = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
         cameraYaw = transform.eulerAngles.y;
@@ -449,6 +469,8 @@ public class PlayerController : MonoBehaviour
             SetLayerRecursive(thirdPersonBody, gameObject.layer);
             LockAvatarRigidbodies(thirdPersonBody);
         }
+
+        DisableRemotePlayerLocalSystems();
 
         // ── 3. Acquire the body animator and bind the intended player controller ──
         animator = null;
@@ -532,10 +554,95 @@ public class PlayerController : MonoBehaviour
             || position.y < -0.5f;
     }
 
+    private Vector3 ResolveSafeSpawnPosition(Vector3 requestedPosition)
+    {
+        if (controller == null)
+            return requestedPosition;
+
+        if (staticObstacleMask.value == 0)
+            staticObstacleMask = BuildDefaultStaticObstacleMask();
+
+        int attempts = Mathf.Max(8, safeSpawnMaxAttempts);
+        float maxRadius = Mathf.Max(1f, safeSpawnSearchRadius);
+
+        if (TryBuildSafeSpawnCandidate(requestedPosition, out Vector3 safePosition))
+            return safePosition;
+
+        float goldenAngle = 137.50776f * Mathf.Deg2Rad;
+        for (int i = 1; i <= attempts; i++)
+        {
+            float t = i / (float)attempts;
+            float radius = Mathf.Lerp(0.75f, maxRadius, Mathf.Sqrt(t));
+            float angle = i * goldenAngle;
+            Vector3 offset = new Vector3(Mathf.Cos(angle) * radius, 0f, Mathf.Sin(angle) * radius);
+
+            if (TryBuildSafeSpawnCandidate(requestedPosition + offset, out safePosition))
+                return safePosition;
+        }
+
+        if (TryBuildSafeSpawnCandidate(SafeFallbackSpawn, out safePosition))
+            return safePosition;
+
+        Debug.LogWarning("[PlayerController] Could not find a fully clear spawn point; using requested position after NavMesh sampling.");
+        if (NavMesh.SamplePosition(requestedPosition, out NavMeshHit hit, Mathf.Max(1f, safeSpawnNavMeshSampleRadius), NavMesh.AllAreas))
+            return RootPositionFromGroundPoint(hit.position);
+
+        return requestedPosition;
+    }
+
+    private bool TryBuildSafeSpawnCandidate(Vector3 requestedPosition, out Vector3 rootPosition)
+    {
+        rootPosition = requestedPosition;
+        if (controller == null)
+            return false;
+
+        float sampleRadius = Mathf.Max(0.5f, safeSpawnNavMeshSampleRadius);
+        if (!NavMesh.SamplePosition(requestedPosition, out NavMeshHit navHit, sampleRadius, NavMesh.AllAreas))
+            return false;
+
+        rootPosition = RootPositionFromGroundPoint(navHit.position);
+        return IsSpawnCapsuleClear(rootPosition);
+    }
+
+    private Vector3 RootPositionFromGroundPoint(Vector3 groundPoint)
+    {
+        if (controller == null)
+            return groundPoint;
+
+        float rootY = groundPoint.y - controller.center.y + controller.height * 0.5f + controller.skinWidth + 0.03f;
+        return new Vector3(groundPoint.x, rootY, groundPoint.z);
+    }
+
+    private bool IsSpawnCapsuleClear(Vector3 rootPosition)
+    {
+        if (controller == null)
+            return true;
+
+        GetCapsuleWorldEndpoints(rootPosition, out Vector3 bottom, out Vector3 top);
+        int mask = staticObstacleMask.value != 0 ? staticObstacleMask.value : BuildDefaultStaticObstacleMask().value;
+        if (mask == 0)
+            return true;
+
+        float bodyRadius = Mathf.Max(0.05f, controller.radius * 0.9f);
+        Vector3 inset = Vector3.up * 0.08f;
+        if (Physics.CheckCapsule(bottom + inset, top - inset, bodyRadius, mask, QueryTriggerInteraction.Ignore))
+            return false;
+
+        float clearanceRadius = controller.radius + Mathf.Max(0f, safeSpawnObstacleClearance);
+        Vector3 clearanceCenter = rootPosition + controller.center + Vector3.up * 0.15f;
+        return !Physics.CheckSphere(clearanceCenter, clearanceRadius, mask, QueryTriggerInteraction.Ignore);
+    }
+
     private void Update()
     {
         if (controller == null)
             return;
+        if (IsRemoteNetworkPlayer())
+        {
+            DisableRemotePlayerLocalSystems();
+            UpdateAnimatorParameters();
+            return;
+        }
         if (IsUnsafeSpawn(transform.position))
             TeleportTo(SafeFallbackSpawn);
 
@@ -929,7 +1036,12 @@ public class PlayerController : MonoBehaviour
 
     private void GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 top)
     {
-        Vector3 worldCenter = transform.TransformPoint(controller.center);
+        GetCapsuleWorldEndpoints(transform.position, out bottom, out top);
+    }
+
+    private void GetCapsuleWorldEndpoints(Vector3 rootPosition, out Vector3 bottom, out Vector3 top)
+    {
+        Vector3 worldCenter = rootPosition + controller.center;
         float halfHeight = Mathf.Max(controller.radius, controller.height * 0.5f - controller.radius);
         bottom = worldCenter - Vector3.up * halfHeight;
         top    = worldCenter + Vector3.up * halfHeight;
@@ -1241,6 +1353,8 @@ public class PlayerController : MonoBehaviour
         if (IsUnsafeSpawn(position))
             position = SafeFallbackSpawn;
 
+        position = ResolveSafeSpawnPosition(position);
+
         if (controller != null) controller.enabled = false;
         transform.position = position;
         if (controller != null) controller.enabled = true;
@@ -1353,6 +1467,7 @@ public class PlayerController : MonoBehaviour
 
     public void Attack()
     {
+        if (IsRemoteNetworkPlayer()) return;
         if (attackCooldownTimer > 0f || isAttacking) return;
 
         isAttacking         = true;
@@ -1370,6 +1485,7 @@ public class PlayerController : MonoBehaviour
         }
 
         FireAttack();
+        SendNetworkAttackVisual();
     }
 
     private void FireAttack()
@@ -2130,6 +2246,9 @@ public class PlayerController : MonoBehaviour
     {
         if (target == null) return false;
 
+        if (TryDamageNetworkPlayer(target, damage))
+            return true;
+
         IDamageable damageable = target.GetComponentInParent<IDamageable>();
         if (damageable != null && damageable.gameObject != gameObject && damageable.IsAlive)
         {
@@ -2152,6 +2271,9 @@ public class PlayerController : MonoBehaviour
     private bool TryDamageTargetFromPoint(Transform target, int damage, Vector3 attackOriginWorld)
     {
         if (target == null) return false;
+
+        if (TryDamageNetworkPlayer(target, damage))
+            return true;
 
         EnemyController enemy = target.GetComponentInParent<EnemyController>();
         if (enemy != null && enemy.gameObject != gameObject && enemy.IsAlive)
@@ -2209,6 +2331,96 @@ public class PlayerController : MonoBehaviour
         }
 
         hitTransform.position += push * 0.18f;
+    }
+
+    private bool IsRemoteNetworkPlayer()
+    {
+#if PHOTON_UNITY_NETWORKING
+        return MultiplayerMode.IsMultiplayer && photonView != null && !photonView.IsMine;
+#else
+        return false;
+#endif
+    }
+
+    private void DisableRemotePlayerLocalSystems()
+    {
+#if PHOTON_UNITY_NETWORKING
+        if (!IsRemoteNetworkPlayer())
+            return;
+
+        if (firstPersonCam != null)
+            firstPersonCam.gameObject.SetActive(false);
+        if (runtimeThirdPersonCamera != null)
+            runtimeThirdPersonCamera.gameObject.SetActive(false);
+        if (thirdPersonCam != null)
+            thirdPersonCam.gameObject.SetActive(false);
+
+        Camera[] cameras = GetComponentsInChildren<Camera>(true);
+        for (int i = 0; i < cameras.Length; i++)
+            if (cameras[i] != null) cameras[i].enabled = false;
+
+        AudioListener[] listeners = GetComponentsInChildren<AudioListener>(true);
+        for (int i = 0; i < listeners.Length; i++)
+            if (listeners[i] != null) listeners[i].enabled = false;
+#endif
+    }
+
+    private bool TryDamageNetworkPlayer(Transform target, int damage)
+    {
+#if PHOTON_UNITY_NETWORKING
+        if (!MultiplayerMode.IsMultiplayer || photonView == null || !photonView.IsMine)
+            return false;
+
+        PhotonView targetView = target != null ? target.GetComponentInParent<PhotonView>() : null;
+        if (targetView == null || targetView == photonView)
+            return false;
+
+        NetworkPlayerSync sync = targetView.GetComponent<NetworkPlayerSync>();
+        if (sync == null)
+            return false;
+
+        sync.ApplyDamageToNetworkPlayer(damage, gameObject);
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    private void SendNetworkAttackVisual()
+    {
+#if PHOTON_UNITY_NETWORKING
+        if (MultiplayerMode.IsMultiplayer && photonView != null && photonView.IsMine)
+            photonView.RPC(nameof(RpcPlayRemoteAttackVisual), RpcTarget.Others);
+#endif
+    }
+
+#if PHOTON_UNITY_NETWORKING
+    [PunRPC]
+    private void RpcPlayRemoteAttackVisual()
+    {
+        isAttacking = true;
+        attackResetTimer = AttackResetTime;
+        attackFailsafeTimer = AttackFailsafeDuration;
+
+        Animator activeAnimator = GetActiveAnimator();
+        if (activeAnimator != null)
+            AnimFireTrigger(activeAnimator, "Attack");
+
+        if (audioSource != null && swordSwing != null)
+            audioSource.PlayOneShot(swordSwing, AudioSettingsRuntime.ScaledSfx(0.8f));
+    }
+#endif
+
+    public void ApplyNetworkWeaponState(int weaponLevel, string weaponName)
+    {
+        if (!MultiplayerMode.IsMultiplayer)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(weaponName))
+            equippedWeaponName = weaponName;
+
+        if (weaponLevel > 0 && weaponLevel != equippedWeaponLevel)
+            EquipWeaponForLevel(weaponLevel);
     }
 
     private void HitTarget(Vector3 pos)

@@ -169,11 +169,11 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Transform menuPanel = CreateMainMenuPanel(root);
 
         // Single centered column (reference): even spacing, pills hug text, top-to-bottom order.
-        var navList = new System.Collections.Generic.List<Selectable>(8);
+        var navList = new System.Collections.Generic.List<Selectable>(9);
 
-        // Layout order: Continue → [Custom Match | Select Level] → [Prism Store | Challenges]
-        //               → Options → Settings → Credits → Quit
+        // Layout order: Continue → Multiplayer → Select Level → Prism Store → Challenges → Options → Settings → Credits → Quit
         navList.Add(MakeCenteredPillMenuButton(menuPanel, startLabel,       () => GameManager.Instance?.StartRun(continueLevel)));
+        navList.Add(MakeCenteredPillMenuButton(menuPanel, "MULTIPLAYER",    () => ToggleMultiplayer(root)));
         navList.Add(MakeCenteredPillMenuButton(menuPanel, "SELECT LEVEL",   () => ToggleLevelSelect(root)));
         navList.Add(MakeCenteredPillMenuButton(menuPanel, "PRISM STORE",    () => ToggleStore(root)));
         navList.Add(MakeCenteredPillMenuButton(menuPanel, "CHALLENGES",     () => ToggleChallenges(root)));
@@ -186,6 +186,112 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         if (!PlayerProfile.HasUsername)
             ShowNameEntryOverlayEnhanced(root);
+    }
+
+    void ToggleMultiplayer(Transform root)
+    {
+        Transform existing = root.Find("MultiplayerOverlay");
+        if (existing != null)
+        {
+            Destroy(existing.gameObject);
+            SetMainMenuElementsVisible(root, true);
+            return;
+        }
+
+        // Tear down any other overlay before showing multiplayer.
+        DestroyOverlay(root, "LevelSelectOverlay");
+        DestroyOverlay(root, "CustomMatchOverlay");
+        DestroyOverlay(root, "StoreOverlay");
+        DestroyOverlay(root, "ChallengesOverlay");
+        SetMainMenuElementsVisible(root, false);
+
+        GameObject overlayObj = new GameObject("MultiplayerOverlay");
+        overlayObj.transform.SetParent(root, false);
+        Image overlay = overlayObj.AddComponent<Image>();
+        Stretch(overlay.rectTransform);
+        overlay.color = new Color(0.01f, 0.02f, 0.05f, 0.12f);
+
+        GameObject panelObj = new GameObject("MultiplayerPanel");
+        panelObj.transform.SetParent(overlayObj.transform, false);
+        Image panel = panelObj.AddComponent<Image>();
+        panel.color = new Color(0.14f, 0.20f, 0.36f, 0.62f);
+        Outline panelOutline = panelObj.AddComponent<Outline>();
+        panelOutline.effectColor = new Color(0.12f, 0.20f, 0.40f, 0.75f);
+        panelOutline.effectDistance = new Vector2(2f, -2f);
+        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 760f), new Vector2(0f, -6f));
+
+        MakeText(panelObj.transform, "MULTIPLAYER", 64, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
+
+        TMP_InputField nameInput = CreateMultiplayerNameInput(panelObj.transform);
+        TextMeshProUGUI status = MakeText(panelObj.transform, "Enter your name, then play online.", 24f,
+            new Color(0.78f, 0.86f, 1f, 0.92f), new Vector2(0.08f, 0.16f), new Vector2(0.92f, 0.24f), false);
+
+        // Launcher driver (Photon flow lives in PhotonLauncher).
+        GameObject launcherObj = new GameObject("PhotonLauncher");
+        launcherObj.transform.SetParent(overlayObj.transform, false);
+        PhotonLauncher launcher = launcherObj.AddComponent<PhotonLauncher>();
+        launcher.playerNameInput = nameInput;
+        launcher.statusText = status;
+
+        Button connectBtn = MakePanelButton(panelObj.transform, "CONNECT / PLAY ONLINE",
+            new Vector2(0.20f, 0.62f), new Vector2(0.80f, 0.72f),
+            launcher.ConnectAndPlayOnline, 30f, true, true);
+        Button joinBtn = MakePanelButton(panelObj.transform, "JOIN RANDOM ROOM",
+            new Vector2(0.20f, 0.49f), new Vector2(0.80f, 0.59f),
+            launcher.JoinRandomRoom, 30f, true, true);
+        Button createBtn = MakePanelButton(panelObj.transform, "CREATE ROOM",
+            new Vector2(0.20f, 0.36f), new Vector2(0.80f, 0.46f),
+            launcher.CreateRoom, 30f, true, true);
+        Button backBtn = MakePanelButton(panelObj.transform, "BACK",
+            new Vector2(0.39f, 0.055f), new Vector2(0.61f, 0.145f),
+            () =>
+            {
+                Destroy(overlayObj);
+                SetMainMenuElementsVisible(root, true);
+            }, 32f, false, true);
+
+        launcher.connectButton = connectBtn;
+        launcher.joinRandomButton = joinBtn;
+        launcher.createRoomButton = createBtn;
+
+        var nav = new System.Collections.Generic.List<Selectable>(5);
+        nav.Add(nameInput);
+        nav.Add(connectBtn);
+        nav.Add(joinBtn);
+        nav.Add(createBtn);
+        nav.Add(backBtn);
+        MenuNavigationManager.AttachLinear(overlayObj, nav);
+    }
+
+    TMP_InputField CreateMultiplayerNameInput(Transform parent)
+    {
+        GameObject inputObj = new GameObject("PlayerNameInput");
+        inputObj.transform.SetParent(parent, false);
+        Image image = inputObj.AddComponent<Image>();
+        image.color = new Color(0.02f, 0.08f, 0.18f, 0.85f);
+        Outline outline = inputObj.AddComponent<Outline>();
+        outline.effectColor = new Color(0.35f, 0.65f, 1f, 0.55f);
+        outline.effectDistance = new Vector2(2f, -2f);
+
+        RectTransform rect = inputObj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.18f, 0.735f);
+        rect.anchorMax = new Vector2(0.82f, 0.815f);
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+
+        TMP_InputField input = inputObj.AddComponent<TMP_InputField>();
+        TextMeshProUGUI text = CreateCenteredLabel(inputObj.transform, PlayerProfile.HasUsername ? PlayerProfile.Username : string.Empty, 30f, Color.white, true);
+        text.alignment = TextAlignmentOptions.MidlineLeft;
+        text.margin = new Vector4(22f, 0f, 22f, 0f);
+        TextMeshProUGUI placeholder = CreateCenteredLabel(inputObj.transform, "PLAYER NAME", 28f, new Color(0.55f, 0.72f, 1f, 0.55f), false);
+        placeholder.alignment = TextAlignmentOptions.MidlineLeft;
+        placeholder.margin = new Vector4(22f, 0f, 22f, 0f);
+
+        input.textComponent = text;
+        input.placeholder = placeholder;
+        input.text = PlayerProfile.HasUsername ? PlayerProfile.Username : string.Empty;
+        input.characterLimit = PlayerProfile.MaxNameLength;
+        return input;
     }
 
     // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
@@ -578,9 +684,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
         panelObj.transform.SetParent(parent, false);
 
         RectTransform rect = panelObj.AddComponent<RectTransform>();
-        // Tall band under titles: column vertically centered in this area, room for all eight rows + QUIT.
-        rect.anchorMin = new Vector2(0.12f, 0.04f);
-        rect.anchorMax = new Vector2(0.88f, 0.66f);
+        // Tall band under titles: keep ALL 9 rows visible (including QUIT) across 16:9 / 16:10 / Free Aspect.
+        rect.anchorMin = new Vector2(0.12f, 0.06f);
+        rect.anchorMax = new Vector2(0.88f, 0.74f);
         rect.pivot = new Vector2(0.5f, 0.5f);
         rect.offsetMin = Vector2.zero;
         rect.offsetMax = Vector2.zero;
@@ -588,8 +694,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
         // No background plate — layout only.
         VerticalLayoutGroup layout = panelObj.AddComponent<VerticalLayoutGroup>();
         layout.childAlignment = TextAnchor.MiddleCenter;
-        layout.spacing = 14f;
-        layout.padding = new RectOffset(20, 20, 16, 24);
+        layout.spacing = 6f;
+        layout.padding = new RectOffset(20, 20, 8, 8);
         layout.childControlWidth = true;
         layout.childControlHeight = true;
         layout.childForceExpandWidth = true;
@@ -602,7 +708,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     /// Full-width row that centers a pill-sized button (hover panel hugs the label, not the screen).
     /// </summary>
     Button MakeCenteredPillMenuButton(Transform parent, string label,
-        UnityEngine.Events.UnityAction action, float labelFontSize = 40f)
+        UnityEngine.Events.UnityAction action, float labelFontSize = 36f)
     {
         GameObject row = new GameObject(label + "_Row", typeof(RectTransform));
         row.transform.SetParent(parent, false);
@@ -615,8 +721,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
         h.childForceExpandWidth = false;
         h.childForceExpandHeight = false;
         LayoutElement rowLe = row.AddComponent<LayoutElement>();
-        rowLe.preferredHeight = 76f;
-        rowLe.minHeight = 64f;
+        rowLe.preferredHeight = 66f;
+        rowLe.minHeight = 54f;
         rowLe.flexibleHeight = 0f;
         rowLe.flexibleWidth = 1f;
 
@@ -652,8 +758,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         LayoutElement element = obj.AddComponent<LayoutElement>();
         element.preferredWidth = pillW;
-        element.preferredHeight = 76f;
-        element.minHeight = 64f;
+        element.preferredHeight = 66f;
+        element.minHeight = 54f;
         element.flexibleWidth = 0f;
         element.flexibleHeight = 0f;
 

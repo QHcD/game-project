@@ -1487,6 +1487,7 @@ GameObject:
   - component: {fileID: 481995042327841608}
   - component: {fileID: 1788623314744564118}
   - component: {fileID: 2484499563464876031}
+  - component: {fileID: 9023456789012345678}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -1593,6 +1594,19 @@ MonoBehaviour:
   maxSeparationPushPerFrame: 0.08
   jumpGroundProbeExtra: 0.14
   equippedWeaponObject: {fileID: 0}
+--- !u!114 &9023456789012345678
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1788623314744564116}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0a3a7335f07075f4192191e133f0bc41, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  remoteLerpSpeed: 14
 --- !u!143 &1788623314744564118
 CharacterController:
   m_ObjectHideFlags: 0

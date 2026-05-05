@@ -139,6 +139,11 @@ public class LevelSetup : MonoBehaviour
             }
         }
 
+        // Fix: if this fallback exists in a real level, it should not visually block the scene.
+        // We only disable the MeshRenderer as requested (collider stays intact).
+        if (fallbackRenderer != null)
+            fallbackRenderer.enabled = false;
+
         Debug.LogWarning("[LevelSetup] No ground renderer found; created VisibleGround_Fallback.");
     }
 

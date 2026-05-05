@@ -20,6 +20,9 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/_Shared/Maps/Scenes/GameScene.unity
     guid: 1261a973d146ed04ab9691d9d500b981
+  - enabled: 1
+    path: Assets/_Shared/Maps/Scenes/MultiplayerGameScene.unity
+    guid: fc8ff3a7df83958448444e6f12c802a2
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   m_UseUCBPForAssetBundles: 0
