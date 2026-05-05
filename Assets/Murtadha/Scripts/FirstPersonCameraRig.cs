@@ -17,7 +17,7 @@ public sealed class FirstPersonCameraRig : MonoBehaviour
     [SerializeField] private bool createCameraRootIfMissing = true;
     [SerializeField] private Vector3 eyeOffset = new Vector3(0f, 0.04f, 0.09f);
     [SerializeField] private Vector3 localEulerOffset = Vector3.zero;
-    [SerializeField] private float nearClipPlane = 0.01f;
+    [SerializeField] private float nearClipPlane = 0.1f;
 
     [Header("Smoothing")]
     [SerializeField] private bool smoothFollow = false;
@@ -64,7 +64,8 @@ public sealed class FirstPersonCameraRig : MonoBehaviour
             targetCamera.transform.localRotation = targetLocalRotation;
         }
 
-        targetCamera.nearClipPlane = Mathf.Min(targetCamera.nearClipPlane, nearClipPlane);
+        // Enforce a minimum near clip to avoid seeing inside character meshes.
+        targetCamera.nearClipPlane = Mathf.Max(targetCamera.nearClipPlane, nearClipPlane);
     }
 
     private void ResolveReferences()

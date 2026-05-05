@@ -22,7 +22,7 @@ public class CameraController : MonoBehaviour
     public Vector3 zoomOffset = new Vector3(0.55f, 0.45f, -2.35f);
 
     [Tooltip("Smooth-follow speed. Higher = snappier.")]
-    public float smoothSpeed = 20f;
+    public float smoothSpeed = 60f;
 
     // Vertical pitch (degrees) — set each frame by PlayerController.ApplyLook.
     // Public for back-compat with PlayerController.ApplyLook; the (minPitch,
@@ -73,7 +73,7 @@ public class CameraController : MonoBehaviour
     public Vector3 lookTargetLocalOffset = Vector3.zero;
 
     [Tooltip("How quickly the orbit pivot follows the target bone.")]
-    public float lookTargetSmoothSpeed = 20f;
+    public float lookTargetSmoothSpeed = 60f;
 
     // ── Zoom ────────────────────────────────────────────────────────────────
     [Header("Zoom")]
@@ -160,10 +160,10 @@ public class CameraController : MonoBehaviour
 
     private void Start()
     {
-        // Force near-clip to 0.01 so the camera never renders the inside of
-        // the character mesh, even when pulled very close.
+        // Force near-clip to a sane value for third-person.
+        // 0.01 can cause severe character clipping (seeing inside body/legs).
         Camera cam = GetComponent<Camera>();
-        if (cam != null) cam.nearClipPlane = 0.01f;
+        if (cam != null) cam.nearClipPlane = 0.1f;
 
         if (cam != null)
             defaultFieldOfView = cam.fieldOfView;

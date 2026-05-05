@@ -1523,8 +1523,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 526ed24552cf0d04684295be1f2c8308, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  moveSpeed: 5.2
-  sprintMultiplier: 1.55
+  moveSpeed: 8.5
+  sprintMultiplier: 2
   gravity: -28
   jumpHeight: 1.2
   playerAnimatorController: {fileID: 9100000, guid: e271718b7cc6d4af7a7cb713e7076aeb, type: 2}

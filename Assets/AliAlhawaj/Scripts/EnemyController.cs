@@ -30,6 +30,11 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float attackDamage     = 10f;
     public float attackCooldown   = 0.65f;
     public int   maxHealth        = 60;
+    [Tooltip("When enabled, enemies may target the nearest tagged 'Player' OR 'Enemy' (true FFA).")]
+    public bool chasePlayerTagOnly = false;
+    [Header("Debug (Temporary)")]
+    [Tooltip("When enabled, logs target changes and draws a Gizmo line to the current target.")]
+    public bool debugTargeting = true;
     [Tooltip("Hits with damage at or above this value trigger death-by-ragdoll even if health remains.")]
     public int   ragdollForceThreshold = 50;
 
@@ -44,6 +49,60 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float agentAcceleration = 48f;
     [Tooltip("NavMeshAgent angular speed (deg/sec). 1080 = full turn in ~0.33 s, matching the player body Slerp.")]
     public float agentAngularSpeed = 1440f;
+
+    [Header("NavMeshAgent")]
+    [Tooltip("How close the enemy gets before stopping to avoid shoving the player.")]
+    public float stoppingDistance = 2.0f;
+
+    [Header("Group Combat (Anti-Crowding)")]
+    [Tooltip("Only this many enemies may occupy the close-range ring at once.")]
+    public int maxAttackers = 3;
+    [Tooltip("Radius around the player reserved for active attackers.")]
+    public float attackSlotRadius = 2.0f;
+    [Tooltip("Non-attackers will orbit at this radius while waiting their turn.")]
+    public float orbitRadius = 5.0f;
+    [Tooltip("How often orbiters refresh their orbit destination (seconds).")]
+    public float orbitRepathInterval = 0.25f;
+    [Tooltip("How strongly enemies bias away from nearby enemies while chasing.")]
+    public float flankStrength = 2.0f;
+    [Tooltip("Enemies closer than this are considered crowding and will flank.")]
+    public float crowdingDistance = 1.25f;
+
+    [Header("Attacker Cap (Anti-Gang-Up)")]
+    [Tooltip("Maximum number of enemies allowed to target/attack the same target at once.")]
+    public int maxAttackersPerTarget = 2;
+
+    [Header("Combat Behavior States")]
+    [Tooltip("Distance where enemies stop chasing and begin circling or attacking.")]
+    public float combatEngageDistance = 2.25f;
+    [Tooltip("Ideal distance to hold while circling the current target.")]
+    public float strafeDistance = 2.05f;
+    [Tooltip("How often a circling enemy picks a new point around its target.")]
+    public float strafeRepathInterval = 0.22f;
+    [Tooltip("Speed multiplier used while circling in melee range.")]
+    public float strafeSpeedMultiplier = 0.78f;
+    [Tooltip("How long an enemy usually circles before checking for an attack.")]
+    public Vector2 strafeDurationRange = new Vector2(0.45f, 1.1f);
+    [Tooltip("Distance enemies step back to after attacking or when crowding gets too high.")]
+    public float backOffDistance = 3.1f;
+    [Tooltip("How long an enemy backs off before chasing or strafing again.")]
+    public Vector2 backOffDurationRange = new Vector2(0.35f, 0.8f);
+    [Tooltip("Enemies attack only when their forward vector is this aligned with the target direction.")]
+    [Range(0f, 1f)] public float attackFacingDot = 0.78f;
+    [Tooltip("Random extra attack wind-up so enemies do not swing on the same frame.")]
+    public Vector2 attackReactionDelayRange = new Vector2(0.1f, 0.35f);
+    [Tooltip("Chance to step back after a swing instead of immediately circling.")]
+    [Range(0f, 1f)] public float backOffAfterAttackChance = 0.45f;
+    [Tooltip("How often combat states ask for a fresh FFA target.")]
+    public float retargetStateDuration = 0.18f;
+    [Tooltip("Targets within this range count as already fighting nearby and become more attractive.")]
+    public float nearbyFightRadius = 5.5f;
+    [Tooltip("Score bonus for targets already involved in nearby combat.")]
+    public float nearbyFightScoreBonus = 6f;
+    [Tooltip("Score bonus for enemy targets so FFA does not collapse onto the player.")]
+    public float enemyTargetScoreBonus = 4f;
+    [Tooltip("Score penalty when the player already has max attackers.")]
+    public float playerMaxAttackersPenalty = 25f;
 
     [Header("Flow Field Navigation")]
     [Tooltip("When enabled, chase movement follows the shared flow-field vectors instead of constantly pathing to target positions.")]
@@ -121,8 +180,12 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float retaliationMemory = 6f;
 
     [Header("Separation (Anti-Stacking)")]
-    public float separationRadius   = 1.0f;
-    public float separationStrength = 1.0f;
+    [Tooltip("Minimum spacing enemies try to preserve from one another in melee crowds.")]
+    public float minEnemySpacing = 1.2f;
+    [Tooltip("Maximum spacing radius used for anti-stacking pushes.")]
+    public float maxEnemySpacing = 1.8f;
+    public float separationRadius   = 1.5f;
+    public float separationStrength = 2.0f;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -158,7 +221,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     // ── State ────────────────────────────────────────────────────────────────
   // ── State ────────────────────────────────────────────────────────────────
-    private enum State { Idle, Patrol, Chase, Attack, Flinch, Jumping, Dead }
+    private enum State { Idle, Patrol, Chase, Strafe, Attack, BackOff, Retarget, Flinch, Jumping, Dead }
     private State _state = State.Idle;
 
     private NavMeshAgent _agent;
@@ -172,6 +235,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private CharacterController _controller;
     private float        _attackTimer;
     private Transform    _target;
+    private Transform    _lastLoggedTarget;
+    private float        _nextTargetLogTime;
     private bool         _playerDamagedThisLife;
     private bool         _killedByPlayer;
     private RagdollController _ragdoll;
@@ -222,6 +287,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     private Coroutine _attackHitboxRoutine;
     private WeaponHitbox _equippedWeaponHitbox;
     private float _destinationRefreshTimer;
+    private float _stateTimer;
+    private float _nextStrafeRepathTime;
+    private float _nextAttackAllowedTime;
+    private int _strafeDirection = 1;
 
     // Position-delta velocity (same technique the PlayerController uses)
     private Vector3 _lastFramePosition;
@@ -368,6 +437,17 @@ public class EnemyController : MonoBehaviour, IDamageable
         _currentHealth = maxHealth;
         ConfigureAgent();
 
+        // If spawned slightly off the baked NavMesh, warp onto it to avoid
+        // "Failed to create agent" / SetDestination warnings.
+        if (_agent != null && _agent.enabled && !_agent.isOnNavMesh)
+        {
+            if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 8f, NavMesh.AllAreas))
+            {
+                transform.position = hit.position;
+                _agent.Warp(hit.position);
+            }
+        }
+
         _lastFramePosition = transform.position;
         EnsureProperMaterial(gameObject);
         AssignMaterial();
@@ -395,10 +475,15 @@ public class EnemyController : MonoBehaviour, IDamageable
             _scanCoroutine = StartCoroutine(TargetScanLoop());
 
         _patrolTimer = Random.Range(0f, patrolRetargetInterval);
+
+        if (!_aliveEnemies.Contains(this))
+            _aliveEnemies.Add(this);
     }
 
     private void OnDisable()
     {
+        _aliveEnemies.Remove(this);
+
         if (_scanCoroutine != null)
         {
             StopCoroutine(_scanCoroutine);
@@ -436,7 +521,10 @@ public class EnemyController : MonoBehaviour, IDamageable
             case State.Idle:    UpdateIdle();    break;
             case State.Patrol:  UpdatePatrol();  break;
             case State.Chase:   UpdateChase();   break;
+            case State.Strafe:  UpdateStrafe();  break;
             case State.Attack:  UpdateAttack();  break;
+            case State.BackOff: UpdateBackOff(); break;
+            case State.Retarget: UpdateRetarget(); break;
             case State.Flinch:  UpdateFlinch();  break;
             case State.Jumping: UpdateJumping(); break;
         }
@@ -455,7 +543,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// </summary>
     private void TickHeartbeat()
     {
-        if (_state == State.Attack || _state == State.Flinch ||
+        if (_state == State.Attack || _state == State.Strafe || _state == State.BackOff ||
+            _state == State.Retarget || _state == State.Flinch ||
             _state == State.Jumping || _state == State.Dead)
         {
             _heartbeatTimer = 0f;
@@ -492,7 +581,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             // Nothing valid to chase — at least re-issue the patrol so the
             // agent doesn't keep idling against a stale internal path.
             _agent.ResetPath();
-            TransitionTo(State.Patrol);
+            TransitionTo(State.Retarget);
             return;
         }
 
@@ -577,6 +666,17 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     private float _stuckInChaseTimer;
+    private float _nextOrbitRepathTime;
+    private Coroutine _staggerRoutine;
+    private float _staggerUntilTime;
+
+    // Global attacker-slot resolver (single player focus).
+    private static readonly List<EnemyController> _aliveEnemies = new List<EnemyController>(64);
+    private static readonly HashSet<int> _attackSlotWinners = new HashSet<int>();
+    private static int _attackSlotFrame = -1;
+    private static Vector3 _attackSlotPlayerPos;
+
+    private static readonly Dictionary<int, int> _attackersPerTarget = new Dictionary<int, int>(128);
 
     private void UpdateChase()
     {
@@ -593,11 +693,24 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         float dist = Vector3.Distance(transform.position, _target.position);
 
+        // ── Group combat: only a few enemies may be "in" at once ─────────────
+        // If we are close to the player but not one of the current slot winners,
+        // orbit/flank instead of marching straight in and stacking.
+        if (chasePlayerTagOnly && _target != null && dist <= orbitRadius + 1.0f)
+        {
+            bool wantsSlot = dist <= attackSlotRadius;
+            if (wantsSlot && !HasAttackSlot(_target))
+            {
+                OrbitPlayer(_target);
+                return;
+            }
+        }
+
         // Enter attack range. Padding so we commit rather than hover at the edge.
-        float engageDist = attackRadius + attackRangePadding;
+        float engageDist = Mathf.Max(combatEngageDistance, attackRadius + attackRangePadding, stoppingDistance + 0.05f);
         if (dist <= engageDist)
         {
-            TransitionTo(State.Attack);
+            TransitionTo(State.Strafe);
             return;
         }
 
@@ -640,7 +753,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             _agent.acceleration     = agentAcceleration;
             _agent.angularSpeed     = agentAngularSpeed;
             _agent.autoBraking      = false;
-            _agent.stoppingDistance = Mathf.Max(0.1f, attackRadius * 0.5f);
+            _agent.stoppingDistance = Mathf.Max(0.1f, stoppingDistance);
 
             // ── High-frequency destination refresh ───────────────────────────
             // Old threshold was 0.6 sqrMag (≈ 0.77 m) guarded by !pathPending.
@@ -664,7 +777,9 @@ public class EnemyController : MonoBehaviour, IDamageable
             }
             else if (refreshDestination)
             {
-                bool setDirect = _agent.SetDestination(_target.position);
+                Vector3 desired = _target.position;
+                desired += ComputeFlankOffset(desired);
+                bool setDirect = _agent.SetDestination(desired);
                 if (!setDirect || _agent.pathStatus == NavMeshPathStatus.PathInvalid)
                     TrySetDestinationNearTarget();
             }
@@ -686,8 +801,101 @@ public class EnemyController : MonoBehaviour, IDamageable
         TickCombatManeuver();
     }
 
+    private void UpdateStrafe()
+    {
+        if (HandleOffMeshLinkTraversal())
+            return;
+
+        if (!IsTargetValid(_target))
+        {
+            TransitionTo(State.Retarget);
+            return;
+        }
+
+        Vector3 toTarget = _target.position - transform.position;
+        toTarget.y = 0f;
+        float dist = toTarget.magnitude;
+
+        if (dist > Mathf.Max(combatEngageDistance + breakAttackPadding, attackRadius + breakAttackPadding))
+        {
+            TransitionTo(State.Chase);
+            return;
+        }
+
+        FaceDirection(toTarget);
+
+        if (_stateTimer <= 0f && _attackTimer <= 0f && Time.time >= _nextAttackAllowedTime && IsFacingTarget(toTarget))
+        {
+            TransitionTo(State.Attack);
+            return;
+        }
+
+        if (IsTooCrowded())
+        {
+            TransitionTo(State.BackOff);
+            return;
+        }
+
+        DriveStrafeDestination();
+        _stateTimer -= Time.deltaTime;
+    }
+
+    private void UpdateBackOff()
+    {
+        if (!IsTargetValid(_target))
+        {
+            TransitionTo(State.Retarget);
+            return;
+        }
+
+        Vector3 away = transform.position - _target.position;
+        away.y = 0f;
+        if (away.sqrMagnitude < 0.001f)
+            away = -transform.forward;
+
+        FaceDirection(_target.position - transform.position);
+
+        if (IsAgentReady() && Time.time >= _nextStrafeRepathTime)
+        {
+            _nextStrafeRepathTime = Time.time + Mathf.Max(0.08f, strafeRepathInterval);
+            Vector3 desired = _target.position + away.normalized * Mathf.Max(backOffDistance, attackRadius + 0.8f);
+            desired += ComputeFlankOffset(_target.position);
+            if (NavMesh.SamplePosition(desired, out NavMeshHit hit, 3.0f, NavMesh.AllAreas))
+            {
+                _agent.isStopped = false;
+                _agent.autoBraking = true;
+                _agent.speed = Mathf.Max(moveSpeed, chaseSpeed * 0.65f);
+                _agent.stoppingDistance = 0.15f;
+                _agent.SetDestination(hit.position);
+            }
+        }
+
+        _stateTimer -= Time.deltaTime;
+        if (_stateTimer <= 0f)
+            TransitionTo(IsTargetValid(_target) ? State.Strafe : State.Retarget);
+    }
+
+    private void UpdateRetarget()
+    {
+        if (IsAgentReady())
+        {
+            _agent.isStopped = true;
+            _agent.velocity = Vector3.zero;
+        }
+
+        _stateTimer -= Time.deltaTime;
+        if (_stateTimer > 0f)
+            return;
+
+        EvaluateTargets();
+        TransitionTo(IsTargetValid(_target) ? State.Chase : State.Patrol);
+    }
+
     private void UpdateAttack()
     {
+        if (UpdateImprovedAttackState())
+            return;
+
         if (HandleOffMeshLinkTraversal())
             return;
 
@@ -695,6 +903,14 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             _target = null;
             TransitionTo(State.Patrol);
+            return;
+        }
+
+        // If we're not a chosen attacker, don't sit in the pile — orbit outside.
+        if (chasePlayerTagOnly && _target != null && !HasAttackSlot(_target))
+        {
+            OrbitPlayer(_target);
+            TransitionTo(State.Chase);
             return;
         }
 
@@ -729,6 +945,122 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
+    private bool UpdateImprovedAttackState()
+    {
+        if (HandleOffMeshLinkTraversal())
+            return true;
+
+        if (!IsTargetValid(_target))
+        {
+            _target = null;
+            TransitionTo(State.Retarget);
+            return true;
+        }
+
+        if (chasePlayerTagOnly && _target != null && !HasAttackSlot(_target))
+        {
+            OrbitPlayer(_target);
+            TransitionTo(State.Chase);
+            return true;
+        }
+
+        Vector3 toTarget = _target.position - transform.position;
+        toTarget.y = 0f;
+        float dist = toTarget.magnitude;
+
+        if (dist > attackRadius + attackRangePadding)
+        {
+            TransitionTo(State.Strafe);
+            return true;
+        }
+
+        FaceDirection(toTarget);
+
+        if (!IsFacingTarget(toTarget))
+        {
+            TransitionTo(State.Strafe);
+            return true;
+        }
+
+        if (IsAgentReady())
+        {
+            _agent.isStopped = true;
+            _agent.velocity  = Vector3.zero;
+        }
+
+        if (_attackTimer > 0f || Time.time < _nextAttackAllowedTime)
+        {
+            TransitionTo(State.Strafe);
+            return true;
+        }
+
+        _attackTimer = attackCooldown;
+        ExecuteAttack();
+        TransitionTo(Random.value < backOffAfterAttackChance ? State.BackOff : State.Strafe);
+        return true;
+    }
+
+    private void DriveStrafeDestination()
+    {
+        if (!IsAgentReady() || _target == null)
+            return;
+
+        if (Time.time < _nextStrafeRepathTime)
+            return;
+
+        _nextStrafeRepathTime = Time.time + Mathf.Max(0.08f, strafeRepathInterval);
+
+        Vector3 fromTarget = transform.position - _target.position;
+        fromTarget.y = 0f;
+        if (fromTarget.sqrMagnitude < 0.001f)
+            fromTarget = -transform.forward;
+
+        Vector3 radial = fromTarget.normalized;
+        Vector3 tangent = Vector3.Cross(Vector3.up, radial) * _strafeDirection;
+        Vector3 desired = _target.position + radial * Mathf.Max(strafeDistance, attackRadius * 0.9f);
+        desired += tangent * Mathf.Clamp(strafeDistance * 0.65f, 0.4f, 1.7f);
+        desired += ComputeFlankOffset(_target.position);
+
+        if (NavMesh.SamplePosition(desired, out NavMeshHit hit, 2.8f, NavMesh.AllAreas))
+        {
+            _agent.isStopped = false;
+            _agent.autoBraking = true;
+            _agent.speed = Mathf.Max(0.5f, chaseSpeed * Mathf.Max(0.1f, strafeSpeedMultiplier));
+            _agent.stoppingDistance = 0.1f;
+            _agent.SetDestination(hit.position);
+        }
+    }
+
+    private bool IsFacingTarget(Vector3 toTarget)
+    {
+        toTarget.y = 0f;
+        if (toTarget.sqrMagnitude < 0.001f)
+            return true;
+
+        return Vector3.Dot(transform.forward, toTarget.normalized) >= attackFacingDot;
+    }
+
+    private bool IsTooCrowded()
+    {
+        float minSpacing = GetEnemySpacingRadius();
+        int nearby = 0;
+        for (int i = 0; i < _aliveEnemies.Count; i++)
+        {
+            EnemyController e = _aliveEnemies[i];
+            if (e == null || e == this || !e.IsAlive) continue;
+            if ((e.transform.position - transform.position).sqrMagnitude <= minSpacing * minSpacing)
+                nearby++;
+        }
+        return nearby >= 2;
+    }
+
+    private float GetEnemySpacingRadius()
+    {
+        float min = Mathf.Min(minEnemySpacing, maxEnemySpacing);
+        float max = Mathf.Max(minEnemySpacing, maxEnemySpacing);
+        return Mathf.Clamp(separationRadius, min, max);
+    }
+
     private void UpdateFlinch()
     {
         _flinchTimer -= Time.deltaTime;
@@ -760,10 +1092,22 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         if (_state == State.Dead) return;
 
+        // Aggressive separation: scale the push by movement speed so fast-moving
+        // agents don't collapse into a "human ball" when many converge.
+        float speedNow = 0f;
+        float speedRef = 6f;
+        if (_agent != null && _agent.enabled)
+        {
+            speedNow = _agent.velocity.magnitude;
+            speedRef = Mathf.Max(3f, _agent.speed);
+        }
+        float speedFactor = 1f + Mathf.Clamp01(speedNow / speedRef) * 2.0f; // 1x..3x
+
         Vector3 origin = transform.position + Vector3.up * 0.9f;
+        float spacingRadius = GetEnemySpacingRadius();
         int hitCount = Physics.OverlapSphereNonAlloc(
             origin,
-            Mathf.Max(0.1f, separationRadius),
+            Mathf.Max(0.1f, spacingRadius),
             _separationBuffer,
             ResolveHittableMask(),
             QueryTriggerInteraction.Ignore);
@@ -790,14 +1134,17 @@ public class EnemyController : MonoBehaviour, IDamageable
                 distance = delta.magnitude;
             }
 
-            float overlap = Mathf.Max(0f, separationRadius - distance);
+            float overlap = Mathf.Max(0f, spacingRadius - distance);
             if (overlap > 0f)
-                push += delta.normalized * overlap * Mathf.Max(0.1f, separationStrength);
+                push += delta.normalized * overlap * Mathf.Max(0.1f, separationStrength) * speedFactor;
         }
 
         if (push.sqrMagnitude < 1e-6f) return;
 
-        Vector3 destination = transform.position + Vector3.ClampMagnitude(push, separationRadius);
+        // Cap displacement per tick to avoid "teleporty" movement while still
+        // forcing strong separation under heavy crowding.
+        float maxStep = Mathf.Max(0.05f, spacingRadius) * 0.65f;
+        Vector3 destination = transform.position + Vector3.ClampMagnitude(push, maxStep);
         if (_agent != null && _agent.enabled && _agent.isOnNavMesh)
             _agent.Warp(destination);
         else
@@ -1084,6 +1431,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             TransitionTo(State.Flinch);
             if (IsAgentReady()) _agent.ResetPath();
         }
+
+        TriggerStagger(0.5f);
 
         ApplyHitFlash();
         SetAnimatorTrigger(HashHit);
@@ -1725,6 +2074,12 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool IsTargetValid(Transform t)
     {
         if (t == null) return false;
+        if (chasePlayerTagOnly)
+        {
+            Transform root = t.root;
+            if (root == null || !root.CompareTag("Player"))
+                return false;
+        }
         IDamageable dmg = t.GetComponentInParent<IDamageable>();
         return dmg != null && dmg.IsAlive;
     }
@@ -1754,7 +2109,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_agent == null) return;
 
         _agent.speed                 = chaseSpeed;
-        _agent.stoppingDistance      = Mathf.Max(0.1f, attackRadius * 0.5f);
+        _agent.stoppingDistance      = Mathf.Max(0.1f, stoppingDistance);
         _agent.acceleration          = agentAcceleration;
         _agent.angularSpeed          = agentAngularSpeed;
         _agent.avoidancePriority     = Random.Range(30, 70);
@@ -1791,11 +2146,41 @@ public class EnemyController : MonoBehaviour, IDamageable
                     _agent.SetDestination(_target.position);
                 break;
 
+            case State.Strafe:
+                _agent.isStopped = false;
+                _agent.autoBraking = true;
+                _agent.velocity = Vector3.zero;
+                _stateTimer = Random.Range(
+                    Mathf.Min(strafeDurationRange.x, strafeDurationRange.y),
+                    Mathf.Max(strafeDurationRange.x, strafeDurationRange.y));
+                _nextAttackAllowedTime = Time.time + Random.Range(
+                    Mathf.Min(attackReactionDelayRange.x, attackReactionDelayRange.y),
+                    Mathf.Max(attackReactionDelayRange.x, attackReactionDelayRange.y));
+                _nextStrafeRepathTime = 0f;
+                if (Random.value < 0.35f)
+                    _strafeDirection *= -1;
+                break;
+
             case State.Attack:
                 // Stop in place BUT keep the last path so we can resume
                 // chasing instantly on hysteresis break without a re-path delay.
                 _agent.isStopped = true;
                 _agent.velocity  = Vector3.zero;
+                break;
+
+            case State.BackOff:
+                _agent.isStopped = false;
+                _agent.autoBraking = true;
+                _stateTimer = Random.Range(
+                    Mathf.Min(backOffDurationRange.x, backOffDurationRange.y),
+                    Mathf.Max(backOffDurationRange.x, backOffDurationRange.y));
+                _nextStrafeRepathTime = 0f;
+                break;
+
+            case State.Retarget:
+                _agent.isStopped = true;
+                _agent.velocity = Vector3.zero;
+                _stateTimer = Mathf.Max(0.02f, retargetStateDuration);
                 break;
 
             case State.Idle:
@@ -1868,10 +2253,10 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void EvaluateTargets()
     {
-        Transform candidate = FindFfaTarget(Mathf.Max(detectionRadius, aggressiveScanRadius));
-
-        if (candidate == null)
-            candidate = FindPlayerTarget();
+        // FFA: pick nearest tagged Player OR Enemy. No player preference.
+        Transform candidate = chasePlayerTagOnly
+            ? FindPlayerTarget()
+            : FindFfaTargetWithAttackerCap(Mathf.Max(detectionRadius, aggressiveScanRadius));
 
         if (candidate == null)
         {
@@ -1883,8 +2268,61 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _target = candidate;
         _targetLockTimer = targetLockDuration;
+        if (debugTargeting && _target != _lastLoggedTarget && Time.time >= _nextTargetLogTime)
+        {
+            _nextTargetLogTime = Time.time + 0.25f;
+            string oldName = _lastLoggedTarget != null ? _lastLoggedTarget.name : "None";
+            string newName = _target != null ? _target.name : "None";
+            Debug.Log($"[EnemyController] {name} target: {oldName} -> {newName}");
+            _lastLoggedTarget = _target;
+        }
         if (_state == State.Idle || _state == State.Patrol || _state == State.Attack)
             TransitionTo(State.Chase);
+    }
+
+    private void OnDrawGizmos()
+    {
+        if (!debugTargeting) return;
+        if (_target == null) return;
+        Gizmos.color = _target.CompareTag("Player") ? Color.cyan : Color.magenta;
+        Gizmos.DrawLine(transform.position + Vector3.up * 1.6f, _target.position + Vector3.up * 1.6f);
+    }
+
+    private void OnGUI()
+    {
+        if (!debugTargeting || _state == State.Dead)
+            return;
+
+        Camera cam = Camera.main;
+        if (cam == null)
+            return;
+
+        Vector3 labelWorld = transform.position + Vector3.up * 2.25f;
+        Vector3 screen = cam.WorldToScreenPoint(labelWorld);
+        if (screen.z <= 0f)
+            return;
+
+        string targetName = _target != null ? _target.name : "None";
+        string text = $"{targetName}\n{GetDebugStateName()}";
+        Vector2 size = GUI.skin.label.CalcSize(new GUIContent(text));
+        Rect rect = new Rect(screen.x - 70f, Screen.height - screen.y - 24f, Mathf.Max(140f, size.x + 12f), 42f);
+        GUI.color = Color.white;
+        GUI.Label(rect, text);
+    }
+
+    private string GetDebugStateName()
+    {
+        switch (_state)
+        {
+            case State.Strafe:
+                return "Strafe";
+            case State.BackOff:
+                return "BackOff";
+            case State.Retarget:
+                return "Retarget";
+            default:
+                return _state.ToString();
+        }
     }
 
     private void SetRandomPatrolDestination()
@@ -1949,54 +2387,167 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     /// <summary>
-    /// Free-for-All targeting. Returns the closest living IDamageable in
-    /// range, preferring visible targets (LoS) and excluding self.
-    /// Both the player and other enemies are fair game.
+    /// Free-for-All targeting. Returns the closest Transform tagged
+    /// 'Player' OR 'Enemy' in range (excluding self).
     /// </summary>
     private Transform FindFfaTarget(float radius)
     {
-        Collider[] hits = Physics.OverlapSphere(
-            transform.position, radius, detectionMask, QueryTriggerInteraction.Ignore);
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            transform.position,
+            Mathf.Max(0.1f, radius),
+            _separationBuffer,
+            detectionMask,
+            QueryTriggerInteraction.Ignore);
 
-        Transform best      = null;
-        float     bestScore = float.MaxValue;
-        var       evaluated = new HashSet<int>();
+        Transform best = null;
+        float bestD2 = float.MaxValue;
+        int selfRootId = transform.root.gameObject.GetInstanceID();
 
-        foreach (Collider hit in hits)
+        for (int i = 0; i < hitCount; i++)
         {
-            if (hit == null || hit.transform == transform) continue;
+            Collider hit = _separationBuffer[i];
+            if (hit == null) continue;
 
-            IDamageable dmg = hit.GetComponentInParent<IDamageable>();
+            Transform root = hit.transform.root;
+            if (root == null) continue;
+            if (root.gameObject.GetInstanceID() == selfRootId) continue;
+
+            // Tag filter: only Player or Enemy are valid targets in FFA.
+            if (!root.CompareTag("Player") && !root.CompareTag("Enemy"))
+                continue;
+
+            IDamageable dmg = root.GetComponentInChildren<IDamageable>();
             if (dmg == null || !dmg.IsAlive) continue;
-            if (dmg.gameObject == gameObject) continue;
 
-            int id = dmg.gameObject.GetInstanceID();
-            if (!evaluated.Add(id)) continue;
-
-            Transform t  = dmg.transform;
-            float     d2 = (t.position - transform.position).sqrMagnitude;
-
-            if (d2 < bestScore)
+            float d2 = (dmg.transform.position - transform.position).sqrMagnitude;
+            if (d2 < bestD2)
             {
-                bestScore = d2;
-                best      = t;
+                bestD2 = d2;
+                best = dmg.transform;
             }
         }
 
         return best;
     }
 
+    private Transform FindFfaTargetWithAttackerCap(float radius)
+    {
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            transform.position,
+            Mathf.Max(0.1f, radius),
+            _separationBuffer,
+            detectionMask,
+            QueryTriggerInteraction.Ignore);
+
+        Transform best = null;
+        float bestScore = float.NegativeInfinity;
+        int selfRootId = transform.root.gameObject.GetInstanceID();
+
+        // Rebuild attackers-per-target map each evaluation tick (cheap: number of enemies is limited).
+        _attackersPerTarget.Clear();
+        for (int i = 0; i < _aliveEnemies.Count; i++)
+        {
+            EnemyController e = _aliveEnemies[i];
+            if (e == null || !e.IsAlive) continue;
+            if (e._target == null) continue;
+            int tid = e._target.root.gameObject.GetInstanceID();
+            _attackersPerTarget.TryGetValue(tid, out int count);
+            _attackersPerTarget[tid] = count + 1;
+        }
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider hit = _separationBuffer[i];
+            if (hit == null) continue;
+
+            Transform root = hit.transform.root;
+            if (root == null) continue;
+            int rootId = root.gameObject.GetInstanceID();
+            if (rootId == selfRootId) continue;
+
+            if (!root.CompareTag("Player") && !root.CompareTag("Enemy"))
+                continue;
+
+            IDamageable dmg = root.GetComponentInChildren<IDamageable>();
+            if (dmg == null || !dmg.IsAlive) continue;
+
+            float score = ScoreFfaTarget(dmg.transform, root, rootId);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = dmg.transform;
+            }
+        }
+
+        // Fallback: if everything is capped, pick nearest anyway so AI doesn't stall.
+        return best != null ? best : FindFfaTarget(radius);
+    }
+
+    private float ScoreFfaTarget(Transform candidate, Transform root, int rootId)
+    {
+        float distance = Vector3.Distance(transform.position, candidate.position);
+        float score = -distance;
+
+        bool isPlayer = root.CompareTag("Player");
+        bool isEnemy = root.CompareTag("Enemy");
+
+        if (isEnemy)
+            score += enemyTargetScoreBonus;
+
+        if (IsTargetInNearbyFight(candidate))
+            score += nearbyFightScoreBonus;
+
+        _attackersPerTarget.TryGetValue(rootId, out int attackers);
+        int cap = Mathf.Max(1, maxAttackersPerTarget);
+        if (isPlayer && attackers >= cap)
+            score -= playerMaxAttackersPenalty;
+        else if (attackers >= cap)
+            score -= Mathf.Max(2f, playerMaxAttackersPenalty * 0.35f);
+
+        if (_target != null && candidate == _target)
+            score += Mathf.Max(0f, targetSwitchHysteresis);
+
+        if (lineOfSightBlockers.value != 0 && !HasLineOfSight(candidate))
+            score -= 4f;
+
+        return score;
+    }
+
+    private bool IsTargetInNearbyFight(Transform candidate)
+    {
+        float r2 = Mathf.Max(0.1f, nearbyFightRadius) * Mathf.Max(0.1f, nearbyFightRadius);
+        for (int i = 0; i < _aliveEnemies.Count; i++)
+        {
+            EnemyController e = _aliveEnemies[i];
+            if (e == null || e == this || !e.IsAlive || e._target == null)
+                continue;
+
+            if (e._target == candidate || e._target.root == candidate.root)
+                return true;
+
+            if ((e.transform.position - candidate.position).sqrMagnitude <= r2
+                && (e._state == State.Attack || e._state == State.Strafe || e._state == State.BackOff))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Legacy helper kept for older scenes. In FFA mode, this must NOT be used
+    // to force player preference.
     private Transform FindPlayerTarget()
     {
-        PlayerHealth player = Object.FindFirstObjectByType<PlayerHealth>();
-        if (player == null)
+        GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
+        if (playerObj == null)
             return null;
 
-        IDamageable dmg = player.GetComponent<IDamageable>();
+        IDamageable dmg = playerObj.GetComponentInParent<IDamageable>();
         if (dmg == null || !dmg.IsAlive)
             return null;
 
-        return player.transform;
+        return dmg.transform;
     }
 
     private void TrySetDestinationNearTarget()
@@ -2012,6 +2563,179 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool IsAgentReady()
     {
         return _agent != null && _agent.enabled && _agent.isOnNavMesh;
+    }
+
+    private void TriggerStagger(float seconds)
+    {
+        if (_state == State.Dead) return;
+        if (_agent == null) return;
+
+        _staggerUntilTime = Mathf.Max(_staggerUntilTime, Time.time + Mathf.Max(0.05f, seconds));
+        if (_staggerRoutine == null && isActiveAndEnabled)
+            _staggerRoutine = StartCoroutine(StaggerRoutine());
+    }
+
+    private IEnumerator StaggerRoutine()
+    {
+        // Ensure we stop immediately (prevents "pushing" while the player hits).
+        if (_agent != null)
+        {
+            if (_agent.enabled) _agent.ResetPath();
+            if (_agent.enabled) _agent.isStopped = true;
+        }
+
+        while (Time.time < _staggerUntilTime)
+            yield return null;
+
+        if (_state == State.Dead)
+        {
+            _staggerRoutine = null;
+            yield break;
+        }
+
+        // The user explicitly requested disabling the NavMeshAgent briefly.
+        // We do it safely: disable then re-enable and warp onto the NavMesh.
+        if (_agent != null && _agent.enabled)
+        {
+            _agent.enabled = false;
+            yield return new WaitForSeconds(0.5f);
+            if (_agent != null)
+            {
+                _agent.enabled = true;
+                if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 6f, NavMesh.AllAreas))
+                {
+                    transform.position = hit.position;
+                    _agent.Warp(hit.position);
+                }
+            }
+        }
+
+        _staggerRoutine = null;
+    }
+
+    private bool HasAttackSlot(Transform player)
+    {
+        if (player == null) return false;
+
+        // Recompute winners once per frame.
+        if (_attackSlotFrame != Time.frameCount || (_attackSlotPlayerPos - player.position).sqrMagnitude > 0.25f)
+        {
+            _attackSlotFrame = Time.frameCount;
+            _attackSlotPlayerPos = player.position;
+            _attackSlotWinners.Clear();
+
+            // Collect candidates: alive, targeting player, close enough to compete.
+            int count = 0;
+            for (int i = _aliveEnemies.Count - 1; i >= 0; i--)
+            {
+                EnemyController e = _aliveEnemies[i];
+                if (e == null || !e.IsAlive)
+                {
+                    _aliveEnemies.RemoveAt(i);
+                    continue;
+                }
+                if (!e.chasePlayerTagOnly || e._target == null || e._target != player)
+                    continue;
+                if (e._state == State.Dead)
+                    continue;
+                float d = Vector3.Distance(e.transform.position, player.position);
+                if (d <= Mathf.Max(e.attackSlotRadius, 0.5f) + 0.25f)
+                    count++;
+            }
+
+            // Early out: no contenders.
+            if (count == 0)
+                return false;
+
+            // Pick the closest N as winners.
+            // (Simple + stable: distance-based, recomputed each frame.)
+            List<(float d, int id)> candidates = new List<(float, int)>(count);
+            for (int i = 0; i < _aliveEnemies.Count; i++)
+            {
+                EnemyController e = _aliveEnemies[i];
+                if (e == null || !e.IsAlive) continue;
+                if (!e.chasePlayerTagOnly || e._target == null || e._target != player) continue;
+                float d = Vector3.Distance(e.transform.position, player.position);
+                if (d <= Mathf.Max(e.attackSlotRadius, 0.5f) + 0.25f)
+                    candidates.Add((d, e.GetInstanceID()));
+            }
+            candidates.Sort((a, b) => a.d.CompareTo(b.d));
+
+            int winners = Mathf.Max(1, maxAttackers);
+            for (int i = 0; i < candidates.Count && i < winners; i++)
+                _attackSlotWinners.Add(candidates[i].id);
+        }
+
+        return _attackSlotWinners.Contains(GetInstanceID());
+    }
+
+    private void OrbitPlayer(Transform player)
+    {
+        if (!IsAgentReady() || player == null) return;
+        if (Time.time < _nextOrbitRepathTime) return;
+        _nextOrbitRepathTime = Time.time + Mathf.Max(0.05f, orbitRepathInterval);
+
+        Vector3 toEnemy = transform.position - player.position;
+        toEnemy.y = 0f;
+        if (toEnemy.sqrMagnitude < 0.0001f)
+            toEnemy = Random.onUnitSphere;
+
+        // Pick a stable orbit angle per-enemy, with a slow drift so they "circle".
+        float baseAngle = (GetInstanceID() & 1023) * 0.0061359f; // ~0..2pi
+        float drift = Time.time * 0.65f;
+        Vector3 dir = new Vector3(Mathf.Cos(baseAngle + drift), 0f, Mathf.Sin(baseAngle + drift));
+        Vector3 desired = player.position + dir * Mathf.Max(orbitRadius, attackSlotRadius + 1.0f);
+        desired += ComputeFlankOffset(player.position);
+
+        if (NavMesh.SamplePosition(desired, out NavMeshHit hit, 3.5f, NavMesh.AllAreas))
+        {
+            _agent.isStopped = false;
+            _agent.autoBraking = true;
+            _agent.stoppingDistance = Mathf.Max(0.1f, stoppingDistance);
+            _agent.SetDestination(hit.position);
+        }
+    }
+
+    private Vector3 ComputeFlankOffset(Vector3 targetPosition)
+    {
+        // Push away from nearby enemies to prevent straight-line stacking.
+        if (flankStrength <= 0f) return Vector3.zero;
+
+        Vector3 origin = transform.position + Vector3.up * 0.9f;
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            origin,
+            Mathf.Max(0.1f, crowdingDistance),
+            _separationBuffer,
+            ResolveHittableMask(),
+            QueryTriggerInteraction.Ignore);
+
+        Vector3 away = Vector3.zero;
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider other = _separationBuffer[i];
+            if (other == null) continue;
+            if (other.transform == transform || other.transform.IsChildOf(transform)) continue;
+            EnemyController e = other.GetComponentInParent<EnemyController>();
+            if (e == null || e == this || !e.IsAlive) continue;
+
+            Vector3 delta = transform.position - e.transform.position;
+            delta.y = 0f;
+            float d2 = delta.sqrMagnitude;
+            if (d2 < 0.0001f) continue;
+            away += delta.normalized / Mathf.Max(0.25f, Mathf.Sqrt(d2));
+        }
+
+        if (away.sqrMagnitude < 0.0001f)
+            return Vector3.zero;
+
+        // Convert "away from crowd" into a lateral flank relative to the target.
+        Vector3 toTarget = targetPosition - transform.position;
+        toTarget.y = 0f;
+        if (toTarget.sqrMagnitude < 0.0001f) return Vector3.zero;
+
+        Vector3 lateral = Vector3.Cross(Vector3.up, toTarget.normalized);
+        float side = Mathf.Sign(Vector3.Dot(away, lateral));
+        return lateral * (side * Mathf.Clamp(flankStrength, 0f, 6f));
     }
 
     private void WarpToNearestNavMeshAfterFall()
@@ -2638,7 +3362,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, attackRadius);
         Gizmos.color = Color.cyan;
-        Gizmos.DrawWireSphere(transform.position, separationRadius);
+        Gizmos.DrawWireSphere(transform.position, GetEnemySpacingRadius());
 
         // Show obstacle-check ray
         Gizmos.color = Color.magenta;

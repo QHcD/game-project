@@ -45,9 +45,9 @@ public class FPSCameraRig : MonoBehaviour
     public float verticalOffset = 0.04f;
 
     [Header("Near Clip")]
-    [Tooltip("Near clip plane distance. 0.01 m is the recommended minimum for FPS views.")]
+    [Tooltip("Near clip plane distance. 0.1 m is a safe default to avoid seeing inside meshes.")]
     [Range(0.001f, 0.1f)]
-    public float nearClipPlane = 0.01f;
+    public float nearClipPlane = 0.1f;
 
     [Header("Layer Culling")]
     [Tooltip("Name of the Unity layer that your player body mesh is assigned to. " +

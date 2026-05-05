@@ -81,9 +81,10 @@ public class WeaponAttacher : MonoBehaviour
             camTransform = cam.transform;
         }
 
-        // Ensure Camera.main near clip is tight so the weapon is never clipped.
-        if (Camera.main != null && Camera.main.nearClipPlane > 0.01f)
-            Camera.main.nearClipPlane = 0.01f;
+        // Unity 6 / third-person: 0.01 near clip often causes "inside mesh" rendering.
+        // Keep the near clip at a safer default.
+        if (Camera.main != null && Camera.main.nearClipPlane < 0.1f)
+            Camera.main.nearClipPlane = 0.1f;
 
         // Find or create a "Weapon" slot directly under the camera.
         Transform slot = camTransform.Find("Weapon");
