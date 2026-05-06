@@ -20,6 +20,7 @@ public class PauseMenuController : MonoBehaviour
     private Slider musicVolumeSlider;
     private Slider sfxVolumeSlider;
     private Slider mouseSensitivitySlider;
+    private ScrollRect pauseSettingsScrollRect;
 
     private void Awake()
     {
@@ -162,37 +163,139 @@ public class PauseMenuController : MonoBehaviour
 
     private void BuildSettingsPanel(Transform parent)
     {
-        CreateLabel(parent, "SETTINGS", 56f, new Color(0.78f, 0.84f, 1f, 1f), new Vector2(0f, 408f), new Vector2(500f, 76f), true);
-        CreateLabel(parent, "AUDIO, VIDEO, CONTROLS AND GAMEPLAY IN ONE PLACE.", 18f, new Color(0.72f, 0.84f, 1f, 0.88f), new Vector2(0f, 358f), new Vector2(720f, 32f), false);
+        // Slightly tighter header so the content reads more centered.
+        CreateLabel(parent, "SETTINGS", 58f, new Color(0.78f, 0.84f, 1f, 1f), new Vector2(0f, 392f), new Vector2(500f, 76f), true);
+        CreateLabel(parent, "AUDIO, VIDEO, CONTROLS AND GAMEPLAY IN ONE PLACE.", 20f, new Color(0.72f, 0.84f, 1f, 0.88f), new Vector2(0f, 346f), new Vector2(720f, 34f), false);
 
-        CreateLabel(parent, "AUDIO", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, 312f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
+        RectTransform content = CreatePauseSettingsScrollArea(parent);
 
-        masterVolumeSlider = CreateSliderRow(parent, "MASTER VOL", new Vector2(0f, 252f), AudioSettingsRuntime.MasterKey, value =>
+        CreateSectionLabel(content, "AUDIO");
+
+        masterVolumeSlider = CreateSliderRow(content, "MASTER VOL", Vector2.zero, AudioSettingsRuntime.MasterKey, value =>
         {
             AudioSettingsRuntime.ApplyListenerVolume();
             AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent();
         });
 
-        musicVolumeSlider = CreateSliderRow(parent, "MUSIC VOL", new Vector2(0f, 182f), AudioSettingsRuntime.MusicKey,
+        musicVolumeSlider = CreateSliderRow(content, "MUSIC VOL", Vector2.zero, AudioSettingsRuntime.MusicKey,
             _ => { AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent(); });
-        sfxVolumeSlider = CreateSliderRow(parent, "SFX VOL", new Vector2(0f, 112f), AudioSettingsRuntime.SfxKey, null);
+        sfxVolumeSlider = CreateSliderRow(content, "SFX VOL", Vector2.zero, AudioSettingsRuntime.SfxKey, null);
 
-        CreateLabel(parent, "VIDEO", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, 58f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
+        CreateSectionLabel(content, "VIDEO");
 
-        CreateCycleRow(parent, "GRAPHICS", new Vector2(0f, -2f), GetGraphicsLabel, CycleGraphics);
-        CreateCycleRow(parent, "FULLSCREEN", new Vector2(0f, -74f), GetFullscreenLabel, ToggleFullscreen);
+        CreateCycleRow(content, "GRAPHICS", Vector2.zero, GetGraphicsLabel, CycleGraphics);
+        CreateCycleRow(content, "FULLSCREEN", Vector2.zero, GetFullscreenLabel, ToggleFullscreen);
 
-        CreateLabel(parent, "CONTROLS", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, -136f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
+        CreateSectionLabel(content, "CONTROLS");
 
-        CreateCycleRow(parent, "MOVE STYLE", new Vector2(0f, -198f), GetMovementLabel, CycleMovement);
-        mouseSensitivitySlider = CreateSensitivityRow(parent, "MOUSE SENS", new Vector2(0f, -270f));
+        CreateCycleRow(content, "MOVE STYLE", Vector2.zero, GetMovementLabel, CycleMovement);
+        mouseSensitivitySlider = CreateSensitivityRow(content, "MOUSE SENS", Vector2.zero);
 
-        CreateLabel(parent, "GAMEPLAY", 24f, new Color(0.45f, 0.72f, 1f, 1f), new Vector2(0f, -334f), new Vector2(700f, 28f), true, TextAlignmentOptions.Center);
+        CreateSectionLabel(content, "GAMEPLAY");
 
-        CreateCycleRow(parent, "DIFFICULTY", new Vector2(0f, -396f), GetDifficultyLabel, CycleDifficulty);
-        CreateCycleRow(parent, "CAMERA VIEW", new Vector2(0f, -468f), GetPerspectiveLabel, CyclePerspective);
+        CreateCycleRow(content, "DIFFICULTY", Vector2.zero, GetDifficultyLabel, CycleDifficulty);
+        CreateCycleRow(content, "CAMERA VIEW", Vector2.zero, GetPerspectiveLabel, CyclePerspective);
 
-        CreateButton(parent, "RETURN", new Vector2(0f, -558f), () => ShowPanel(mainPanel));
+        CreateButton(parent, "RETURN", new Vector2(0f, -390f), () => ShowPanel(mainPanel));
+    }
+
+    private RectTransform CreatePauseSettingsScrollArea(Transform parent)
+    {
+        GameObject viewportObj = new GameObject("Viewport", typeof(RectTransform), typeof(CanvasRenderer));
+        viewportObj.transform.SetParent(parent, false);
+        Image viewportImage = viewportObj.AddComponent<Image>();
+        viewportImage.color = new Color(0.02f, 0.04f, 0.10f, 0.18f);
+        viewportObj.AddComponent<RectMask2D>();
+        pauseSettingsScrollRect = viewportObj.AddComponent<ScrollRect>();
+
+        RectTransform viewportRect = viewportObj.GetComponent<RectTransform>();
+        viewportRect.anchorMin = new Vector2(0.5f, 0.5f);
+        viewportRect.anchorMax = new Vector2(0.5f, 0.5f);
+        viewportRect.pivot = new Vector2(0.5f, 0.5f);
+        viewportRect.sizeDelta = new Vector2(780f, 620f);
+        viewportRect.anchoredPosition = new Vector2(0f, 6f);
+
+        GameObject contentObj = new GameObject("Content", typeof(RectTransform), typeof(CanvasRenderer));
+        contentObj.transform.SetParent(viewportObj.transform, false);
+        RectTransform contentRect = contentObj.GetComponent<RectTransform>();
+        contentRect.anchorMin = new Vector2(0f, 1f);
+        contentRect.anchorMax = new Vector2(1f, 1f);
+        contentRect.pivot = new Vector2(0.5f, 1f);
+        contentRect.anchoredPosition = Vector2.zero;
+        contentRect.sizeDelta = new Vector2(0f, 0f); // driven by ContentSizeFitter
+
+        VerticalLayoutGroup layout = contentObj.AddComponent<VerticalLayoutGroup>();
+        layout.padding = new RectOffset(24, 24, 10, 22);
+        layout.spacing = 16f;
+        layout.childAlignment = TextAnchor.UpperCenter;
+        layout.childControlWidth = true;
+        layout.childControlHeight = false;
+        layout.childForceExpandWidth = true;
+        layout.childForceExpandHeight = false;
+
+        ContentSizeFitter fitter = contentObj.AddComponent<ContentSizeFitter>();
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        Scrollbar scrollbar = CreatePauseSettingsScrollbar(parent);
+
+        pauseSettingsScrollRect.content = contentRect;
+        pauseSettingsScrollRect.viewport = viewportRect;
+        pauseSettingsScrollRect.vertical = true;
+        pauseSettingsScrollRect.horizontal = false;
+        pauseSettingsScrollRect.scrollSensitivity = 35f;
+        pauseSettingsScrollRect.movementType = ScrollRect.MovementType.Clamped;
+        pauseSettingsScrollRect.verticalScrollbar = scrollbar;
+        pauseSettingsScrollRect.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.Permanent;
+
+        return contentRect;
+    }
+
+    private Scrollbar CreatePauseSettingsScrollbar(Transform parent)
+    {
+        GameObject scrollbarObj = new GameObject("ScrollbarRight", typeof(RectTransform), typeof(CanvasRenderer));
+        scrollbarObj.transform.SetParent(parent, false);
+        Image track = scrollbarObj.AddComponent<Image>();
+        track.color = new Color(0.07f, 0.12f, 0.24f, 0.72f);
+        RectTransform trackRect = scrollbarObj.GetComponent<RectTransform>();
+        trackRect.anchorMin = new Vector2(0.5f, 0.5f);
+        trackRect.anchorMax = new Vector2(0.5f, 0.5f);
+        trackRect.pivot = new Vector2(0.5f, 0.5f);
+        trackRect.sizeDelta = new Vector2(18f, 620f);
+        trackRect.anchoredPosition = new Vector2(408f, 6f);
+
+        GameObject handleObj = new GameObject("Handle");
+        handleObj.transform.SetParent(scrollbarObj.transform, false);
+        Image handleImage = handleObj.AddComponent<Image>();
+        handleImage.color = new Color(0.36f, 0.74f, 1f, 0.95f);
+        RectTransform handleRect = handleObj.GetComponent<RectTransform>();
+        Stretch(handleRect);
+
+        Scrollbar scrollbar = scrollbarObj.AddComponent<Scrollbar>();
+        scrollbar.direction = Scrollbar.Direction.BottomToTop;
+        scrollbar.targetGraphic = handleImage;
+        scrollbar.handleRect = handleRect;
+        scrollbar.size = 0.65f;
+        return scrollbar;
+    }
+
+    private void CreateSectionLabel(Transform parent, string text)
+    {
+        TextMeshProUGUI label = new GameObject("Section_" + text).AddComponent<TextMeshProUGUI>();
+        label.transform.SetParent(parent, false);
+        label.text = text;
+        label.fontSize = 26f;
+        label.fontStyle = FontStyles.Bold;
+        label.color = new Color(0.45f, 0.72f, 1f, 1f);
+        label.alignment = TextAlignmentOptions.Center;
+        if (prismFont != null)
+            label.font = prismFont;
+
+        RectTransform rect = label.rectTransform;
+        rect.sizeDelta = new Vector2(720f, 36f);
+
+        LayoutElement layoutElement = label.gameObject.AddComponent<LayoutElement>();
+        layoutElement.preferredHeight = 36f;
+        layoutElement.minHeight = 32f;
     }
 
     private void CreateCycleRow(Transform parent, string label, Vector2 position, System.Func<string> getValue, UnityEngine.Events.UnityAction onCycle)
@@ -203,11 +306,14 @@ public class PauseMenuController : MonoBehaviour
         rowRect.anchorMin = new Vector2(0.5f, 0.5f);
         rowRect.anchorMax = new Vector2(0.5f, 0.5f);
         rowRect.pivot = new Vector2(0.5f, 0.5f);
-        rowRect.sizeDelta = new Vector2(700f, 64f);
+        rowRect.sizeDelta = new Vector2(720f, 66f);
         rowRect.anchoredPosition = position;
+        LayoutElement rowLayout = row.AddComponent<LayoutElement>();
+        rowLayout.preferredHeight = 66f;
+        rowLayout.minHeight = 62f;
 
-        CreateLabel(row.transform, label, 26f, Color.white, new Vector2(-190f, 0f), new Vector2(320f, 42f), false, TextAlignmentOptions.MidlineRight);
-        CreateButton(row.transform, getValue(), new Vector2(148f, 0f), onCycle, new Vector2(320f, 60f), getValue);
+        CreateLabel(row.transform, label, 28f, Color.white, new Vector2(-205f, 0f), new Vector2(330f, 44f), false, TextAlignmentOptions.Right);
+        CreateButton(row.transform, getValue(), new Vector2(128f, 0f), onCycle, new Vector2(330f, 62f), getValue);
     }
 
     private Slider CreateSliderRow(
@@ -223,10 +329,13 @@ public class PauseMenuController : MonoBehaviour
         rowRect.anchorMin = new Vector2(0.5f, 0.5f);
         rowRect.anchorMax = new Vector2(0.5f, 0.5f);
         rowRect.pivot = new Vector2(0.5f, 0.5f);
-        rowRect.sizeDelta = new Vector2(700f, 60f);
+        rowRect.sizeDelta = new Vector2(720f, 62f);
         rowRect.anchoredPosition = position;
+        LayoutElement rowLayout = row.AddComponent<LayoutElement>();
+        rowLayout.preferredHeight = 62f;
+        rowLayout.minHeight = 58f;
 
-        CreateLabel(row.transform, label, 24f, Color.white, new Vector2(-190f, 0f), new Vector2(320f, 42f), false, TextAlignmentOptions.MidlineRight);
+        CreateLabel(row.transform, label, 26f, Color.white, new Vector2(-205f, 0f), new Vector2(330f, 44f), false, TextAlignmentOptions.Right);
 
         GameObject sliderObj = new GameObject("Slider_" + label);
         sliderObj.transform.SetParent(row.transform, false);
@@ -236,8 +345,8 @@ public class PauseMenuController : MonoBehaviour
         sliderRect.anchorMin = new Vector2(0.5f, 0.5f);
         sliderRect.anchorMax = new Vector2(0.5f, 0.5f);
         sliderRect.pivot = new Vector2(0.5f, 0.5f);
-        sliderRect.sizeDelta = new Vector2(320f, 18f);
-        sliderRect.anchoredPosition = new Vector2(150f, 0f);
+        sliderRect.sizeDelta = new Vector2(330f, 20f);
+        sliderRect.anchoredPosition = new Vector2(128f, 0f);
 
         Slider slider = sliderObj.AddComponent<Slider>();
         slider.direction = Slider.Direction.LeftToRight;
@@ -282,9 +391,9 @@ public class PauseMenuController : MonoBehaviour
 
         TextMeshProUGUI valueLabel = new GameObject("Val_" + label).AddComponent<TextMeshProUGUI>();
         valueLabel.transform.SetParent(row.transform, false);
-        valueLabel.fontSize = 20f;
+        valueLabel.fontSize = 22f;
         valueLabel.color = new Color(0.82f, 0.90f, 1f, 0.92f);
-        valueLabel.alignment = TextAlignmentOptions.MidlineLeft;
+        valueLabel.alignment = TextAlignmentOptions.Left;
         if (prismFont != null)
             valueLabel.font = prismFont;
         RectTransform valueRect = valueLabel.rectTransform;
@@ -292,7 +401,7 @@ public class PauseMenuController : MonoBehaviour
         valueRect.anchorMax = new Vector2(0.5f, 0.5f);
         valueRect.pivot = new Vector2(0f, 0.5f);
         valueRect.sizeDelta = new Vector2(90f, 30f);
-        valueRect.anchoredPosition = new Vector2(320f, 0f);
+        valueRect.anchoredPosition = new Vector2(306f, 0f);
         valueLabel.text = Mathf.RoundToInt(slider.value * 100f) + "%";
         slider.onValueChanged.AddListener(value =>
         {
@@ -310,10 +419,13 @@ public class PauseMenuController : MonoBehaviour
         rowRect.anchorMin = new Vector2(0.5f, 0.5f);
         rowRect.anchorMax = new Vector2(0.5f, 0.5f);
         rowRect.pivot = new Vector2(0.5f, 0.5f);
-        rowRect.sizeDelta = new Vector2(700f, 60f);
+        rowRect.sizeDelta = new Vector2(720f, 62f);
         rowRect.anchoredPosition = position;
+        LayoutElement rowLayout = row.AddComponent<LayoutElement>();
+        rowLayout.preferredHeight = 62f;
+        rowLayout.minHeight = 58f;
 
-        CreateLabel(row.transform, label, 24f, Color.white, new Vector2(-190f, 0f), new Vector2(320f, 42f), false, TextAlignmentOptions.MidlineRight);
+        CreateLabel(row.transform, label, 26f, Color.white, new Vector2(-205f, 0f), new Vector2(330f, 44f), false, TextAlignmentOptions.Right);
 
         GameObject sliderObj = new GameObject("Slider_" + label);
         sliderObj.transform.SetParent(row.transform, false);
@@ -323,8 +435,8 @@ public class PauseMenuController : MonoBehaviour
         sliderRect.anchorMin = new Vector2(0.5f, 0.5f);
         sliderRect.anchorMax = new Vector2(0.5f, 0.5f);
         sliderRect.pivot = new Vector2(0.5f, 0.5f);
-        sliderRect.sizeDelta = new Vector2(320f, 18f);
-        sliderRect.anchoredPosition = new Vector2(150f, 0f);
+        sliderRect.sizeDelta = new Vector2(330f, 20f);
+        sliderRect.anchoredPosition = new Vector2(128f, 0f);
 
         Slider slider = sliderObj.AddComponent<Slider>();
         slider.direction = Slider.Direction.LeftToRight;
@@ -363,9 +475,9 @@ public class PauseMenuController : MonoBehaviour
 
         TextMeshProUGUI valueLabel = new GameObject("Val_" + label).AddComponent<TextMeshProUGUI>();
         valueLabel.transform.SetParent(row.transform, false);
-        valueLabel.fontSize = 20f;
+        valueLabel.fontSize = 22f;
         valueLabel.color = new Color(0.82f, 0.90f, 1f, 0.92f);
-        valueLabel.alignment = TextAlignmentOptions.MidlineLeft;
+        valueLabel.alignment = TextAlignmentOptions.Left;
         if (prismFont != null)
             valueLabel.font = prismFont;
         RectTransform valueRect = valueLabel.rectTransform;
@@ -373,7 +485,7 @@ public class PauseMenuController : MonoBehaviour
         valueRect.anchorMax = new Vector2(0.5f, 0.5f);
         valueRect.pivot = new Vector2(0f, 0.5f);
         valueRect.sizeDelta = new Vector2(90f, 30f);
-        valueRect.anchoredPosition = new Vector2(320f, 0f);
+        valueRect.anchoredPosition = new Vector2(306f, 0f);
 
         LookSensitivityRuntime.LoadFromPrefs();
         slider.SetValueWithoutNotify(LookSensitivityRuntime.SliderValue);
@@ -463,6 +575,8 @@ public class PauseMenuController : MonoBehaviour
     {
         if (mainPanel != null) mainPanel.SetActive(targetPanel == mainPanel);
         if (settingsPanel != null) settingsPanel.SetActive(targetPanel == settingsPanel);
+        if (targetPanel == settingsPanel && pauseSettingsScrollRect != null)
+            pauseSettingsScrollRect.verticalNormalizedPosition = 1f;
     }
 
     private string GetDifficultyLabel()

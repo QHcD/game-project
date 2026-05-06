@@ -44,7 +44,6 @@ public class DoorController : MonoBehaviour, IInteractable
 
     private Quaternion _closedRot;
     private Quaternion _openRot;
-    private bool       _hasOpened;
     private bool       _isOpen;
     private Coroutine  _swingRoutine;
 
@@ -74,7 +73,6 @@ public class DoorController : MonoBehaviour, IInteractable
     public void Open()
     {
         if (_isOpen) return;
-        _hasOpened = true;
         _isOpen    = true;
 
         if (_swingRoutine != null) StopCoroutine(_swingRoutine);
