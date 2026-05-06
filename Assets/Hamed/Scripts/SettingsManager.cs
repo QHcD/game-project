@@ -11,6 +11,10 @@ public static class SettingsManager
     public static readonly Color MenuBlue = new Color(0.32f, 0.56f, 0.96f, 1f);
     public static readonly Color MenuBlueDim = new Color(0.22f, 0.40f, 0.72f, 1f);
 
+    public const string VSyncKey = "VSync";
+    public const string FpsLimitKey = "FpsLimit";
+    public const string BrightnessKey = "Brightness";
+
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void ApplyDisplayPreferencesOnBoot()
     {
@@ -19,10 +23,12 @@ public static class SettingsManager
 
     public static void ApplyDisplayPreferences()
     {
-        int tier = Mathf.Clamp(PlayerPrefs.GetInt("GraphicsTier", 2), 0, 2);
+        int tier = Mathf.Clamp(PlayerPrefs.GetInt("GraphicsTier", 2), 0, 3);
+        int maxQuality = Mathf.Max(0, QualitySettings.names.Length - 1);
         int qualityLevel = tier == 0 ? 0 :
-            tier == 1 ? Mathf.Max(0, (QualitySettings.names.Length - 1) / 2) :
-            Mathf.Max(0, QualitySettings.names.Length - 1);
+            tier == 1 ? Mathf.Max(0, maxQuality / 2) :
+            tier == 2 ? Mathf.Max(0, maxQuality - 1) :
+            maxQuality;
         QualitySettings.SetQualityLevel(qualityLevel);
 
         bool fullscreen = PlayerPrefs.GetInt("Fullscreen", 1) == 1;
@@ -32,6 +38,22 @@ public static class SettingsManager
 
         if (Screen.fullScreen != fullscreen)
             Screen.fullScreen = fullscreen;
+
+        // VSync / FPS limit
+        bool vsync = PlayerPrefs.GetInt(VSyncKey, 1) == 1;
+        QualitySettings.vSyncCount = vsync ? 1 : 0;
+        PlayerPrefs.SetInt(VSyncKey, vsync ? 1 : 0);
+
+        int fps = PlayerPrefs.GetInt(FpsLimitKey, 60);
+        if (fps != 30 && fps != 60 && fps != 120 && fps != -1) fps = 60;
+        PlayerPrefs.SetInt(FpsLimitKey, fps);
+        Application.targetFrameRate = vsync ? -1 : fps;
+
+        // Brightness
+        float b = Mathf.Clamp01(PlayerPrefs.GetFloat(BrightnessKey, 1f));
+        PlayerPrefs.SetFloat(BrightnessKey, b);
+        PlayerPrefs.Save();
+        BrightnessRuntime.ApplyNow(b);
     }
 
     public static string FormatVolumePercent(float normalized01)

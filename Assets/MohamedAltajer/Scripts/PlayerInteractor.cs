@@ -21,7 +21,7 @@ public class PlayerInteractor : MonoBehaviour
 {
     [Header("Raycast")]
     [Tooltip("Maximum interaction distance in meters.")]
-    public float maxDistance = 3.5f;
+    public float maxDistance = 3f;
 
     [Tooltip("Interact key.")]
     public KeyCode interactKey = KeyCode.E;
@@ -34,6 +34,12 @@ public class PlayerInteractor : MonoBehaviour
 
     [Tooltip("Layers considered for interaction. Default = everything except UI/IgnoreRaycast.")]
     public LayerMask interactionMask = ~0;
+
+    [Header("Debug")]
+    [Tooltip("Temporary debug logs for door interaction issues.")]
+    public bool debugDoorInteraction = true;
+    [Tooltip("When true and E is pressed, logs all ray hits with layer + distance.")]
+    public bool debugLogAllHitsOnPress = true;
 
     private IInteractable    _currentTarget;
     private GameObject       _reticleRoot;
@@ -68,16 +74,28 @@ public class PlayerInteractor : MonoBehaviour
         if (cam == null) { HideReticle(); return; }
 
         Vector2 screenPoint = GetInteractionScreenPoint();
-        Ray ray = cam.ScreenPointToRay(screenPoint);
+        Ray ray = BuildInteractionRay(cam, screenPoint);
+        bool pressedThisFrame = WasInteractPressedThisFrame();
+        if (debugDoorInteraction && pressedThisFrame)
+        {
+            Debug.Log($"[PlayerInteractor] E pressed. origin={ray.origin} dir={ray.direction} maxDist={maxDistance} mask=0x{interactionMask.value:X}");
+            if (debugLogAllHitsOnPress)
+                DebugLogRaycastAll(ray, "PrimaryRay");
+        }
 
         if (TryGetInteractableHit(ray, out RaycastHit hit, out IInteractable interactable))
         {
+            if (debugDoorInteraction)
+            {
+                DoorController dc = hit.collider != null ? hit.collider.GetComponentInParent<DoorController>() : null;
+                Debug.Log($"[PlayerInteractor] InteractableHit: {(hit.collider != null ? hit.collider.name : "<null>")}  Root: {(hit.collider != null ? hit.collider.transform.root.name : "<null>")}  DoorControllerFound={dc != null}  Prompt=\"{interactable.GetPrompt()}\"  CanInteract={interactable.CanInteract}");
+            }
             _currentTarget = interactable;
             string clickHint = useMouseClick ? " / CLICK" : string.Empty;
             ShowReticle("[" + interactKey + "]" + clickHint + "  " + interactable.GetPrompt());
 
             bool useUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
-            bool pressed = WasInteractPressedThisFrame();
+            bool pressed = pressedThisFrame;
             if (useMouseClick && !pressed && !useUi)
             {
 #if ENABLE_INPUT_SYSTEM
@@ -94,8 +112,82 @@ public class PlayerInteractor : MonoBehaviour
             return;
         }
 
+        // Fallback from the player body itself. Third-person cameras sit behind
+        // the player, so a short 3m interaction ray can otherwise expire before
+        // reaching the door in front of the character.
+        Ray forwardRay = new Ray(transform.position + Vector3.up * 1.25f, transform.forward);
+        if (TryGetInteractableHit(forwardRay, out hit, out interactable))
+        {
+            if (debugDoorInteraction)
+            {
+                DoorController dc = hit.collider != null ? hit.collider.GetComponentInParent<DoorController>() : null;
+                Debug.Log($"[PlayerInteractor] InteractableForwardHit: {(hit.collider != null ? hit.collider.name : "<null>")}  Root: {(hit.collider != null ? hit.collider.transform.root.name : "<null>")}  DoorControllerFound={dc != null}  Prompt=\"{interactable.GetPrompt()}\"  CanInteract={interactable.CanInteract}");
+            }
+            _currentTarget = interactable;
+            string clickHint = useMouseClick ? " / CLICK" : string.Empty;
+            ShowReticle("[" + interactKey + "]" + clickHint + "  " + interactable.GetPrompt());
+
+            bool useUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+            bool pressed = pressedThisFrame;
+            if (useMouseClick && !pressed && !useUi)
+            {
+#if ENABLE_INPUT_SYSTEM
+                if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+                    pressed = true;
+#else
+                if (!pressed)
+                    pressed = UnityEngine.Input.GetMouseButtonDown(0);
+#endif
+            }
+
+            if (pressed)
+                interactable.Interact(gameObject);
+            return;
+        }
+
+        if (debugDoorInteraction && pressedThisFrame)
+        {
+            Debug.Log("[PlayerInteractor] E pressed but no interactable found within 3m.");
+            if (debugLogAllHitsOnPress)
+                DebugLogRaycastAll(forwardRay, "ForwardRay");
+        }
+
         _currentTarget = null;
         HideReticle();
+    }
+
+    private void DebugLogRaycastAll(Ray ray, string label)
+    {
+        RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, interactionMask, QueryTriggerInteraction.Collide);
+        if (hits == null || hits.Length == 0)
+        {
+            Debug.Log($"[PlayerInteractor] {label}: no hits.");
+            return;
+        }
+
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider c = hits[i].collider;
+            if (c == null) continue;
+            string layerName = LayerMask.LayerToName(c.gameObject.layer);
+            DoorController dc = c.GetComponentInParent<DoorController>();
+            IInteractable intr = FindInteractable(c);
+            Debug.Log($"[PlayerInteractor] {label} hit#{i}: name={c.name} root={c.transform.root.name} layer={c.gameObject.layer}({layerName}) dist={hits[i].distance:0.00} DoorController={dc != null} IInteractable={intr != null}");
+        }
+    }
+
+    private Ray BuildInteractionRay(Camera cam, Vector2 screenPoint)
+    {
+        bool freeCursor = Cursor.lockState != CursorLockMode.Locked || Cursor.visible;
+        if (rayFromMouseWhenCursorUnlocked && freeCursor)
+            return cam.ScreenPointToRay(screenPoint);
+
+        Vector3 origin = transform.position + Vector3.up * 1.25f;
+        Vector3 direction = cam.transform.forward;
+        if (direction.sqrMagnitude < 0.0001f)
+            direction = transform.forward;
+        return new Ray(origin, direction.normalized);
     }
 
     private static Camera ResolveInteractCamera()

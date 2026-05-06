@@ -99,7 +99,7 @@ public class CameraController : MonoBehaviour
 
     [Tooltip("SphereCast radius from the player neck/head to the desired camera position.")]
     [Range(0.05f, 0.5f)]
-    public float collisionRadius = 0.24f;
+    public float collisionRadius = 0.25f;
 
     [Tooltip("Minimum distance the camera is allowed to reach before close-space failsafe kicks in.")]
     public float minDistance = 0.35f;
@@ -147,6 +147,14 @@ public class CameraController : MonoBehaviour
 
     public static CameraController Instance { get; private set; }
 
+    [Header("External Yaw Override")]
+    [Tooltip("If true, the camera orbits using externalYaw instead of target.eulerAngles.y. " +
+             "Use this when player facing should follow movement direction, not camera orbit.")]
+    public bool useExternalYaw = false;
+
+    [Tooltip("External yaw in degrees (world-space). Only used when useExternalYaw is true.")]
+    public float externalYaw = 0f;
+
     private void Awake()
     {
         if (Instance != null && Instance != this)
@@ -163,7 +171,7 @@ public class CameraController : MonoBehaviour
         // Force near-clip to a sane value for third-person.
         // 0.01 can cause severe character clipping (seeing inside body/legs).
         Camera cam = GetComponent<Camera>();
-        if (cam != null) cam.nearClipPlane = 0.1f;
+        if (cam != null) cam.nearClipPlane = 0.08f;
 
         if (cam != null)
             defaultFieldOfView = cam.fieldOfView;
@@ -186,6 +194,9 @@ public class CameraController : MonoBehaviour
         ExcludeLayerIfExists("TransparentFX");
         ExcludeLayerIfExists("Ignore Raycast");
 
+        // IMPORTANT: treat "everything except excluded layers" as solid.
+        // The map/props in PRISM are not guaranteed to be on specific named layers,
+        // and the camera must not clip through any real geometry.
         collisionMask = BuildSolidCameraMask();
     }
 
@@ -231,7 +242,8 @@ public class CameraController : MonoBehaviour
 
         // ── Build orbit rotation ─────────────────────────────────────────────
         // Horizontal from the player's Y rotation, vertical from mouse pitch.
-        Quaternion orbitRot     = Quaternion.Euler(pitch, target.eulerAngles.y, 0f);
+        float yaw = useExternalYaw ? externalYaw : target.eulerAngles.y;
+        Quaternion orbitRot     = Quaternion.Euler(pitch, yaw, 0f);
         Vector3    desiredPos   = lookTarget + orbitRot * currentOffset;
 
         // ── Resolve wall collision ───────────────────────────────────────────
@@ -547,16 +559,36 @@ public class CameraController : MonoBehaviour
 
     private static LayerMask BuildSolidCameraMask()
     {
-        int mask = 0;
-        int environment = LayerMask.NameToLayer("Environment");
-        if (environment >= 0) mask |= 1 << environment;
-        mask |= 1 << 0; // Default
-        return mask;
+        // Start with everything and let runtime exclusions remove non-solids.
+        return ~0;
     }
 
     private static bool IsSolidCameraLayer(int layer)
     {
-        int environment = LayerMask.NameToLayer("Environment");
-        return layer == 0 || (environment >= 0 && layer == environment);
+        return layer == 0
+            || LayerMatches(layer, "Environment")
+            || LayerMatches(layer, "Map")
+            || LayerMatches(layer, "LevelContent")
+            || LayerMatches(layer, "Ground")
+            || LayerMatches(layer, "Terrain")
+            || LayerMatches(layer, "Wall")
+            || LayerMatches(layer, "Walls")
+            || LayerMatches(layer, "Prop")
+            || LayerMatches(layer, "Props")
+            || LayerMatches(layer, "Building")
+            || LayerMatches(layer, "Buildings");
+    }
+
+    private static void AddLayerIfExists(ref int mask, string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0)
+            mask |= 1 << layer;
+    }
+
+    private static bool LayerMatches(int layer, string layerName)
+    {
+        int namedLayer = LayerMask.NameToLayer(layerName);
+        return namedLayer >= 0 && layer == namedLayer;
     }
 }

@@ -10,16 +10,29 @@ using UnityEngine;
 /// </summary>
 public static class PlayerProfile
 {
-    private const string PrefKey = "PRISM_Username";
+    /// <summary>New unified Settings key (requested).</summary>
+    public const string PlayerNameKey = "PlayerName";
+
+    /// <summary>Legacy key kept for backwards compatibility.</summary>
+    private const string LegacyPrefKey = "PRISM_Username";
+
     public  const int    MinNameLength = 2;
     public  const int    MaxNameLength = 16;
-    public  const string DefaultUsername = "PRISM";
+    public  const string DefaultUsername = "Player";
 
     private static string _cached;
 
     static PlayerProfile()
     {
-        _cached = PlayerPrefs.GetString(PrefKey, string.Empty);
+        Reload();
+    }
+
+    // Ensures the cache is refreshed on every Play session even if the Editor
+    // has domain reload disabled (Enter Play Mode Options).
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void ReloadOnBoot()
+    {
+        Reload();
     }
 
     /// <summary>True once the player has saved a non-empty username.</summary>
@@ -34,10 +47,19 @@ public static class PlayerProfile
     public static void SetUsername(string raw)
     {
         string cleaned = Sanitize(raw);
-        if (string.IsNullOrEmpty(cleaned)) return;
+        if (string.IsNullOrEmpty(cleaned))
+        {
+            // Explicitly allow clearing by saving an empty string via settings UI.
+            _cached = string.Empty;
+            PlayerPrefs.SetString(PlayerNameKey, string.Empty);
+            PlayerPrefs.Save();
+            return;
+        }
 
         _cached = cleaned;
-        PlayerPrefs.SetString(PrefKey, cleaned);
+        PlayerPrefs.SetString(PlayerNameKey, cleaned);
+        // Keep legacy key in sync so older UI reads the same name.
+        PlayerPrefs.SetString(LegacyPrefKey, cleaned);
         PlayerPrefs.Save();
     }
 
@@ -45,14 +67,17 @@ public static class PlayerProfile
     public static void Clear()
     {
         _cached = string.Empty;
-        PlayerPrefs.DeleteKey(PrefKey);
+        PlayerPrefs.DeleteKey(PlayerNameKey);
+        PlayerPrefs.DeleteKey(LegacyPrefKey);
         PlayerPrefs.Save();
     }
 
     /// <summary>Refresh the in-memory cache from PlayerPrefs (useful after external edits).</summary>
     public static void Reload()
     {
-        _cached = PlayerPrefs.GetString(PrefKey, string.Empty);
+        // Prefer the new Settings key; fall back to legacy data if present.
+        _cached = PlayerPrefs.GetString(PlayerNameKey,
+            PlayerPrefs.GetString(LegacyPrefKey, string.Empty));
     }
 
     /// <summary>

@@ -33,8 +33,9 @@ public class PhotonLauncher : MonoBehaviour
     private void Awake()
     {
         MultiplayerMode.SetMultiplayer();
+        PlayerProfile.Reload();
         if (playerNameInput != null && string.IsNullOrWhiteSpace(playerNameInput.text))
-            playerNameInput.text = PlayerProfile.HasUsername ? PlayerProfile.Username : $"Player{Random.Range(1000, 9999)}";
+            playerNameInput.text = PlayerProfile.HasUsername ? PlayerProfile.Username : "Player";
 
         SetStatus("Enter a name, then play online.");
     }
@@ -218,11 +219,17 @@ public class PhotonLauncher : MonoBehaviour
 
     private void ApplyPlayerName()
     {
+        PlayerProfile.Reload();
         string playerName = playerNameInput != null ? playerNameInput.text : string.Empty;
-        playerName = string.IsNullOrWhiteSpace(playerName) ? $"Player{Random.Range(1000, 9999)}" : playerName.Trim();
-        PlayerProfile.SetUsername(playerName);
+        playerName = string.IsNullOrWhiteSpace(playerName) ? PlayerProfile.Username : playerName.Trim();
+        if (string.IsNullOrWhiteSpace(playerName))
+            playerName = PlayerProfile.DefaultUsername;
+
+        PlayerPrefs.SetString(PlayerProfile.PlayerNameKey, playerName);
+        PlayerPrefs.Save();
+        PlayerProfile.Reload();
 #if PUN_2_OR_NEWER
-        PhotonNetwork.NickName = playerName;
+        PhotonNetwork.NickName = PlayerProfile.Username;
 #endif
     }
 

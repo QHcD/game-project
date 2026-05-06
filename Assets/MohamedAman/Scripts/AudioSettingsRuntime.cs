@@ -5,6 +5,8 @@ public static class AudioSettingsRuntime
     public const string MasterKey = "MasterVol";
     public const string MusicKey = "MusicVol";
     public const string SfxKey = "SFXVol";
+    public const string UiKey = "UIVol";
+    public const string MuteAllKey = "MuteAll";
 
     /// <summary>Dial for menu BGM vs SFX balance (music slider scales on top).</summary>
     public const float MenuLobbyMusicDesignMix = 0.55f;
@@ -15,6 +17,8 @@ public static class AudioSettingsRuntime
     public static float MasterVolume => Mathf.Clamp01(PlayerPrefs.GetFloat(MasterKey, 0.8f));
     public static float MusicVolume => Mathf.Clamp01(PlayerPrefs.GetFloat(MusicKey, 0.8f));
     public static float SfxVolume => Mathf.Clamp01(PlayerPrefs.GetFloat(SfxKey, 0.8f));
+    public static float UiVolume => Mathf.Clamp01(PlayerPrefs.GetFloat(UiKey, 0.8f));
+    public static bool MuteAll => PlayerPrefs.GetInt(MuteAllKey, 0) == 1;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void NormalizeAudioPrefs()
@@ -22,6 +26,12 @@ public static class AudioSettingsRuntime
         if (!PlayerPrefs.HasKey(MusicKey))
         {
             PlayerPrefs.SetFloat(MusicKey, 0.8f);
+            PlayerPrefs.Save();
+        }
+
+        if (!PlayerPrefs.HasKey(UiKey))
+        {
+            PlayerPrefs.SetFloat(UiKey, 0.8f);
             PlayerPrefs.Save();
         }
 
@@ -60,7 +70,7 @@ public static class AudioSettingsRuntime
 
     public static void ApplyListenerVolume()
     {
-        AudioListener.volume = MasterVolume;
+        AudioListener.volume = MuteAll ? 0f : MasterVolume;
         RefreshMenuLobbyMusicIfPresent();
     }
 
@@ -72,5 +82,10 @@ public static class AudioSettingsRuntime
     public static float ScaledSfx(float baseVolume = 1f)
     {
         return Mathf.Clamp01(baseVolume) * SfxVolume;
+    }
+
+    public static float ScaledUi(float baseVolume = 1f)
+    {
+        return Mathf.Clamp01(baseVolume) * UiVolume;
     }
 }

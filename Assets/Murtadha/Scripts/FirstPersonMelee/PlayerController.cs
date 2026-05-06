@@ -86,6 +86,9 @@ public class PlayerController : MonoBehaviour
     [Tooltip("How fast the character brakes to zero (units/s²). High value stops the player from sliding on key release.")]
     public float deceleration = 32f;
 
+    [Tooltip("How quickly the character rotates to face movement direction (deg/sec).")]
+    public float turnSpeed = 720f;
+
     [Header("Tactical Maneuvers")]
     public float crouchHeight = 1.3f;
     public float proneHeight = 0.7f;
@@ -109,13 +112,13 @@ public class PlayerController : MonoBehaviour
     public float proneBodyYOffset = -0.62f;
 
     [Header("Black Ops 3 Maneuvers")]
-    [Tooltip("Peak hop height in meters at the start of a flip (Z key). Was 6.5 — that lifted the player ~6.5 m, well above any room ceiling, and was the root cause of the post-flip ground clipping.")]
+    [Tooltip("Legacy serialized flip impulse. The current Z dodge roll is grounded and does not launch upward.")]
     public float flipVerticalImpulse = 1.4f;
-    [Tooltip("Forward boost applied at the start of a flip (Z key). Tuned for a controllable dash, not a launch.")]
+    [Tooltip("Forward boost applied at the start of the grounded dodge roll (Z key).")]
     public float flipForwardBoost = 5.5f;
-    [Tooltip("How long the flip rotation animation plays (seconds). Shorter = faster recovery of player control.")]
+    [Tooltip("How long the dodge roll body animation plays.")]
     public float flipDuration = 0.42f;
-    [Tooltip("Cooldown between flips (seconds).")]
+    [Tooltip("Cooldown between dodge rolls.")]
     public float flipCooldown = 0.9f;
     [Tooltip("Body Y offset while crawling — tiny because the body lies flat.")]
     public float proneCrawlBodyYOffset = -0.05f;
@@ -269,7 +272,7 @@ public class PlayerController : MonoBehaviour
     private bool isSliding;
     private bool isMantling;
     private bool isFlipping;
-    private bool sprintToggled; // Latched by tapping C — like CoD/BO3 sprint hold-to-toggle.
+    private bool sprintToggled; // Legacy sprint latch kept for any existing callers.
     private float slideTimer;
     private float slideCooldownTimer;
     private float thrusterCooldownTimer;
@@ -387,6 +390,8 @@ public class PlayerController : MonoBehaviour
 
         controller  = GetComponent<CharacterController>();
         audioSource = GetComponent<AudioSource>();
+        if (GetComponent<PlayerInteractor>() == null)
+            gameObject.AddComponent<PlayerInteractor>();
 
         if (controller != null)
         {
@@ -774,9 +779,8 @@ public class PlayerController : MonoBehaviour
     private void EnforceFloorClamp()
     {
         if (isMantling) return; // Mantle owns transform during the lerp.
-        // NOTE: intentionally runs during flips — the flip arc goes UP, not down,
-        // so hitting the sink condition (capsule bottom below floor) while flipping
-        // means something else pushed us underground. Fix it immediately.
+        // NOTE: intentionally runs during tactical moves so any sink condition
+        // (capsule bottom below floor) is fixed immediately.
 
         // Probe from inside the capsule downward to find the real floor.
         Vector3 castOrigin = transform.position
@@ -818,7 +822,7 @@ public class PlayerController : MonoBehaviour
     /// </summary>
     private void SnapCharacterToGroundNavMesh()
     {
-        if (controller == null || !controller.enabled || isFlipping) return;
+        if (controller == null || !controller.enabled) return;
         if (EndMatchCinematic.GameplayLocked) return;
 
         Vector3 sampleOrigin = transform.position + Vector3.up * 0.25f;
@@ -866,22 +870,18 @@ public class PlayerController : MonoBehaviour
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
                 TryThrusterJumpOrQueueNormalJump();
 
-            // ─── Black Ops 3 maneuver layout ─────────────────────────────────
-            //   Z = FLIP   (combat flip — short hop + forward boost + 360° pitch)
-            //   X = SLIDE  (power slide along the ground while moving)
-            //   C = SPRINT (toggle a permanent sprint until you release W)
-            //   V = CRAWL  (toggle prone — body lies flat instead of digging in)
+            // Current tactical layout: C = prone, X = slide, Z = grounded dodge roll, V = tactical placeholder.
             if (Keyboard.current.zKey.wasPressedThisFrame)
-                TryStartFlip();
+                TryStartDodgeRoll();
 
             if (Keyboard.current.xKey.wasPressedThisFrame)
                 TryStartSlide();
 
             if (Keyboard.current.cKey.wasPressedThisFrame)
-                ToggleSprintLock();
+                ToggleCrawl();
 
             if (Keyboard.current.vKey.wasPressedThisFrame)
-                ToggleCrawl();
+                TriggerTacticalAbilityPlaceholder();
 
             // Optional auxiliaries kept on Left Control / Left Alt so existing
             // muscle memory still resolves to the right action.
@@ -1186,9 +1186,7 @@ public class PlayerController : MonoBehaviour
         else if (isProne) targetSpeed *= proneSpeedMultiplier;
         else if (isCrouching) targetSpeed *= crouchSpeedMultiplier;
 
-        // Flip preserves the boost velocity assigned by TryStartFlip — we
-        // don't let WASD accelerate it (so the spin reads cleanly), but
-        // gravity below still ticks normally so the player lands.
+        // Dodge roll preserves its short boost so WASD cannot over-accelerate it.
         if (!isFlipping)
         {
             Vector3 moveDirection = GetCameraRelativeMoveDirection(moveInputSmoothed);
@@ -1206,18 +1204,11 @@ public class PlayerController : MonoBehaviour
             horizontalDelta = ClampHorizontalMoveAgainstStatics(horizontalDelta);
 
         bool jumpFeetGrounded = IsGroundedForJump();
-        // Guard: while the flip coroutine owns the vertical impulse, do NOT
-        // reset it to -2f. isGrounded is captured at the very top of Update
-        // (before HandleActionInput), so it is still true on the same frame
-        // that TryStartFlip sets verticalVelocity.y to the launch impulse.
-        // Without this guard the -2f overwrite fires immediately, the player
-        // never leaves the ground, and the high horizontal boost drives them
-        // into the floor geometry instead of arcing cleanly over it.
-        if (!isFlipping && (isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f)))
+        if (isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f))
         {
             verticalVelocity.y = -2f;
 
-            if (jumpRequested && !isProne && !isSliding && jumpFeetGrounded)
+            if (jumpRequested && !isProne && !isSliding && !isFlipping && jumpFeetGrounded)
             {
                 verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
                 isGrounded = false;
@@ -1246,18 +1237,19 @@ public class PlayerController : MonoBehaviour
 
         wasMoving = actualHorizontalVelocity.sqrMagnitude > 0.01f;
 
-        // While flipping, the FlipRoutine owns the body's local rotation —
-        // skip the world-yaw snap so the spin isn't immediately overwritten.
-        if (isThirdPersonActive && thirdPersonBody != null && !isFlipping)
+        // Stable facing: rotate the character root toward the movement direction.
+        // The camera orbits independently (CameraController externalYaw).
+        if (!isFlipping && !isMantling)
         {
             Vector3 moveFlat = actualHorizontalVelocity;
+            moveFlat.y = 0f;
             if (moveFlat.sqrMagnitude > 0.01f)
             {
-                float targetY = Quaternion.LookRotation(moveFlat).eulerAngles.y;
-                thirdPersonBody.transform.rotation = Quaternion.Slerp(
-                    thirdPersonBody.transform.rotation,
-                    Quaternion.Euler(0f, targetY, 0f),
-                    40f * Time.deltaTime);
+                Quaternion targetRot = Quaternion.LookRotation(moveFlat.normalized, Vector3.up);
+                transform.rotation = Quaternion.RotateTowards(
+                    transform.rotation,
+                    Quaternion.Euler(0f, targetRot.eulerAngles.y, 0f),
+                    Mathf.Max(1f, turnSpeed) * Time.deltaTime);
             }
         }
     }
@@ -1411,13 +1403,18 @@ public class PlayerController : MonoBehaviour
         }
 
         cameraYaw += mouseX;
-        transform.rotation = Quaternion.Euler(0f, cameraYaw, 0f);
 
         if (isThirdPersonActive && runtimeThirdPersonCamera != null)
         {
             CameraController orbitCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
             if (orbitCtrl != null)
+            {
+                // Decouple camera orbit yaw from player facing so the character can
+                // smoothly rotate toward movement direction without camera-driven flips.
+                orbitCtrl.useExternalYaw = true;
+                orbitCtrl.externalYaw = cameraYaw;
                 orbitCtrl.pitch = cameraPitch;
+            }
         }
         else if (!isThirdPersonActive && firstPersonCam != null)
         {
@@ -1579,7 +1576,7 @@ public class PlayerController : MonoBehaviour
     /// </summary>
     private void ToggleCrawl()
     {
-        if (isMantling || isFlipping) return;
+        if (isMantling || isSliding || isFlipping) return;
         isProne = !isProne;
         if (isProne)
         {
@@ -1592,26 +1589,29 @@ public class PlayerController : MonoBehaviour
     // Kept for backwards-compat with any callers that still hit the old name.
     private void ToggleProne() => ToggleCrawl();
 
-    /// <summary>Toggle the sprint lock (CoD/BO3 style — tap C to keep sprinting).</summary>
+    /// <summary>Legacy sprint lock helper kept for any old callers.</summary>
     private void ToggleSprintLock()
     {
         if (isProne || isSliding || isMantling || isFlipping) return;
         sprintToggled = !sprintToggled;
     }
 
-    /// <summary>
-    /// Performs a Black Ops 3 style combat flip — a short upward hop with a
-    /// forward boost and a full pitched 360° rotation on the body mesh. Cannot
-    /// chain into another flip until <see cref="flipCooldown"/> elapses.
-    /// </summary>
-    private void TryStartFlip()
+    private void TriggerTacticalAbilityPlaceholder()
     {
-        if (isMantling || isSliding || isFlipping) return;
+        Debug.Log("[PlayerController] Tactical ability placeholder triggered.", this);
+    }
+
+    /// <summary>
+    /// Performs a grounded dodge roll with a short horizontal boost and visual
+    /// body rotation. Cannot chain into another roll until <see cref="flipCooldown"/> elapses.
+    /// </summary>
+    private void TryStartDodgeRoll()
+    {
+        if (isMantling || isProne || isSliding || isFlipping) return;
         if (flipCooldownTimer > 0f) return;
         if (controller == null || !controller.enabled) return;
+        if (!IsGroundedForJump()) return;
 
-        // Cancel any conflicting stance — you can't flip while crawling.
-        isProne     = false;
         isCrouching = false;
 
         // Forward direction in world space — falls back to the player's
@@ -1623,22 +1623,21 @@ public class PlayerController : MonoBehaviour
         forward.y = 0f;
         if (forward.sqrMagnitude < 0.001f) forward = transform.forward;
 
-        verticalVelocity.y = Mathf.Sqrt(Mathf.Max(0.01f, flipVerticalImpulse) * -2f * gravity);
+        verticalVelocity.y = -2f;
         horizontalVelocity = forward.normalized * flipForwardBoost;
         flipCooldownTimer  = flipCooldown;
 
         if (flipCoroutine != null) StopCoroutine(flipCoroutine);
-        flipCoroutine = StartCoroutine(FlipRoutine(forward));
+        flipCoroutine = StartCoroutine(DodgeRollRoutine(forward));
     }
 
-    private System.Collections.IEnumerator FlipRoutine(Vector3 worldForward)
+    private System.Collections.IEnumerator DodgeRollRoutine(Vector3 worldForward)
     {
         isFlipping = true;
         jumpRequested = false;
 
-        // Reference axis to rotate around (always perpendicular to the
-        // world-up + forward plane so the spin reads as a clean front flip).
-        // We rotate the body's *local* X axis through 360° over the duration.
+        // Reference axis to rotate around for the roll body pose.
+        // We rotate the body's local X axis through 360 degrees over the duration.
         Quaternion baseLocal = thirdPersonBodyBaseLocalRotation;
 
         float elapsed  = 0f;
@@ -1652,6 +1651,8 @@ public class PlayerController : MonoBehaviour
             float angle = ease * 360f;
             if (thirdPersonBody != null)
                 thirdPersonBody.transform.localRotation = baseLocal * Quaternion.AngleAxis(angle, Vector3.right);
+            if (controller != null && controller.isGrounded && verticalVelocity.y < -2f)
+                verticalVelocity.y = -2f;
             yield return null;
         }
 
@@ -1661,12 +1662,11 @@ public class PlayerController : MonoBehaviour
         isFlipping = false;
         flipCoroutine = null;
 
-        // Do NOT slam vertical velocity to -2: that discontinuity used to trigger
-        // the SnapToArenaFloor downward-teleport bug. Keep whatever velocity the
-        // arc finished with so gravity / the CharacterController land naturally.
+        // Keep a grounded downward bias without launching or snapping the player.
         // Drop nearly all residual horizontal boost so WASD input is responsive
-        // again the instant the flip ends (was 0.4 = 40 % carry-over → felt
-        // uncontrollable).
+        // again the instant the roll ends.
+        if (verticalVelocity.y < 0f)
+            verticalVelocity.y = -2f;
         horizontalVelocity *= 0.15f;
         SnapRootAboveFloorImmediate();
     }
@@ -1676,8 +1676,7 @@ public class PlayerController : MonoBehaviour
         if (controller == null) return;
 
         Vector3 p = transform.position;
-        // Cast distance must reach the floor even from the flip arc peak (~6.5 m).
-        // Use 10 m so it works regardless of jump / flip height.
+        // Use a generous cast so this works after jumps and short tactical moves.
         Vector3 origin = p + Vector3.up * 0.35f;
         int groundMask = BuildGroundCheckMask();
         if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 10f, groundMask, QueryTriggerInteraction.Ignore))
@@ -1712,7 +1711,7 @@ public class PlayerController : MonoBehaviour
     private void TryStartSlide()
     {
         if (isMantling || isProne || isSliding || isFlipping) return;
-        if (!isGrounded) return;
+        if (!IsGroundedForJump()) return;
         if (slideCooldownTimer > 0f) return;
         if (moveInputSmoothed.sqrMagnitude < 0.1f) return;
 
@@ -1861,7 +1860,7 @@ public class PlayerController : MonoBehaviour
         controller.center = Vector3.Lerp(controller.center, targetControllerCenter, stanceTransitionSpeed * Time.deltaTime);
         controller.stepOffset = controller.height > 1.6f ? 0.5f : 0.05f;
 
-        // While the FlipRoutine is animating the body, leave its rotation alone
+        // While the dodge roll routine is animating the body, leave its rotation alone
         // so we don't fight it for the local rotation slot.
         if (isFlipping) return;
 
@@ -2624,15 +2623,10 @@ public class PlayerController : MonoBehaviour
     private void SnapToArenaFloor()
     {
         if (controller == null) return;
-        if (isFlipping) return;
-
         // Only fix the case where the capsule bottom has sunk BELOW the physics
-        // surface — never pull an airborne player downward.  Doing so while
-        // isFlipping just became false caused a 112 m/s force-teleport that
-        // bypassed CharacterController physics and drove the player underground.
-        // Normal falling is handled entirely by gravity in ApplyMovement.
+        // surface. Normal falling is handled entirely by gravity in ApplyMovement.
         if (!isGrounded) return;
-        // Also skip while the player has upward momentum (jumping / start of flip).
+        // Also skip while the player has upward momentum from a normal jump.
         if (verticalVelocity.y > 0.1f) return;
 
         int groundMask = BuildGroundCheckMask();
@@ -2672,7 +2666,7 @@ public class PlayerController : MonoBehaviour
     private void EnforceGroundYLock()
     {
         if (controller == null || !controller.enabled) return;
-        if (isFlipping || isMantling) return;
+        if (isMantling) return;
         if (!controller.isGrounded) return;
         if (verticalVelocity.y > 0.05f) return; // jumping — don't clamp
 
@@ -2906,10 +2900,10 @@ public class PlayerController : MonoBehaviour
         follow.enableCollision = true;
         follow.minDistance = 0.35f;
         follow.minHeightAboveGround = 0.55f;
-        follow.collisionRadius = 0.2f;
-        follow.wallPadding = 0.16f;
+        follow.collisionRadius = 0.25f;
+        follow.wallPadding = 0.18f;
         follow.pullInSpeed = 0.035f;
-        follow.recoverySmoothTime = 0.06f;
+        follow.recoverySmoothTime = 0.12f;
         follow.closeDistanceFailsafe = 0.5f;
         follow.closeSpaceHeightBoost = 0.35f;
         follow.closeSpaceFieldOfView = 76f;
@@ -2918,7 +2912,7 @@ public class PlayerController : MonoBehaviour
         if (cam != null)
         {
             cam.fieldOfView = 68f;
-            cam.nearClipPlane = 0.03f;
+            cam.nearClipPlane = 0.08f;
         }
     }
 
@@ -3438,18 +3432,9 @@ public class PlayerController : MonoBehaviour
 
     private static Transform FindPlayerHandBone(GameObject body)
     {
-        // ── Priority 1: explicit weapon/hand sockets authored on the rig ────
-        foreach (string boneName in PlayerHandBoneNames)
-        {
-            Transform found = FindBoneExact(body.transform, boneName);
-            if (found != null)
-            {
-                Debug.Log($"[PlayerController] Hand bone found via name search: '{found.name}'");
-                return found;
-            }
-        }
-
-        // ── Priority 2: Humanoid avatar API fallback ───────────────────────
+        // ── Priority 1: Humanoid avatar API (true hand bone) ───────────────
+        // Fixes weapons attaching to carry/sheath tags like "tag_weapon_right"
+        // that can live on the back for some rigs.
         Animator anim = body.GetComponentInChildren<Animator>(true);
         if (anim != null && anim.isHuman)
         {
@@ -3458,6 +3443,17 @@ public class PlayerController : MonoBehaviour
             {
                 Debug.Log($"[PlayerController] Hand bone found via Animator API: '{bone.name}'");
                 return bone;
+            }
+        }
+
+        // ── Priority 2: explicit weapon/hand sockets authored on the rig ────
+        foreach (string boneName in PlayerHandBoneNames)
+        {
+            Transform found = FindBoneExact(body.transform, boneName);
+            if (found != null)
+            {
+                Debug.Log($"[PlayerController] Hand bone found via name search: '{found.name}'");
+                return found;
             }
         }
 
@@ -3721,6 +3717,19 @@ public class PlayerController : MonoBehaviour
     private static Transform ResolveHandBone(GameObject body, int weaponLevel = -1)
     {
         if (body == null) return null;
+
+        // Prefer the real humanoid hand bone when available; some rigs include
+        // carry/sheath tags (e.g. "tag_weapon_right") that may live on the back.
+        Animator humanoid = body.GetComponentInChildren<Animator>(true);
+        if (humanoid != null && humanoid.isHuman)
+        {
+            Transform rh = humanoid.GetBoneTransform(HumanBodyBones.RightHand);
+            if (rh != null)
+            {
+                Debug.Log($"[PlayerController] ResolveHandBone: using humanoid RightHand '{rh.name}'");
+                return rh;
+            }
+        }
 
         if (weaponLevel == 13)
         {

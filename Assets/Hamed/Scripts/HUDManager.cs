@@ -487,7 +487,7 @@ public class HUDManager : MonoBehaviour
             20f, FontStyles.Bold, TextAlignmentOptions.Left);
         nameTmp.text = "  " + hudName;
         nameTmp.color = new Color(0.96f, 0.97f, 1f, 1f);
-        nameTmp.enableWordWrapping = false;
+        nameTmp.textWrappingMode = TextWrappingModes.NoWrap;
         if (prismFont != null) nameTmp.font = prismFont;
     }
 
