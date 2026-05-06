@@ -17,7 +17,7 @@ using Photon.Pun;
 /// </summary>
 public class PlayerController : MonoBehaviour
 {
-    private const string WeaponSocketName = "__PlayerWeaponSocket";
+    private const string WeaponSocketName = "PlayerRightHandWeaponSocket";
     private const string ChainsawSocketName = "__PlayerChainsawSocket";
     private const string RuntimeThirdPersonCameraName = "RuntimeThirdPersonCamera";
     private const float ThirdPersonMinPitch = -12f;
@@ -40,13 +40,9 @@ public class PlayerController : MonoBehaviour
     private static readonly Vector3 DefaultLevel12SawGripLocalEuler = WeaponLoadoutCatalog.ChainsawPlayerLocalEuler;
     private static readonly Vector3 PlayerChainsawGripLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
     private static readonly Vector3 PlayerChainsawGripLocalEuler = new Vector3(-177.177f, -175.886f, 88.481f);
-    // Katana grip pose applied to the third-person RightHand bone.
-    // (0.3, -0.4, 0.6) in hand-local space seats the hilt in the palm;
-    // Euler (0, 90, 0) points the blade along the hand's forward axis.
-    // These match the FP viewmodel offset so the weapon reads consistently
-    // in both perspectives.
-    private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(0.3f, -0.4f, 0.6f);
-    private static readonly Vector3 PlayerKatanaGripLocalEuler    = new Vector3(0f, 90f, 0f);
+    // Katana grip pose mirrors the enemy's compact hand-socket basis.
+    private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(-0.035f, -0.0025f, 0f);
+    private static readonly Vector3 PlayerKatanaGripLocalEuler    = new Vector3(0f, 180f, 90f);
 
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
@@ -69,8 +65,8 @@ public class PlayerController : MonoBehaviour
     [Tooltip("Left stick input below this magnitude is ignored so controller drift cannot bias movement.")]
     [Range(0f, 1f)] public float gamepadMoveDeadzone = 0.2f;
 
-    [Tooltip("Temporary: logs raw and camera-relative movement when W-only is pressed.")]
-    public bool debugWOnlyMovement = true;
+    [Tooltip("Optional movement-input diagnostic for comparing WASD and arrow-key facing.")]
+    public bool debugMovementInput = false;
 
     [Header("Animation")]
     [Tooltip("Animator controller for the spawned third-person body.")]
@@ -295,7 +291,7 @@ public class PlayerController : MonoBehaviour
     private Quaternion firstPersonLocalRot;
     private Camera runtimeThirdPersonCamera;
     private bool isThirdPersonActive;
-    private float nextWOnlyMoveDebugLogTime;
+    private float nextMovementInputDebugLogTime;
 
     // Head bob
     private float headBobTimer;
@@ -327,6 +323,7 @@ public class PlayerController : MonoBehaviour
     private int equippedWeaponLevel = -1;
     private bool weaponAttachInProgress;
     private WeaponHitbox equippedWeaponHitbox;
+    private WeaponEquipper playerWeaponEquipper;
     private Coroutine weaponHitboxRoutine;
     private bool gripTuningMode;
 #if PHOTON_UNITY_NETWORKING
@@ -733,21 +730,10 @@ public class PlayerController : MonoBehaviour
         if (thirdPersonBody == null)
             return;
 
-        if (!wasMoving)
-        {
-            thirdPersonBody.transform.localRotation = Quaternion.Slerp(
-                thirdPersonBody.transform.localRotation,
-                thirdPersonBodyBaseLocalRotation,
-                18f * Time.deltaTime);
-            return;
-        }
-
-        Vector3 currentLocalEuler = thirdPersonBody.transform.localEulerAngles;
-        Vector3 baseLocalEuler = thirdPersonBodyBaseLocalRotation.eulerAngles;
-        thirdPersonBody.transform.localRotation = Quaternion.Euler(
-            baseLocalEuler.x,
-            currentLocalEuler.y,
-            baseLocalEuler.z);
+        thirdPersonBody.transform.localRotation = Quaternion.Slerp(
+            thirdPersonBody.transform.localRotation,
+            thirdPersonBodyBaseLocalRotation,
+            18f * Time.deltaTime);
     }
 
     // ── Anti-Sink + Anti-Flip enforcement (runs every physics tick) ────────
@@ -905,9 +891,9 @@ public class PlayerController : MonoBehaviour
     /// </summary>
     private Vector2 ReadMovementInput()
     {
-        Vector2 keyboard = ReadKeyboardMovementVector();
+        Vector2 keyboard = BuildNormalizedKeyboardMoveInput();
         if (keyboard.sqrMagnitude > 0.0001f)
-            return Vector2.ClampMagnitude(keyboard, 1f);
+            return keyboard;
 
         if (Gamepad.current != null)
         {
@@ -920,7 +906,7 @@ public class PlayerController : MonoBehaviour
         return Vector2.zero;
     }
 
-    private static Vector2 ReadKeyboardMovementVector()
+    private static Vector2 BuildNormalizedKeyboardMoveInput()
     {
         if (Keyboard.current == null) return Vector2.zero;
 
@@ -932,7 +918,27 @@ public class PlayerController : MonoBehaviour
         if (k.aKey.isPressed || k.leftArrowKey.isPressed || k.numpad4Key.isPressed) m.x -= 1f;
         if (k.dKey.isPressed || k.rightArrowKey.isPressed || k.numpad6Key.isPressed) m.x += 1f;
 
-        return m;
+        return Vector2.ClampMagnitude(m, 1f);
+    }
+
+    private static string GetMovementDebugKeyPressed()
+    {
+        if (Keyboard.current == null) return "None";
+
+        Keyboard k = Keyboard.current;
+        if (k.wKey.isPressed) return "W";
+        if (k.upArrowKey.isPressed) return "UpArrow";
+        if (k.sKey.isPressed) return "S";
+        if (k.downArrowKey.isPressed) return "DownArrow";
+        if (k.aKey.isPressed) return "A";
+        if (k.leftArrowKey.isPressed) return "LeftArrow";
+        if (k.dKey.isPressed) return "D";
+        if (k.rightArrowKey.isPressed) return "RightArrow";
+        if (k.numpad8Key.isPressed) return "Numpad8";
+        if (k.numpad2Key.isPressed) return "Numpad2";
+        if (k.numpad4Key.isPressed) return "Numpad4";
+        if (k.numpad6Key.isPressed) return "Numpad6";
+        return "None";
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1190,12 +1196,22 @@ public class PlayerController : MonoBehaviour
         if (!isFlipping)
         {
             Vector3 moveDirection = GetCameraRelativeMoveDirection(moveInputSmoothed);
-            DebugWOnlyMovement(moveDirection);
             Vector3 targetVelocity = moveDirection * targetSpeed;
 
             float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
             horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
             horizontalVelocity = DampHorizontalVelocityIntoWalls(horizontalVelocity);
+
+            if (moveDirection.sqrMagnitude > 0.0001f && !isMantling)
+            {
+                Quaternion targetRotation = Quaternion.LookRotation(moveDirection.normalized, Vector3.up);
+                transform.rotation = Quaternion.RotateTowards(
+                    transform.rotation,
+                    Quaternion.Euler(0f, targetRotation.eulerAngles.y, 0f),
+                    Mathf.Max(1f, turnSpeed) * Time.deltaTime);
+            }
+
+            DebugMovementInput(moveDirection);
         }
 
         Vector3 horizontalDelta = horizontalVelocity * Time.deltaTime;
@@ -1235,23 +1251,7 @@ public class PlayerController : MonoBehaviour
             ? frameDisplacement / Time.deltaTime
             : Vector3.zero;
 
-        wasMoving = actualHorizontalVelocity.sqrMagnitude > 0.01f;
-
-        // Stable facing: rotate the character root toward the movement direction.
-        // The camera orbits independently (CameraController externalYaw).
-        if (!isFlipping && !isMantling)
-        {
-            Vector3 moveFlat = actualHorizontalVelocity;
-            moveFlat.y = 0f;
-            if (moveFlat.sqrMagnitude > 0.01f)
-            {
-                Quaternion targetRot = Quaternion.LookRotation(moveFlat.normalized, Vector3.up);
-                transform.rotation = Quaternion.RotateTowards(
-                    transform.rotation,
-                    Quaternion.Euler(0f, targetRot.eulerAngles.y, 0f),
-                    Mathf.Max(1f, turnSpeed) * Time.deltaTime);
-            }
-        }
+        wasMoving = moveInputSmoothed.sqrMagnitude > 0.01f;
     }
 
     private Vector3 GetCameraRelativeMoveDirection(Vector2 input)
@@ -1271,28 +1271,18 @@ public class PlayerController : MonoBehaviour
             : moveDirection;
     }
 
-    private void DebugWOnlyMovement(Vector3 moveDirection)
+    private void DebugMovementInput(Vector3 moveDirection)
     {
-        if (!debugWOnlyMovement || Time.time < nextWOnlyMoveDebugLogTime)
+        if (!debugMovementInput || Time.time < nextMovementInputDebugLogTime)
             return;
 
-        if (!IsKeyboardWOnlyMovement())
-            return;
-
-        nextWOnlyMoveDebugLogTime = Time.time + 0.35f;
-        Debug.Log($"[PlayerController] W-only moveInputRaw={moveInputRaw} finalMoveDirection={moveDirection}");
-    }
-
-    private static bool IsKeyboardWOnlyMovement()
-    {
-        if (Keyboard.current == null) return false;
-
-        Keyboard k = Keyboard.current;
-        bool forward = k.wKey.isPressed || k.upArrowKey.isPressed || k.numpad8Key.isPressed;
-        bool back = k.sKey.isPressed || k.downArrowKey.isPressed || k.numpad2Key.isPressed;
-        bool left = k.aKey.isPressed || k.leftArrowKey.isPressed || k.numpad4Key.isPressed;
-        bool right = k.dKey.isPressed || k.rightArrowKey.isPressed || k.numpad6Key.isPressed;
-        return forward && !back && !left && !right;
+        float bodyYaw = thirdPersonBody != null ? thirdPersonBody.transform.eulerAngles.y : -1f;
+        nextMovementInputDebugLogTime = Time.time + 0.35f;
+        Debug.Log($"[PlayerController] keyPressed={GetMovementDebugKeyPressed()}, " +
+                  $"rawInput=({moveInputRaw.x:0.###},{moveInputRaw.y:0.###}), " +
+                  $"finalMoveInput=({moveInputSmoothed.x:0.###},{moveInputSmoothed.y:0.###}), " +
+                  $"finalMoveDirection=({moveDirection.x:0.###},{moveDirection.z:0.###}), " +
+                  $"rootYaw={transform.eulerAngles.y:0.###}, bodyYaw={bodyYaw:0.###}");
     }
 
     private Vector3 GetActualHorizontalVelocity()
@@ -2956,7 +2946,7 @@ public class PlayerController : MonoBehaviour
             thirdPersonBody = Instantiate(roninBodyPrefab, transform);
             thirdPersonBody.name = "ThirdPersonBody";
             thirdPersonBody.transform.localPosition = Vector3.zero;
-            thirdPersonBody.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+            thirdPersonBody.transform.localRotation = Quaternion.identity;
             thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
             thirdPersonBodyBaseLocalRotation = thirdPersonBody.transform.localRotation;
             NormalizeBodyScale(thirdPersonBody, 1.8f);
@@ -3540,15 +3530,6 @@ public class PlayerController : MonoBehaviour
         bool katanaStyle = level == 2
             || (prefab != null && prefab.name.ToLowerInvariant().Contains("katana"));
         Transform weaponParent = GetOrCreateWeaponSocket(handBone);
-        if (katanaStyle)
-        {
-            Animator anim = body.GetComponentInChildren<Animator>(true);
-            if (anim != null && anim.isHuman)
-            {
-                Transform rh = anim.GetBoneTransform(HumanBodyBones.RightHand);
-                if (rh != null) weaponParent = rh;
-            }
-        }
 
         // ── 4. Instantiate unparented to measure clean world-space bounds ────
         GameObject weapon = Instantiate(prefab);
@@ -3594,6 +3575,10 @@ public class PlayerController : MonoBehaviour
                 ApplyPlayerChainsawGrip(weapon.transform);
                 ForceWeaponRenderable(weapon);
             }
+            else if (katanaStyle)
+            {
+                ApplyWeaponGripPose(weapon.transform, PlayerKatanaGripLocalPosition, PlayerKatanaGripLocalEuler);
+            }
             else
             {
                 if (!WeaponLoadoutCatalog.ApplyPlayerRuntimeGripPose(level, prefab, weapon.transform))
@@ -3606,7 +3591,17 @@ public class PlayerController : MonoBehaviour
         }
 
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
-        ApplyKatanaGripFix(level, prefab, weapon.transform);
+        if (katanaStyle)
+            ApplyWeaponGripPose(weapon.transform, PlayerKatanaGripLocalPosition, PlayerKatanaGripLocalEuler);
+
+        WeaponEquipper equipper = GetOrCreatePlayerWeaponEquipper();
+        equipper.weaponSocket = weaponParent;
+        equipper.EquipWeapon(
+            weapon.transform,
+            weapon.transform.localPosition,
+            weapon.transform.localEulerAngles,
+            weapon.transform.localScale,
+            ResolveWeaponEquipLogName(level, prefab, equippedWeaponName));
 
         Debug.Log($"[PlayerController] Weapon '{weapon.name}' → '{weaponParent.name}' " +
                   $"targetSize={finalTargetSize} extent={weaponExtent} " +
@@ -3689,20 +3684,6 @@ public class PlayerController : MonoBehaviour
         weaponRoot.localRotation = Quaternion.Euler(PlayerChainsawGripLocalEuler);
     }
 
-    private static void ApplyKatanaGripFix(int level, GameObject prefab, Transform weaponRoot)
-    {
-        if (weaponRoot == null) return;
-        string prefabName = prefab != null ? prefab.name.ToLowerInvariant() : string.Empty;
-        if (level != 2 && !prefabName.Contains("katana"))
-            return;
-
-        // Pin the hilt into the palm with a wrist-aligned rotation so the
-        // blade extends forward of the fingertips instead of riding the
-        // forearm.
-        weaponRoot.localPosition = PlayerKatanaGripLocalPosition;
-        weaponRoot.localRotation = Quaternion.Euler(PlayerKatanaGripLocalEuler);
-    }
-
     private static int ResolveHittableMask()
     {
         int hittable = LayerMask.NameToLayer("Hittable");
@@ -3736,12 +3717,17 @@ public class PlayerController : MonoBehaviour
             string[] meleeNames =
             {
                 "Hand.R",
+                "hand.R",
                 "Wrist.R",
                 "Palm.R",
                 "j_wrist_ri",
+                "j_wrist_r",
                 "weapon_bone_R",
                 "bip_hand_R",
+                "Bip001 R Hand",
+                "Bip01 R Hand",
                 "RightHand",
+                "mixamorig:RightHand",
                 "Hand_R",
                 "hand_R",
                 "hand_r",
@@ -3774,11 +3760,11 @@ public class PlayerController : MonoBehaviour
 
         // Explicit bone name search — same priority list as FindPlayerHandBone
         string[] names = {
-            "Hand.R", "Wrist.R", "Palm.R",
-            "RightHand", "Hand_R",
-            "tag_accessory_right", "j_wrist_ri", "weapon_bone_R",
-            "bip_hand_R", "tag_weapon_right",
-            "mixamorig:RightHand",
+            "Hand.R", "hand.R", "Wrist.R", "Palm.R",
+            "RightHand", "mixamorig:RightHand", "Hand_R",
+            "j_wrist_ri", "j_wrist_r", "weapon_bone_R",
+            "bip_hand_R", "Bip001 R Hand", "Bip01 R Hand",
+            "tag_accessory_right", "tag_weapon_right",
             "hand_R", "hand_r", "Wrist_R", "wrist_R",
         };
         foreach (string n in names)
@@ -3809,6 +3795,9 @@ public class PlayerController : MonoBehaviour
 
     private static Transform GetOrCreateWeaponSocket(Transform handBone)
     {
+        if (handBone == null)
+            return null;
+
         Transform socket = handBone.Find(WeaponSocketName);
         if (socket == null)
         {
@@ -3856,6 +3845,29 @@ public class PlayerController : MonoBehaviour
         if (weaponRoot == null) return;
         weaponRoot.localPosition = localPosition;
         weaponRoot.localRotation = Quaternion.Euler(localEuler);
+    }
+
+    private WeaponEquipper GetOrCreatePlayerWeaponEquipper()
+    {
+        if (playerWeaponEquipper == null)
+        {
+            playerWeaponEquipper = GetComponent<WeaponEquipper>();
+            if (playerWeaponEquipper == null)
+                playerWeaponEquipper = gameObject.AddComponent<WeaponEquipper>();
+        }
+
+        return playerWeaponEquipper;
+    }
+
+    private static string ResolveWeaponEquipLogName(int level, GameObject prefab, string fallbackName)
+    {
+        if (level == 2)
+            return "Razor Katana";
+
+        if (!string.IsNullOrWhiteSpace(fallbackName))
+            return fallbackName;
+
+        return prefab != null ? prefab.name : "Weapon";
     }
 
     private static void ForceWeaponRenderable(GameObject weapon)
