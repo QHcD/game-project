@@ -87,7 +87,7 @@ public class PlayerInteractor : MonoBehaviour
         {
             if (debugDoorInteraction)
             {
-                DoorController dc = hit.collider != null ? hit.collider.GetComponentInParent<DoorController>() : null;
+                DoorController dc = FindDoorController(hit.collider);
                 Debug.Log($"[PlayerInteractor] InteractableHit: {(hit.collider != null ? hit.collider.name : "<null>")}  Root: {(hit.collider != null ? hit.collider.transform.root.name : "<null>")}  DoorControllerFound={dc != null}  Prompt=\"{interactable.GetPrompt()}\"  CanInteract={interactable.CanInteract}");
             }
             _currentTarget = interactable;
@@ -108,7 +108,7 @@ public class PlayerInteractor : MonoBehaviour
             }
 
             if (pressed)
-                interactable.Interact(gameObject);
+                PerformInteraction(hit.collider, interactable);
             return;
         }
 
@@ -120,7 +120,7 @@ public class PlayerInteractor : MonoBehaviour
         {
             if (debugDoorInteraction)
             {
-                DoorController dc = hit.collider != null ? hit.collider.GetComponentInParent<DoorController>() : null;
+                DoorController dc = FindDoorController(hit.collider);
                 Debug.Log($"[PlayerInteractor] InteractableForwardHit: {(hit.collider != null ? hit.collider.name : "<null>")}  Root: {(hit.collider != null ? hit.collider.transform.root.name : "<null>")}  DoorControllerFound={dc != null}  Prompt=\"{interactable.GetPrompt()}\"  CanInteract={interactable.CanInteract}");
             }
             _currentTarget = interactable;
@@ -141,7 +141,7 @@ public class PlayerInteractor : MonoBehaviour
             }
 
             if (pressed)
-                interactable.Interact(gameObject);
+                PerformInteraction(hit.collider, interactable);
             return;
         }
 
@@ -171,9 +171,10 @@ public class PlayerInteractor : MonoBehaviour
             Collider c = hits[i].collider;
             if (c == null) continue;
             string layerName = LayerMask.LayerToName(c.gameObject.layer);
-            DoorController dc = c.GetComponentInParent<DoorController>();
+            DoorController dc = FindDoorController(c);
             IInteractable intr = FindInteractable(c);
             Debug.Log($"[PlayerInteractor] {label} hit#{i}: name={c.name} root={c.transform.root.name} layer={c.gameObject.layer}({layerName}) dist={hits[i].distance:0.00} DoorController={dc != null} IInteractable={intr != null}");
+            Debug.Log($"[DoorFix] hit={c.name} root={c.transform.root.name} foundDoor={dc != null} doorObj={(dc != null ? dc.name : "<null>")}");
         }
     }
 
@@ -257,6 +258,18 @@ public class PlayerInteractor : MonoBehaviour
         return t == playerRoot || t.IsChildOf(playerRoot);
     }
 
+    private void PerformInteraction(Collider hitCollider, IInteractable interactable)
+    {
+        if (interactable == null)
+            return;
+
+        interactable.Interact(gameObject);
+
+        Transform doorRoot = FindDoorPassableRoot(hitCollider, interactable);
+        if (doorRoot != null)
+            MakeDoorPassable(doorRoot);
+    }
+
     /// <summary>
     /// Walks parents and checks each <see cref="MonoBehaviour"/> for <see cref="IInteractable"/>.
     /// More reliable than <c>GetComponentInParent&lt;IInteractable&gt;()</c> across Unity versions.
@@ -264,6 +277,14 @@ public class PlayerInteractor : MonoBehaviour
     private static IInteractable FindInteractable(Collider col)
     {
         if (col == null) return null;
+
+        DoorController door = FindDoorController(col);
+        if (door == null)
+            door = EnsureRuntimeDoorController(col);
+
+        if (door != null && door.enabled)
+            return door;
+
         for (Transform tr = col.transform; tr != null; tr = tr.parent)
         {
             MonoBehaviour[] mbs = tr.GetComponents<MonoBehaviour>();
@@ -276,6 +297,140 @@ public class PlayerInteractor : MonoBehaviour
         }
 
         return null;
+    }
+
+    private static DoorController FindDoorController(Collider col)
+    {
+        if (col == null) return null;
+
+        DoorController door = col.GetComponent<DoorController>();
+        if (door != null) return door;
+
+        door = col.GetComponentInParent<DoorController>(true);
+        if (door != null) return door;
+
+        door = col.GetComponentInChildren<DoorController>(true);
+        if (door != null) return door;
+
+        Transform root = col.transform.root;
+        door = root != null ? root.GetComponentInChildren<DoorController>(true) : null;
+        if (door != null && (col.transform.IsChildOf(door.transform) || IsDoorLikeTransform(col.transform, col.transform)))
+            return door;
+
+        return null;
+    }
+
+    private static DoorController EnsureRuntimeDoorController(Collider col)
+    {
+        Transform doorRoot = FindNearestDoorRoot(col);
+        if (doorRoot == null)
+            return null;
+
+        DoorController door = doorRoot.GetComponent<DoorController>();
+        if (door == null)
+            door = doorRoot.gameObject.AddComponent<DoorController>();
+
+        DoorPassThroughOpen passThrough = doorRoot.GetComponent<DoorPassThroughOpen>();
+        if (passThrough == null)
+            passThrough = doorRoot.gameObject.AddComponent<DoorPassThroughOpen>();
+
+        door.openOnStart = false;
+        door.openOnPlayerTrigger = false;
+        door.interactiveToggle = true;
+        passThrough.hideOnOpen = true;
+        return door;
+    }
+
+    private static Transform FindDoorPassableRoot(Collider col, IInteractable interactable)
+    {
+        if (col == null)
+            return null;
+
+        DoorController door = FindDoorController(col);
+        if (door != null)
+            return door.transform;
+
+        if (interactable is DoorController interactableDoor)
+            return interactableDoor.transform;
+
+        return FindNearestDoorRoot(col);
+    }
+
+    private static void MakeDoorPassable(Transform doorRoot)
+    {
+        if (doorRoot == null)
+            return;
+
+        DoorPassThroughOpen passThrough = doorRoot.GetComponent<DoorPassThroughOpen>();
+        if (passThrough != null)
+        {
+            passThrough.OpenPassable();
+            return;
+        }
+
+        int disabledCount = 0;
+        Collider[] colliders = doorRoot.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider c = colliders[i];
+            if (c == null || !c.enabled) continue;
+            c.enabled = false;
+            disabledCount++;
+        }
+
+        doorRoot.gameObject.SetActive(false);
+        Debug.Log($"[DoorFix] OPENED_PASSABLE door={doorRoot.name} collidersDisabled={disabledCount}");
+    }
+
+    private static Transform FindNearestDoorRoot(Collider col)
+    {
+        if (col == null) return null;
+
+        for (Transform tr = col.transform; tr != null; tr = tr.parent)
+        {
+            if (IsDoorLikeTransform(tr, col.transform))
+                return tr;
+        }
+
+        return null;
+    }
+
+    private static bool IsDoorLikeTransform(Transform candidate, Transform hitTransform)
+    {
+        if (candidate == null)
+            return false;
+
+        string lower = candidate.name.ToLowerInvariant();
+        if (lower.Contains("door") || lower.Contains("gate") || lower.Contains("garage") ||
+            lower.Contains("shutter") || lower.Contains("rollup"))
+            return true;
+
+        if (candidate == hitTransform && candidate.name == "Object084")
+            return IsKnownDoorMesh(candidate);
+
+        return false;
+    }
+
+    private static bool IsKnownDoorMesh(Transform candidate)
+    {
+        if (candidate == null)
+            return false;
+
+        if (candidate.GetComponent<Collider>() == null ||
+            candidate.GetComponent<Renderer>() == null ||
+            candidate.GetComponent<MeshFilter>() == null)
+            return false;
+
+        Transform parent = candidate.parent;
+        while (parent != null)
+        {
+            string lower = parent.name.ToLowerInvariant();
+            if (lower.Contains("hangar") || lower.Contains("industrial"))
+                return true;
+            parent = parent.parent;
+        }
+
+        return false;
     }
 
     private bool WasInteractPressedThisFrame()

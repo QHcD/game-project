@@ -372,7 +372,7 @@ public class LevelBuilder : MonoBehaviour
     // ════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// Imported industrial meshes name door pieces "…door…" but ship without
+    /// Imported industrial meshes name door pieces "…door…" / "…gate…" but ship without
     /// <see cref="DoorController"/>. Adds interaction on collider objects so
     /// the player can open them with the same raycast used for <see cref="IInteractable"/>.
     /// </summary>
@@ -381,28 +381,88 @@ public class LevelBuilder : MonoBehaviour
         if (arenaRoot == null) return;
 
         Collider[] colliders = arenaRoot.GetComponentsInChildren<Collider>(true);
+        int fixedCount = 0;
         for (int i = 0; i < colliders.Length; i++)
         {
             Collider c = colliders[i];
             if (c == null || !c.enabled) continue;
 
-            Transform t = c.transform;
-            if (t.GetComponentInParent<DoorController>(true) != null) continue;
+            Transform doorRoot = FindNearestGeneratedDoorRoot(c);
+            if (doorRoot == null) continue;
+            if (doorRoot.GetComponentInParent<DoorController>(true) != null) continue;
 
-            string lower = t.name.ToLowerInvariant();
-            if (!lower.Contains("door")) continue;
+            DoorController door = doorRoot.GetComponent<DoorController>();
+            if (door == null)
+                door = doorRoot.gameObject.AddComponent<DoorController>();
 
-            if (t.GetComponent<DoorController>() != null) continue;
+            DoorPassThroughOpen passThrough = doorRoot.GetComponent<DoorPassThroughOpen>();
+            if (passThrough == null)
+                passThrough = doorRoot.gameObject.AddComponent<DoorPassThroughOpen>();
 
-            DoorController door = t.gameObject.AddComponent<DoorController>();
             door.openOnStart         = false;
-            door.openOnPlayerTrigger = true;
+            door.openOnPlayerTrigger = false;
             door.interactiveToggle   = true;
+            passThrough.hideOnOpen    = true;
 
             int envLayer = LayerMask.NameToLayer("Environment");
             if (envLayer >= 0)
-                SetLayerRecursive(t.gameObject, envLayer);
+                SetLayerRecursive(doorRoot.gameObject, envLayer);
+
+            fixedCount++;
+            Debug.Log($"[DoorFix] generatedDoor={doorRoot.name} collider={c.name} controllerAttached=True");
         }
+
+        if (fixedCount > 0)
+            Debug.Log($"[DoorFix] Ensured {fixedCount} generated door collider(s) have DoorController in their hierarchy.");
+    }
+
+    private static Transform FindNearestGeneratedDoorRoot(Collider collider)
+    {
+        if (collider == null) return null;
+
+        for (Transform t = collider.transform; t != null; t = t.parent)
+        {
+            if (IsGeneratedDoorName(t.name))
+                return t;
+
+            if (t == collider.transform && t.name == "Object084" && IsKnownImportedDoorMesh(t))
+                return t;
+        }
+
+        return null;
+    }
+
+    private static bool IsGeneratedDoorName(string objectName)
+    {
+        if (string.IsNullOrEmpty(objectName))
+            return false;
+
+        string lower = objectName.ToLowerInvariant();
+        return lower.Contains("door")
+            || lower.Contains("gate")
+            || lower.Contains("garage")
+            || lower.Contains("shutter")
+            || lower.Contains("rollup");
+    }
+
+    private static bool IsKnownImportedDoorMesh(Transform t)
+    {
+        if (t == null || t.name != "Object084")
+            return false;
+
+        if (t.GetComponent<Collider>() == null ||
+            t.GetComponent<Renderer>() == null ||
+            t.GetComponent<MeshFilter>() == null)
+            return false;
+
+        for (Transform parent = t.parent; parent != null; parent = parent.parent)
+        {
+            string lower = parent.name.ToLowerInvariant();
+            if (lower.Contains("hangar") || lower.Contains("industrial"))
+                return true;
+        }
+
+        return false;
     }
 
     private void BuildArena(Transform arenaRoot)
@@ -682,6 +742,8 @@ public class LevelBuilder : MonoBehaviour
                 box.size   = mf.sharedMesh.bounds.size;
             }
         }
+
+        EnsureIndustrialDoorsInteractable(mapInstance.transform);
 
         Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
     }
@@ -2129,5 +2191,32 @@ public class LevelBuilder : MonoBehaviour
         {
             // Tag is not configured in the project yet; skip safely.
         }
+    }
+}
+
+public class DoorPassThroughOpen : MonoBehaviour
+{
+    public bool hideOnOpen = true;
+    public Vector3 moveOffset = Vector3.up * 3f;
+
+    public void OpenPassable()
+    {
+        int disabledCount = 0;
+        Collider[] colliders = GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider c = colliders[i];
+            if (c == null || !c.enabled) continue;
+            c.enabled = false;
+            disabledCount++;
+        }
+
+        string doorName = name;
+        if (hideOnOpen)
+            gameObject.SetActive(false);
+        else
+            transform.position += moveOffset;
+
+        Debug.Log($"[DoorFix] OPENED_PASSABLE door={doorName} collidersDisabled={disabledCount}");
     }
 }

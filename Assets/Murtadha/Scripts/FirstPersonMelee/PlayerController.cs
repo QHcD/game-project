@@ -18,7 +18,6 @@ using Photon.Pun;
 public class PlayerController : MonoBehaviour
 {
     private const string WeaponSocketName = "PlayerRightHandWeaponSocket";
-    private const string ChainsawSocketName = "__PlayerChainsawSocket";
     private const string RuntimeThirdPersonCameraName = "RuntimeThirdPersonCamera";
     private const float ThirdPersonMinPitch = -12f;
     private const float ThirdPersonMaxPitch = 45f;
@@ -40,10 +39,13 @@ public class PlayerController : MonoBehaviour
     private static readonly Vector3 DefaultLevel12SawGripLocalEuler = WeaponLoadoutCatalog.ChainsawPlayerLocalEuler;
     private static readonly Vector3 PlayerChainsawGripLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
     private static readonly Vector3 PlayerChainsawGripLocalEuler = new Vector3(-177.177f, -175.886f, 88.481f);
-    // Katana grip pose mirrors the enemy's compact hand-socket basis.
-    private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(-0.035f, -0.0025f, 0f);
-    private static readonly Vector3 PlayerKatanaGripLocalEuler    = new Vector3(0f, 180f, 90f);
-
+    // Level 2 Razor Katana player grip.
+    // IMPORTANT: these are HAND-SOCKET LOCAL values, not scene/world coordinates.
+    // Matches the enemy sword basis so the handle stays in the right palm/fingers.
+// جرّب هذه بدل القيم الحالية
+private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(-0.01f, -0.0025f, 0f);
+private static readonly Vector3 PlayerKatanaGripLocalEuler = new Vector3(0f, 0f, 90f);
+private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0.3f, 0.2f);
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
     // ════════════════════════════════════════════════════════════════════════
@@ -3002,7 +3004,7 @@ public class PlayerController : MonoBehaviour
             thirdPersonBody.transform.localRotation = Quaternion.identity;
             thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
             thirdPersonBodyBaseLocalRotation = thirdPersonBody.transform.localRotation;
-            thirdPersonBody.transform.localScale    = new Vector3(0.92f, 0.92f, 0.92f);
+            thirdPersonBody.transform.localScale = Vector3.one;
 
             HideKnightWeaponProp(thirdPersonBody);
 
@@ -3029,31 +3031,7 @@ public class PlayerController : MonoBehaviour
 
     private void ApplySkinMaterial(GameObject body)
     {
-        Material skinMat = Resources.Load<Material>("Player/SkinMaterial");
-
-        if (skinMat == null)
-        {
-            Shader lit = Shader.Find("Universal Render Pipeline/Lit")
-                      ?? Shader.Find("Unlit/Color")
-                      ?? Shader.Find("Standard");
-            skinMat = new Material(lit);
-            skinMat.color = new Color(0.86f, 0.76f, 0.66f);
-            skinMat.SetFloat("_Smoothness", 0.3f);
-        }
-
-        foreach (SkinnedMeshRenderer smr in body.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-        {
-            Material[] mats = smr.sharedMaterials;
-            for (int i = 0; i < mats.Length; i++) mats[i] = skinMat;
-            smr.sharedMaterials = mats;
-        }
-
-        foreach (MeshRenderer mr in body.GetComponentsInChildren<MeshRenderer>(true))
-        {
-            Material[] mats = mr.sharedMaterials;
-            for (int i = 0; i < mats.Length; i++) mats[i] = skinMat;
-            mr.sharedMaterials = mats;
-        }
+        // WeaponFix: preserve prefab-authored character materials.
     }
 
     /// <summary>
@@ -3064,81 +3042,7 @@ public class PlayerController : MonoBehaviour
     /// </summary>
     private static void EnsureProperMaterial(GameObject body)
     {
-        if (body == null) return;
-
-        Shader shader = Shader.Find("Universal Render Pipeline/Lit")
-                     ?? Shader.Find("Standard")
-                     ?? Shader.Find("Diffuse");
-        if (shader == null) return;
-
-        // ── Step 1: Try to load existing .mat files from Ronin source ────────
-        Material prebuiltMat = LoadFirstAvailableMaterial(
-            "Player/Ronin/source/mp_ronin_torso",
-            "Player/Ronin/source/body_mp_western_ronin_4_1_lod1",
-            "Player/Ronin/source/mp_western_ronin_arm_r");
-
-        // ── Step 2: Build per-slot replacement ───────────────────────────────
-        // For each blank material slot, try to find a matching texture by
-        // the material's own name, then fall back to a generic body texture.
-        string[] roninTextureFolders = {
-            "Player/Ronin/textures/",
-            "Player/Ronin/source/"
-        };
-
-        // Generic fallback texture (torso — most representative body part)
-        Texture2D fallbackTex = LoadFirstAvailableTexture(
-            "Player/Ronin/textures/body_mp_western_ronin_4_1_lod1_c.tga",
-            "Player/Ronin/textures/body_mp_western_ronin_4_1_lod1_c",
-            "Player/Ronin/textures/mp_ronin_torso_c.tga",
-            "Player/Ronin/textures/mp_ronin_torso_c",
-            "Player/Ronin/textures/mp_western_ronin_arm_r_c.tga",
-            "Player/Ronin/textures/mp_western_ronin_arm_r_c",
-            "Textures/RoninTexture");
-
-        foreach (Renderer r in body.GetComponentsInChildren<Renderer>(true))
-        {
-            Material[] slots = r.sharedMaterials;
-            bool changed = false;
-            for (int i = 0; i < slots.Length; i++)
-            {
-                if (!IsBlankMaterial(slots[i])) continue;
-
-                // Try to find a per-slot texture matching this material's name
-                string slotName = (slots[i] != null) ? slots[i].name : "";
-                Texture2D slotTex = TryLoadTextureForMaterial(slotName, roninTextureFolders);
-
-                if (slotTex == null) slotTex = fallbackTex;
-
-                // If we have a prebuilt .mat and no specific texture, use the prebuilt
-                if (slotTex == null && prebuiltMat != null)
-                {
-                    slots[i] = prebuiltMat;
-                    changed = true;
-                    continue;
-                }
-
-                // Create a new URP material with the texture
-                Material newMat = new Material(shader)
-                {
-                    name = string.IsNullOrEmpty(slotName) ? "PlayerMat_Runtime" : slotName + "_Fix"
-                };
-                if (slotTex != null)
-                {
-                    if (newMat.HasProperty("_BaseMap")) newMat.SetTexture("_BaseMap", slotTex);
-                    if (newMat.HasProperty("_MainTex")) newMat.SetTexture("_MainTex", slotTex);
-                }
-                else
-                {
-                    // No texture at all — warm skin tone so at least it's not white
-                    Color tan = new Color(0.72f, 0.58f, 0.44f);
-                    if (newMat.HasProperty("_BaseColor")) newMat.SetColor("_BaseColor", tan);
-                    if (newMat.HasProperty("_Color"))     newMat.SetColor("_Color",     tan);
-                }
-                slots[i] = newMat;
-                changed = true;
-            }
-            if (changed) r.sharedMaterials = slots;
-        }
+        // WeaponFix: preserve prefab-authored character sharedMaterials.
     }
 
     /// <summary>
@@ -3201,16 +3105,8 @@ public class PlayerController : MonoBehaviour
 
     private static void NormalizeBodyScale(GameObject body, float targetHeight)
     {
-        Bounds b = new Bounds(Vector3.zero, Vector3.zero);
-        bool any = false;
-        foreach (Renderer r in body.GetComponentsInChildren<Renderer>(true))
-        {
-            if (!any) { b = r.bounds; any = true; }
-            else b.Encapsulate(r.bounds);
-        }
-        if (!any || b.size.y < 0.01f) return;
-        float scale = targetHeight / b.size.y;
-        body.transform.localScale = Vector3.one * scale;
+        if (body != null)
+            body.transform.localScale = Vector3.one;
     }
 
     private void EnsureAnimationEventSink(GameObject root)
@@ -3226,49 +3122,9 @@ public class PlayerController : MonoBehaviour
 
     private void AssignMaterial()
     {
-        // Try explicit paths first, then search all Materials in Resources as a fallback.
-        Material material = Resources.Load<Material>("Materials/Ronin");
-        if (material == null)
-            material = Resources.Load<Material>("Materials/Enemy");
-        if (material == null)
-        {
-            // Broad fallback: find any material whose name contains "Ronin" or "Enemy"
-            foreach (Material m in Resources.LoadAll<Material>("Materials"))
-            {
-                if (m == null) continue;
-                string n = m.name.ToLowerInvariant();
-                if (n.Contains("ronin") || n.Contains("enemy") || n.Contains("player"))
-                {
-                    material = m;
-                    break;
-                }
-            }
-        }
-
-        if (material == null)
-        {
-            // Last resort: create a visible default so the character isn't white
-            material = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
-            material.color = new Color(0.6f, 0.45f, 0.35f); // warm skin tone
-        }
-
         // Ensure AnimationEventSink is present to prevent CS0246 event-method errors
         if (thirdPersonBody != null)
             EnsureAnimationEventSink(thirdPersonBody);
-
-        // Solid jet-black operator silhouette — strong contrast against the
-        // varied enemy roster, reads clean from every angle, and matches the
-        // dark-side aesthetic the user requested. The minimap arrow stays
-        // bright green so player identity is still obvious on the map even
-        // though the character itself is black.
-        Color playerStandoutColor = new Color(0.04f, 0.04f, 0.05f, 1f);
-        foreach (SkinnedMeshRenderer smr in GetComponentsInChildren<SkinnedMeshRenderer>(true))
-        {
-            if (smr == null) continue;
-            Material instance = new Material(material);
-            ApplyReadableTint(instance, playerStandoutColor, 0.92f);
-            smr.material = instance;
-        }
     }
 
     private static void ApplyReadableTint(Material mat, Color tint, float strength)
@@ -3339,9 +3195,8 @@ public class PlayerController : MonoBehaviour
             SetupWeaponIK();
         }
 
-        // Tint the freshly-attached weapon with whatever skin the player has
-        // equipped in the PRISM Store. Idempotent — re-applying with the same
-        // colour is a no-op.
+        // Weapon materials stay on the prefab-authored sharedMaterials. Runtime
+        // tinting is intentionally skipped to avoid white/default material swaps.
         ApplyEquippedKatanaSkin();
 
         WeaponDefinition liveAnimDef = storeBuffsThisLevel
@@ -3375,21 +3230,8 @@ public class PlayerController : MonoBehaviour
     /// </summary>
     public void ApplyEquippedKatanaSkin()
     {
-        if (equippedWeaponObject == null) return;
-        if (SessionManager.Instance == null) return;
-
-        Color tint = SessionManager.Instance.EquippedSkinColor;
-        Renderer[] renderers = equippedWeaponObject.GetComponentsInChildren<Renderer>(true);
-        for (int i = 0; i < renderers.Length; i++)
-        {
-            Renderer r = renderers[i];
-            if (r == null || r.sharedMaterial == null) continue;
-            // Use the per-renderer instance so we don't bleed the colour into
-            // every weapon ever spawned from the same prefab.
-            Material instance = new Material(r.sharedMaterial);
-            ApplyReadableTint(instance, tint, 0.85f);
-            r.material = instance;
-        }
+        // Disabled by WeaponFix: renderer.material instancing was producing
+        // default/white runtime material swaps on some imported prefabs.
     }
 
     private void SetupWeaponIK()
@@ -3578,6 +3420,7 @@ public class PlayerController : MonoBehaviour
             else if (katanaStyle)
             {
                 ApplyWeaponGripPose(weapon.transform, PlayerKatanaGripLocalPosition, PlayerKatanaGripLocalEuler);
+                ForceWeaponRenderable(weapon);
             }
             else
             {
@@ -3591,8 +3434,13 @@ public class PlayerController : MonoBehaviour
         }
 
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
+        RestoreWeaponSharedMaterialsFromPrefab(prefab, weapon);
         if (katanaStyle)
+        {
             ApplyWeaponGripPose(weapon.transform, PlayerKatanaGripLocalPosition, PlayerKatanaGripLocalEuler);
+            ForceWeaponRenderable(weapon);
+            Debug.Log($"[KatanaGrip] Player katana applied on '{weaponParent.name}' pos={weapon.transform.localPosition} rot={weapon.transform.localEulerAngles} scale={weapon.transform.localScale}");
+        }
 
         WeaponEquipper equipper = GetOrCreatePlayerWeaponEquipper();
         equipper.weaponSocket = weaponParent;
@@ -3608,6 +3456,9 @@ public class PlayerController : MonoBehaviour
                   $"localPosition={weapon.transform.localPosition} " +
                   $"localEuler={weapon.transform.localEulerAngles} " +
                   $"localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
+        Debug.Log($"[WeaponFix] socket={weaponParent.name} parent={(weaponParent.parent != null ? weaponParent.parent.name : "<none>")}");
+        Debug.Log($"[WeaponFix] weaponLocalPos={weapon.transform.localPosition}");
+        Debug.Log($"[WeaponFix] weaponLocalRot={weapon.transform.localEulerAngles}");
 
         // ── 9. Disable physics, embedded animators, colliders ────────────────
         foreach (Animator weaponAnimator in weapon.GetComponentsInChildren<Animator>(true))
@@ -3798,44 +3649,25 @@ public class PlayerController : MonoBehaviour
         if (handBone == null)
             return null;
 
+        Transform socketParent = FindBoneExact(handBone.root, "bip_hand_R") ?? handBone;
         Transform socket = handBone.Find(WeaponSocketName);
+        if (socket == null)
+            socket = socketParent.Find(WeaponSocketName);
+
         if (socket == null)
         {
             GameObject socketObject = new GameObject(WeaponSocketName);
             socket = socketObject.transform;
-            socket.SetParent(handBone, worldPositionStays: false);
+            socket.SetParent(socketParent, worldPositionStays: false);
+        }
+        else if (socket.parent != socketParent)
+        {
+            socket.SetParent(socketParent, worldPositionStays: false);
         }
 
         socket.localPosition = Vector3.zero;
         socket.localRotation = Quaternion.identity;
-
-        Vector3 handLossy = handBone.lossyScale;
-        socket.localScale = new Vector3(
-            1f / Mathf.Max(Mathf.Abs(handLossy.x), 0.0001f),
-            1f / Mathf.Max(Mathf.Abs(handLossy.y), 0.0001f),
-            1f / Mathf.Max(Mathf.Abs(handLossy.z), 0.0001f));
-
-        return socket;
-    }
-
-    private static Transform GetOrCreateChainsawSocket(Transform handBone)
-    {
-        Transform socket = handBone.Find(ChainsawSocketName);
-        if (socket == null)
-        {
-            GameObject socketObject = new GameObject(ChainsawSocketName);
-            socket = socketObject.transform;
-            socket.SetParent(handBone, worldPositionStays: false);
-        }
-
-        socket.localPosition = ChainsawSocketLocalPosition;
-        socket.localRotation = Quaternion.Euler(ChainsawSocketLocalEuler);
-
-        Vector3 handLossy = handBone.lossyScale;
-        socket.localScale = new Vector3(
-            1f / Mathf.Max(Mathf.Abs(handLossy.x), 0.0001f),
-            1f / Mathf.Max(Mathf.Abs(handLossy.y), 0.0001f),
-            1f / Mathf.Max(Mathf.Abs(handLossy.z), 0.0001f));
+        socket.localScale = Vector3.one;
 
         return socket;
     }
@@ -3894,10 +3726,75 @@ public class PlayerController : MonoBehaviour
             return;
 
         SickleGripPoseDriver driver = handBone.GetComponent<SickleGripPoseDriver>();
-        if (driver == null)
-            driver = handBone.gameObject.AddComponent<SickleGripPoseDriver>();
+        if (driver != null)
+            driver.enabled = false;
+    }
 
-        driver.Configure(handBone, weaponRoot);
+    private static void RestoreWeaponSharedMaterialsFromPrefab(GameObject prefab, GameObject weapon)
+    {
+        if (prefab == null || weapon == null)
+            return;
+
+        Renderer[] prefabRenderers = prefab.GetComponentsInChildren<Renderer>(true);
+        Renderer[] weaponRenderers = weapon.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < weaponRenderers.Length; i++)
+        {
+            Renderer target = weaponRenderers[i];
+            if (target == null)
+                continue;
+
+            Renderer source = FindMatchingPrefabRenderer(prefabRenderers, target.name);
+            if (source == null || source.sharedMaterials == null || source.sharedMaterials.Length == 0)
+                continue;
+
+            Material[] targetMaterials = target.sharedMaterials;
+            bool blank = targetMaterials == null || targetMaterials.Length == 0;
+            if (!blank)
+            {
+                for (int j = 0; j < targetMaterials.Length; j++)
+                {
+                    Material mat = targetMaterials[j];
+                    if (mat == null || IsDefaultWhiteMaterial(mat))
+                    {
+                        blank = true;
+                        break;
+                    }
+                }
+            }
+
+            if (blank)
+                target.sharedMaterials = source.sharedMaterials;
+        }
+    }
+
+    private static Renderer FindMatchingPrefabRenderer(Renderer[] prefabRenderers, string rendererName)
+    {
+        if (prefabRenderers == null || string.IsNullOrEmpty(rendererName))
+            return null;
+
+        for (int i = 0; i < prefabRenderers.Length; i++)
+        {
+            Renderer renderer = prefabRenderers[i];
+            if (renderer != null && renderer.name == rendererName)
+                return renderer;
+        }
+
+        return prefabRenderers.Length > 0 ? prefabRenderers[0] : null;
+    }
+
+    private static bool IsDefaultWhiteMaterial(Material mat)
+    {
+        if (mat == null)
+            return true;
+
+        string lower = mat.name.ToLowerInvariant();
+        if (lower.Contains("default") || lower.Contains("white"))
+            return true;
+
+        Color color = Color.white;
+        if (mat.HasProperty("_BaseColor")) color = mat.GetColor("_BaseColor");
+        else if (mat.HasProperty("_Color")) color = mat.GetColor("_Color");
+        return color.r > 0.95f && color.g > 0.95f && color.b > 0.95f;
     }
 
     /// <summary>
