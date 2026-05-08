@@ -837,7 +837,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         moveInputRaw = ReadMovementInput();
         moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
-        moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, InputSmoothing * Time.deltaTime);
+
+        // Exponential smoothing is frame-rate independent (matches look input below)
+        float moveDt = Mathf.Max(0.0001f, Time.deltaTime);
+        float moveK = 1f - Mathf.Exp(-InputSmoothing * moveDt);
+        moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, moveK);
 
         // Read raw mouse delta (Input System gives pixels-per-frame-ish deltas).
         // We clamp it to avoid giant spikes (alt-tab, focus changes, or 10 FPS stutters).
@@ -2638,11 +2642,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         float snapSpeed = Mathf.Lerp(floorSnapSpeed, floorSnapSpeed * 4f, Mathf.Clamp01(lift / 0.5f));
         float liftDelta = Mathf.MoveTowards(0f, lift, snapSpeed * Time.deltaTime);
 
-        controller.enabled = false;
-        transform.position = new Vector3(transform.position.x,
-                                         transform.position.y + liftDelta,
-                                         transform.position.z);
-        controller.enabled = true;
+        // controller.Move avoids toggling enabled (which resets internal state and causes jitter)
+        controller.Move(Vector3.up * liftDelta);
     }
 
     /// <summary>
@@ -2676,9 +2677,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         // Only lift (never push down) — prevents fighting the physics step offset.
         if (transform.position.y < targetY - 0.005f)
         {
-            controller.enabled = false;
-            transform.position = new Vector3(transform.position.x, targetY, transform.position.z);
-            controller.enabled = true;
+            // controller.Move avoids toggling enabled (which resets internal state and causes jitter)
+            controller.Move(Vector3.up * (targetY - transform.position.y));
             if (verticalVelocity.y < 0f) verticalVelocity.y = -2f;
         }
     }
