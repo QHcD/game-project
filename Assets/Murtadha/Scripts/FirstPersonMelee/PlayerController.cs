@@ -3105,8 +3105,21 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private static void NormalizeBodyScale(GameObject body, float targetHeight)
     {
-        if (body != null)
-            body.transform.localScale = Vector3.one;
+        if (body == null) return;
+
+        body.transform.localScale = Vector3.one;
+
+        Bounds b = new Bounds(Vector3.zero, Vector3.zero);
+        bool any = false;
+        foreach (Renderer r in body.GetComponentsInChildren<Renderer>(true))
+        {
+            if (!any) { b = r.bounds; any = true; }
+            else b.Encapsulate(r.bounds);
+        }
+        if (!any || b.size.y < 0.01f) return;
+
+        float scale = targetHeight / b.size.y;
+        body.transform.localScale = Vector3.one * scale;
     }
 
     private void EnsureAnimationEventSink(GameObject root)
