@@ -846,6 +846,9 @@ public class LevelBuilder : MonoBehaviour
         PlayerController playerRef = Object.FindFirstObjectByType<PlayerController>();
         Vector3 playerPos = playerRef != null ? playerRef.transform.position : Vector3.zero;
 
+        // Captured for the post-spawn reachability validation pass below.
+        var spawnedEnemies = new System.Collections.Generic.List<GameObject>(enemyCount);
+
         // Try loading the Crosby enemy model
         GameObject enemyPrefab = Resources.Load<GameObject>("Enemy/Crosby");
 
@@ -971,13 +974,133 @@ public class LevelBuilder : MonoBehaviour
 
             // Attach the same melee weapon the player is using
             AttachWeaponToEnemy(enemyObject, currentLvl);
+
+            spawnedEnemies.Add(enemyObject);
         }
+
+        // ── Reachability validation ─────────────────────────────────────────
+        // Walk every spawned enemy and ensure NavMesh.CalculatePath from the
+        // player's position completes. If the agent ended up on a disconnected
+        // NavMesh island (sealed room baked separately, locked building) the
+        // player can never reach it; relocate it to a candidate point that is
+        // reachable, on the NavMesh, and clear of other enemies.
+        ValidateEnemyReachability(spawnedEnemies, playerPos, orderedSpawns);
 
         // ── Issue #5: register the authoritative count with GameManager ──────
         // InitializeEnemyCount() sets BOTH enemiesRemaining AND totalEnemiesSpawned
         // so EnemyKilled() can compare against the real number of spawned enemies.
         if (GameManager.Instance != null)
             GameManager.Instance.InitializeEnemyCount(enemyCount);
+    }
+
+    /// <summary>
+    /// Verifies each spawned enemy is reachable from the player via NavMesh
+    /// pathing. Enemies stuck on a disconnected NavMesh island are relocated
+    /// to a reachable candidate ≥ 2 m from the player and other enemies.
+    /// </summary>
+    private static void ValidateEnemyReachability(
+        System.Collections.Generic.List<GameObject> enemies,
+        Vector3 playerPos,
+        System.Collections.Generic.List<Vector3> candidatePool)
+    {
+        if (enemies == null || enemies.Count == 0) return;
+
+        // Sanity-check the player's position is on the NavMesh — otherwise
+        // CalculatePath always fails and we'd relocate everything pointlessly.
+        if (!NavMesh.SamplePosition(playerPos, out NavMeshHit playerHit, 6f, NavMesh.AllAreas))
+            return;
+        Vector3 fromPos = playerHit.position;
+
+        NavMeshPath path = new NavMeshPath();
+        const float minSeparation = 2f;
+        const float minSepSqr     = minSeparation * minSeparation;
+
+        for (int i = 0; i < enemies.Count; i++)
+        {
+            GameObject enemy = enemies[i];
+            if (enemy == null) continue;
+
+            Vector3 enemyPos = enemy.transform.position;
+            if (IsReachable(fromPos, enemyPos, path)) continue;
+
+            Vector3 newPos;
+            if (!FindReachableRelocation(fromPos, enemy, enemies, candidatePool,
+                                         minSepSqr, path, out newPos))
+                continue; // No safe spot found — leave enemy where it is.
+
+            NavMeshAgent agent = enemy.GetComponent<NavMeshAgent>();
+            PlaceAgentOnNavMesh(agent, enemy.transform, newPos);
+            Debug.Log($"[SpawnValidation] enemy={enemy.name} reachable=false action=moved newPos={enemy.transform.position}");
+        }
+    }
+
+    private static bool IsReachable(Vector3 from, Vector3 to, NavMeshPath path)
+    {
+        if (!NavMesh.SamplePosition(to, out NavMeshHit toHit, 2f, NavMesh.AllAreas))
+            return false;
+        if (!NavMesh.CalculatePath(from, toHit.position, NavMesh.AllAreas, path))
+            return false;
+        return path.status == NavMeshPathStatus.PathComplete;
+    }
+
+    /// <summary>
+    /// Tries every candidate spawn point + a ring of points around the player
+    /// until it finds one that is on the NavMesh, has a complete path from the
+    /// player, and is far enough from the player and every other enemy.
+    /// </summary>
+    private static bool FindReachableRelocation(
+        Vector3 fromPos,
+        GameObject enemy,
+        System.Collections.Generic.List<GameObject> allEnemies,
+        System.Collections.Generic.List<Vector3> candidatePool,
+        float minSepSqr,
+        NavMeshPath path,
+        out Vector3 result)
+    {
+        // Build the candidate set: original spawn pool first (open arena), then
+        // a ring around the player so we always have something to fall back to.
+        var candidates = new System.Collections.Generic.List<Vector3>();
+        if (candidatePool != null) candidates.AddRange(candidatePool);
+        const int ringSamples = 12;
+        for (int s = 0; s < ringSamples; s++)
+        {
+            float ang = (s / (float)ringSamples) * Mathf.PI * 2f;
+            for (float r = 6f; r <= 18f; r += 4f)
+            {
+                candidates.Add(new Vector3(
+                    fromPos.x + Mathf.Cos(ang) * r,
+                    fromPos.y,
+                    fromPos.z + Mathf.Sin(ang) * r));
+            }
+        }
+
+        for (int c = 0; c < candidates.Count; c++)
+        {
+            if (!NavMesh.SamplePosition(candidates[c], out NavMeshHit hit, 4f, NavMesh.AllAreas))
+                continue;
+
+            Vector3 p = hit.position;
+            if ((p - fromPos).sqrMagnitude < minSepSqr) continue;
+
+            bool tooCloseToOther = false;
+            for (int j = 0; j < allEnemies.Count; j++)
+            {
+                GameObject other = allEnemies[j];
+                if (other == null || other == enemy) continue;
+                if ((other.transform.position - p).sqrMagnitude < minSepSqr)
+                { tooCloseToOther = true; break; }
+            }
+            if (tooCloseToOther) continue;
+
+            if (!NavMesh.CalculatePath(fromPos, p, NavMesh.AllAreas, path)) continue;
+            if (path.status != NavMeshPathStatus.PathComplete) continue;
+
+            result = p;
+            return true;
+        }
+
+        result = Vector3.zero;
+        return false;
     }
 
     // ════════════════════════════════════════════════════════════════════════

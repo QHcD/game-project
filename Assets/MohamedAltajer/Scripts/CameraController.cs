@@ -99,7 +99,10 @@ public class CameraController : MonoBehaviour
 
     [Tooltip("SphereCast radius from the player neck/head to the desired camera position.")]
     [Range(0.05f, 0.5f)]
-    public float collisionRadius = 0.25f;
+    public float collisionRadius = 0.30f;
+
+    [Tooltip("If true, log every frame the camera is pulled in by a wall hit. Off in shipped builds.")]
+    public bool debugCameraCollision = false;
 
     [Tooltip("Minimum distance the camera is allowed to reach before close-space failsafe kicks in.")]
     public float minDistance = 0.35f;
@@ -178,26 +181,17 @@ public class CameraController : MonoBehaviour
 
         _currentDistance = GetCurrentOffset().magnitude;
 
-        // ── Exclude the player's own colliders from wall-collision checks ────
-        // Without this, the SphereCast can hit the player mesh itself and
-        // cause the camera to zoom in erratically whenever the player turns.
-        // We strip out whatever layer the player root is on, plus the common
-        // named layers "Player" and "Character", from collisionMask.
+        // Build the SphereCast collision mask from an explicit include list
+        // (geometry the camera must NOT pass through) and then strip an
+        // explicit exclude list (player/enemy/UI bodies that must never push
+        // the camera around). The previous build path collapsed to ~0 which
+        // missed the StaticObstacle layer required for many level walls.
+        collisionMask = BuildSolidCameraMask();
+
+        // Belt-and-suspenders: also strip whatever runtime layer the player
+        // happens to be on, in case it differs from the named layers above.
         if (target != null)
             collisionMask &= ~(1 << target.gameObject.layer);
-
-        ExcludeLayerIfExists("Player");
-        ExcludeLayerIfExists("Character");
-
-        // Also exclude layers that should never block a camera.
-        ExcludeLayerIfExists("UI");
-        ExcludeLayerIfExists("TransparentFX");
-        ExcludeLayerIfExists("Ignore Raycast");
-
-        // IMPORTANT: treat "everything except excluded layers" as solid.
-        // The map/props in PRISM are not guaranteed to be on specific named layers,
-        // and the camera must not clip through any real geometry.
-        collisionMask = BuildSolidCameraMask();
     }
 
     private void IncludeLayerIfExists(string layerName)
@@ -331,18 +325,29 @@ public class CameraController : MonoBehaviour
             collisionMask,
             QueryTriggerInteraction.Ignore);
 
+        Collider blocker = null;
         for (int i = 0; i < hits.Length; i++)
         {
             Collider col = hits[i].collider;
             if (col == null)
                 continue;
+            // Player root and any of its child colliders must never push the
+            // camera in. The collisionMask already excludes Player/Character/
+            // Enemy/Hittable layers; this is a hierarchy-based safety net for
+            // colliders that happen to live on Default but belong to the rig.
             if (target != null && col.transform.IsChildOf(target))
                 continue;
-            if (!IsSolidCameraLayer(col.gameObject.layer))
-                continue;
 
-            nearest = Mathf.Min(nearest, Mathf.Max(hits[i].distance - wallPadding, minDistance));
+            float clamped = Mathf.Max(hits[i].distance - wallPadding, minDistance);
+            if (clamped < nearest)
+            {
+                nearest = clamped;
+                blocker = col;
+            }
         }
+
+        if (debugCameraCollision && blocker != null)
+            Debug.Log($"[CameraCollision] blocker={blocker.name} layer={LayerMask.LayerToName(blocker.gameObject.layer)} dist={nearest:F2}");
 
         return nearest;
     }
@@ -557,10 +562,52 @@ public class CameraController : MonoBehaviour
             : Mathf.SmoothDamp(cam.fieldOfView, targetFov, ref _fieldOfViewVelocity, 0.12f);
     }
 
+    /// <summary>
+    /// Solid geometry the camera must collide with (walls, buildings, doors,
+    /// props, level mesh) MINUS the bodies it must never collide with
+    /// (player, enemies, hittables, UI). Layers that don't exist in the
+    /// project are silently skipped — the result is always a valid mask.
+    /// </summary>
     private static LayerMask BuildSolidCameraMask()
     {
-        // Start with everything and let runtime exclusions remove non-solids.
-        return ~0;
+        int mask = 0;
+
+        // ── Include: solid level geometry ─────────────────────────────────────
+        AddLayerIfExists(ref mask, "Default");
+        AddLayerIfExists(ref mask, "Environment");
+        AddLayerIfExists(ref mask, "Map");
+        AddLayerIfExists(ref mask, "LevelContent");
+        AddLayerIfExists(ref mask, "Building");
+        AddLayerIfExists(ref mask, "Buildings");
+        AddLayerIfExists(ref mask, "StaticObstacle");
+        AddLayerIfExists(ref mask, "Wall");
+        AddLayerIfExists(ref mask, "Walls");
+        AddLayerIfExists(ref mask, "Door");
+        AddLayerIfExists(ref mask, "Doors");
+        AddLayerIfExists(ref mask, "Obstacle");
+        AddLayerIfExists(ref mask, "Prop");
+        AddLayerIfExists(ref mask, "Props");
+        AddLayerIfExists(ref mask, "Ground");
+        AddLayerIfExists(ref mask, "Terrain");
+
+        // ── Exclude: bodies that must never push the camera ───────────────────
+        RemoveLayerIfExists(ref mask, "Player");
+        RemoveLayerIfExists(ref mask, "Character");
+        RemoveLayerIfExists(ref mask, "Enemy");
+        RemoveLayerIfExists(ref mask, "Enemies");
+        RemoveLayerIfExists(ref mask, "Hittable");
+        RemoveLayerIfExists(ref mask, "UI");
+        RemoveLayerIfExists(ref mask, "TransparentFX");
+        RemoveLayerIfExists(ref mask, "Ignore Raycast");
+
+        return mask;
+    }
+
+    private static void RemoveLayerIfExists(ref int mask, string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0)
+            mask &= ~(1 << layer);
     }
 
     private static bool IsSolidCameraLayer(int layer)

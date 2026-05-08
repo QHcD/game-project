@@ -37,9 +37,9 @@ public class PlayerInteractor : MonoBehaviour
 
     [Header("Debug")]
     [Tooltip("Temporary debug logs for door interaction issues.")]
-    public bool debugDoorInteraction = true;
+    public bool debugDoorInteraction = false;
     [Tooltip("When true and E is pressed, logs all ray hits with layer + distance.")]
-    public bool debugLogAllHitsOnPress = true;
+    public bool debugLogAllHitsOnPress = false;
 
     private IInteractable    _currentTarget;
     private GameObject       _reticleRoot;
@@ -267,7 +267,10 @@ public class PlayerInteractor : MonoBehaviour
 
         Transform doorRoot = FindDoorPassableRoot(hitCollider, interactable);
         if (doorRoot != null)
+        {
             MakeDoorPassable(doorRoot);
+            Debug.Log($"[Door] E pressed -> opened/passable name={doorRoot.name}");
+        }
     }
 
     /// <summary>
@@ -379,7 +382,6 @@ public class PlayerInteractor : MonoBehaviour
         }
 
         doorRoot.gameObject.SetActive(false);
-        Debug.Log($"[DoorFix] OPENED_PASSABLE door={doorRoot.name} collidersDisabled={disabledCount}");
     }
 
     private static Transform FindNearestDoorRoot(Collider col)
@@ -416,21 +418,14 @@ public class PlayerInteractor : MonoBehaviour
         if (candidate == null)
             return false;
 
-        if (candidate.GetComponent<Collider>() == null ||
-            candidate.GetComponent<Renderer>() == null ||
-            candidate.GetComponent<MeshFilter>() == null)
-            return false;
-
-        Transform parent = candidate.parent;
-        while (parent != null)
-        {
-            string lower = parent.name.ToLowerInvariant();
-            if (lower.Contains("hangar") || lower.Contains("industrial"))
-                return true;
-            parent = parent.parent;
-        }
-
-        return false;
+        // Object084 in this project is the big level door. As long as the mesh
+        // has the standard collider/renderer trio it is treated as a door —
+        // the previous hangar/industrial parent-name requirement excluded
+        // door instances whose parent hierarchy used different naming, leaving
+        // the door un-interactable when the player pressed E.
+        return candidate.GetComponent<Collider>()   != null
+            && candidate.GetComponent<Renderer>()   != null
+            && candidate.GetComponent<MeshFilter>() != null;
     }
 
     private bool WasInteractPressedThisFrame()
