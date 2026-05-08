@@ -16,7 +16,7 @@ public class RobustThirdPersonMovement : MonoBehaviour
     [Header("Movement")]
     [SerializeField] private float moveSpeed = 7.0f;
     [SerializeField] private float sprintSpeed = 12.0f;
-    [SerializeField] private float rotationSpeed = 40f;
+    [SerializeField] private float rotationSpeed = 720f;
     [SerializeField] private bool instantAcceleration = true;
     [SerializeField] private float acceleration = 9999f;
     [SerializeField] private float deceleration = 9999f;
@@ -89,7 +89,11 @@ public class RobustThirdPersonMovement : MonoBehaviour
         Vector3 inputDirection = new Vector3(input.x, 0f, input.y);
         inputDirection = Vector3.ClampMagnitude(inputDirection, 1f);
 
-        MoveDirection = inputDirection.normalized;
+        // Rotate input by camera yaw so W = camera forward, not world +Z
+        if (cameraTransform != null && inputDirection.sqrMagnitude > 0.0001f)
+            inputDirection = Quaternion.Euler(0f, cameraTransform.eulerAngles.y, 0f) * inputDirection;
+
+        MoveDirection = inputDirection.sqrMagnitude > 0.0001f ? inputDirection.normalized : Vector3.zero;
 
         // Slide trigger: crouch while sprinting + grounded.
         if (enableSlide && _isGrounded && !_isSliding && Time.time >= _nextSlideTime)
@@ -127,8 +131,11 @@ public class RobustThirdPersonMovement : MonoBehaviour
 
         if (MoveDirection.sqrMagnitude > 0.001f && !_isSliding)
         {
-            Quaternion targetRotation = Quaternion.LookRotation(MoveDirection, Vector3.up);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+            // RotateTowards with deg/sec is frame-rate independent; Slerp was not
+            float targetYaw = Quaternion.LookRotation(MoveDirection, Vector3.up).eulerAngles.y;
+            Quaternion targetRotation = Quaternion.Euler(0f, targetYaw, 0f);
+            transform.rotation = Quaternion.RotateTowards(
+                transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
         }
     }
 
@@ -173,7 +180,8 @@ public class RobustThirdPersonMovement : MonoBehaviour
         float horizontalSpeed = new Vector3(_moveVelocity.x, 0f, _moveVelocity.z).magnitude;
         float normalizedSpeed = sprintSpeed > 0.01f ? horizontalSpeed / sprintSpeed : 0f;
 
-        animator.SetFloat("Speed", normalizedSpeed);
+        // Damp prevents animation popping on instant start/stop
+        animator.SetFloat("Speed", normalizedSpeed, 0.1f, Time.deltaTime);
         animator.SetBool("IsGrounded", _isGrounded);
         animator.SetBool("IsSprinting", _isSprinting && horizontalSpeed > 0.1f);
     }
