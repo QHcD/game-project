@@ -51,6 +51,14 @@ public class LevelBuilder : MonoBehaviour
     // Guard: the last frame on which we built, so we never double-build.
     private int _lastBuiltFrame = -1;
 
+    [Header("Enemy spawn spacing")]
+    [Tooltip("Preferred minimum horizontal distance between enemy spawn positions.")]
+    public float minEnemySpawnSpacing = 4f;
+    [Tooltip("Logs spawn spacing validation when enabled.")]
+    public bool debugSpawnSpacing = false;
+
+    private const float MinEnemySpawnHardFloor = 2f;
+
     // Public accessor so scene-local fallback can reach us.
     public static LevelBuilder Instance => instance;
 
@@ -836,24 +844,12 @@ public class LevelBuilder : MonoBehaviour
     //  ENEMY SPAWNING — 12 enemies plus the player
     // ════════════════════════════════════════════════════════════════════════
 
-    private void SpawnEnemies(Transform enemyRoot)
+    /// <summary>
+    /// Arena anchors: legacy grid + rings + cardinals so spawns rotate around the map.
+    /// </summary>
+    private static System.Collections.Generic.List<Vector3> BuildDistributedArenaAnchors()
     {
-        int   enemyCount  = GameManager.Instance != null ? GameManager.Instance.GetEnemyCount() : 12;
-        float chaseSpeed  = GameManager.Instance != null ? GameManager.Instance.GetEnemySpeed() : 3.8f;
-        float enemyDamage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() : 10f;
-        int   currentLvl  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
-
-        PlayerController playerRef = Object.FindFirstObjectByType<PlayerController>();
-        Vector3 playerPos = playerRef != null ? playerRef.transform.position : Vector3.zero;
-
-        // Captured for the post-spawn reachability validation pass below.
-        var spawnedEnemies = new System.Collections.Generic.List<GameObject>(enemyCount);
-
-        // Try loading the Crosby enemy model
-        GameObject enemyPrefab = Resources.Load<GameObject>("Enemy/Crosby");
-
-        // Spawn points spread across the larger industrial arena (80×80 half-size)
-        Vector3[] spawnPoints =
+        var anchors = new System.Collections.Generic.List<Vector3>(96)
         {
             new Vector3(-30f, 0.01f, -30f),
             new Vector3(  0f, 0.01f, -30f),
@@ -866,15 +862,227 @@ public class LevelBuilder : MonoBehaviour
             new Vector3(-15f, 0.01f,  20f),
             new Vector3( 15f, 0.01f,  20f),
             new Vector3(-15f, 0.01f, -20f),
-            new Vector3( 15f, 0.01f, -20f)
+            new Vector3( 15f, 0.01f, -20f),
         };
-        var orderedSpawns = new System.Collections.Generic.List<Vector3>(spawnPoints);
-        orderedSpawns.Sort((a, b) =>
-            Vector3.Distance(b, playerPos).CompareTo(Vector3.Distance(a, playerPos)));
+
+        float[] radii = { 8f, 14f, 20f, 26f, 32f };
+        const int segments = 16;
+        for (int ri = 0; ri < radii.Length; ri++)
+        {
+            float r = radii[ri];
+            for (int s = 0; s < segments; s++)
+            {
+                float ang = (s / (float)segments) * Mathf.PI * 2f;
+                anchors.Add(new Vector3(Mathf.Cos(ang) * r, 0.01f, Mathf.Sin(ang) * r));
+            }
+        }
+
+        anchors.Add(new Vector3(0f, 0.01f, -28f));
+        anchors.Add(new Vector3(0f, 0.01f, 28f));
+        anchors.Add(new Vector3(-28f, 0.01f, 0f));
+        anchors.Add(new Vector3(28f, 0.01f, 0f));
+
+        return anchors;
+    }
+
+    private static bool PassesEnemySeparationSq(Vector3 candidate, System.Collections.Generic.List<Vector3> placed, float minSepSqr)
+    {
+        for (int i = 0; i < placed.Count; i++)
+        {
+            if ((placed[i] - candidate).sqrMagnitude < minSepSqr)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static float DistanceToNearestPlaced(Vector3 candidate, System.Collections.Generic.List<Vector3> placed)
+    {
+        if (placed == null || placed.Count == 0)
+            return -1f;
+
+        float best = float.MaxValue;
+        for (int i = 0; i < placed.Count; i++)
+            best = Mathf.Min(best, Vector3.Distance(candidate, placed[i]));
+
+        return best == float.MaxValue ? -1f : best;
+    }
+
+    private static bool HasPathCompleteFromPlayer(Vector3 playerNavPos, Vector3 candidateWorld, NavMeshPath path)
+    {
+        if (!NavMesh.SamplePosition(candidateWorld, out NavMeshHit toHit, 3f, NavMesh.AllAreas))
+            return false;
+        if (!NavMesh.CalculatePath(playerNavPos, toHit.position, NavMesh.AllAreas, path))
+            return false;
+        return path.status == NavMeshPathStatus.PathComplete;
+    }
+
+    /// <summary>
+    /// Picks an open spawn with spacing + NavMesh PathComplete from player. Tier 1: minEnemySpawnSpacing; tier 2: 2 m floor.
+    /// </summary>
+    private bool TryPickEnemySpawnPosition(
+        Vector3 playerNavPos,
+        Vector3 rawPlayerPos,
+        System.Collections.Generic.List<Vector3> placedSoFar,
+        System.Collections.Generic.List<Vector3> anchors,
+        NavMeshPath path,
+        int enemyIndex,
+        out Vector3 spawnWorld)
+    {
+        spawnWorld = default;
+
+        float primary = Mathf.Max(MinEnemySpawnHardFloor, minEnemySpawnSpacing);
+        float primarySq = primary * primary;
+        const int attemptsTierA = 48;
+
+        for (int a = 0; a < attemptsTierA; a++)
+        {
+            Vector3 anchor = anchors[(enemyIndex * 13 + a * 7) % anchors.Count];
+            Vector3 open = FindOpenEnemySpawn(anchor, enemyIndex + a, rawPlayerPos);
+            Vector3 cand = ResolveAgentSpawnPosition(open);
+            if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 3f, NavMesh.AllAreas))
+                continue;
+            cand = hit.position;
+
+            if (!PassesEnemySeparationSq(cand, placedSoFar, primarySq))
+                continue;
+            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
+                continue;
+
+            spawnWorld = cand;
+            return true;
+        }
+
+        float fallbackSq = MinEnemySpawnHardFloor * MinEnemySpawnHardFloor;
+        const int attemptsTierB = 40;
+
+        for (int a = 0; a < attemptsTierB; a++)
+        {
+            Vector3 anchor = anchors[(enemyIndex * 19 + a * 11) % anchors.Count];
+            Vector3 open = FindOpenEnemySpawn(anchor, enemyIndex * 3 + a, rawPlayerPos);
+            Vector3 cand = ResolveAgentSpawnPosition(open);
+            if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 3f, NavMesh.AllAreas))
+                continue;
+            cand = hit.position;
+
+            if (!PassesEnemySeparationSq(cand, placedSoFar, fallbackSq))
+                continue;
+            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
+                continue;
+
+            spawnWorld = cand;
+            return true;
+        }
+
+        return false;
+    }
+
+    private Vector3 EmergencyEnemySpawn(
+        Vector3 playerNavPos,
+        Vector3 rawPlayerPos,
+        System.Collections.Generic.List<Vector3> placed,
+        System.Collections.Generic.List<Vector3> anchors,
+        NavMeshPath path,
+        int enemyIndex)
+    {
+        float fallbackSq = MinEnemySpawnHardFloor * MinEnemySpawnHardFloor;
+
+        for (int attempt = 0; attempt < 90; attempt++)
+        {
+            Vector3 jitter = Random.insideUnitSphere * (3f + attempt * 0.2f);
+            jitter.y = 0f;
+            Vector3 seed = anchors[(enemyIndex + attempt * 5) % anchors.Count] + jitter;
+            Vector3 open = FindOpenEnemySpawn(seed, enemyIndex + attempt, rawPlayerPos);
+            Vector3 cand = ResolveAgentSpawnPosition(open);
+            if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 14f, NavMesh.AllAreas))
+                continue;
+            cand = hit.position;
+
+            if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
+                continue;
+            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
+                continue;
+
+            return cand;
+        }
+
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            float ang = Random.Range(0f, Mathf.PI * 2f);
+            float rad = Random.Range(8f, 36f);
+            Vector3 probe = new Vector3(Mathf.Cos(ang) * rad, 0.01f, Mathf.Sin(ang) * rad);
+            if (!NavMesh.SamplePosition(probe, out NavMeshHit hit, 20f, NavMesh.AllAreas))
+                continue;
+            Vector3 cand = hit.position;
+
+            if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
+                continue;
+            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
+                continue;
+
+            return cand;
+        }
+
+        // Exhaust anchors with small jitter — still requires PathComplete + ≥ 2 m separation.
+        for (int ai = 0; ai < anchors.Count; ai++)
+        {
+            for (int jitterPass = 0; jitterPass < 6; jitterPass++)
+            {
+                Vector3 jitter = Random.insideUnitSphere * (1.5f + jitterPass * 0.8f);
+                jitter.y = 0f;
+                Vector3 seed = anchors[ai] + jitter;
+                Vector3 open = FindOpenEnemySpawn(seed, enemyIndex + ai + jitterPass, rawPlayerPos);
+                Vector3 cand = ResolveAgentSpawnPosition(open);
+                if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 18f, NavMesh.AllAreas))
+                    continue;
+                cand = hit.position;
+
+                if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
+                    continue;
+                if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
+                    continue;
+
+                return cand;
+            }
+        }
+
+        Vector3 last = ResolveAgentSpawnPosition(FindOpenEnemySpawn(anchors[0], enemyIndex, rawPlayerPos));
+        if (NavMesh.SamplePosition(last, out NavMeshHit fh, 25f, NavMesh.AllAreas))
+            last = fh.position;
+
+        Debug.LogWarning(
+            $"[LevelBuilder] Enemy spawn emergency fallback (spacing/path not guaranteed) index={enemyIndex}",
+            this);
+
+        return last;
+    }
+
+    private void SpawnEnemies(Transform enemyRoot)
+    {
+        int   enemyCount  = GameManager.Instance != null ? GameManager.Instance.GetEnemyCount() : 12;
+        float enemyDamage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() : 10f;
+        int   currentLvl  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+
+        PlayerController playerRef = Object.FindFirstObjectByType<PlayerController>();
+        Vector3 playerPos = playerRef != null ? playerRef.transform.position : Vector3.zero;
+
+        Vector3 playerNavPos = playerPos;
+        if (NavMesh.SamplePosition(playerPos, out NavMeshHit playerSnap, 10f, NavMesh.AllAreas))
+            playerNavPos = playerSnap.position;
+
+        // Captured for the post-spawn reachability validation pass below.
+        var spawnedEnemies = new System.Collections.Generic.List<GameObject>(enemyCount);
+
+        // Try loading the Crosby enemy model
+        GameObject enemyPrefab = Resources.Load<GameObject>("Enemy/Crosby");
+
+        var arenaAnchors = BuildDistributedArenaAnchors();
+        NavMeshPath spawnPath = new NavMeshPath();
+        var placedPositions = new System.Collections.Generic.List<Vector3>(enemyCount);
 
         for (int i = 0; i < enemyCount; i++)
         {
-            Vector3 spawnPos = orderedSpawns[i % orderedSpawns.Count];
+            Vector3 spawnPos = arenaAnchors[(i * 5) % arenaAnchors.Count];
             GameObject enemyObject;
 
             if (enemyPrefab != null)
@@ -914,11 +1122,12 @@ public class LevelBuilder : MonoBehaviour
             enemyObject.tag = "Enemy";
             SetLayerRecursive(enemyObject, ResolveHittableLayer());
 
-            // Find an open-air spawn point first and move the object there
-            // before adding NavMeshAgent, otherwise Unity warns if the object
-            // starts too far from any baked NavMesh.
-            Vector3 openSpawn = FindOpenEnemySpawn(spawnPos, i, playerPos);
-            Vector3 agentSpawn = ResolveAgentSpawnPosition(openSpawn);
+            Vector3 agentSpawn;
+            if (!TryPickEnemySpawnPosition(playerNavPos, playerPos, placedPositions, arenaAnchors,
+                    spawnPath, i, out agentSpawn))
+                agentSpawn = EmergencyEnemySpawn(playerNavPos, playerPos, placedPositions, arenaAnchors,
+                    spawnPath, i);
+
             enemyObject.transform.position = agentSpawn;
 
             // NavMeshAgent
@@ -926,14 +1135,15 @@ public class LevelBuilder : MonoBehaviour
             // This prevents "Failed to create agent because it is not close enough to the NavMesh".
             NavMeshAgent agent = EnsureComponent<NavMeshAgent>(enemyObject);
             if (agent.enabled) agent.enabled = false;
-            agent.speed                  = chaseSpeed;
+            agent.speed                  = 5.2f;
             agent.acceleration           = 14f;
-            agent.angularSpeed           = 360f;
-            agent.stoppingDistance       = 1.5f;
+            agent.angularSpeed           = 540f;
+            agent.stoppingDistance       = 1.7f;
             agent.radius                 = 0.45f;
             agent.height                 = 2f;
             agent.avoidancePriority      = 30 + (i * 3) % 40;
             agent.obstacleAvoidanceType  = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+            agent.updateRotation         = false;
 
             // Main collider — ensure a CapsuleCollider is present for hit detection.
             // Use WORLD-SPACE target dimensions and convert to local space so the
@@ -961,16 +1171,31 @@ public class LevelBuilder : MonoBehaviour
             }
 
             EnemyController controller = EnsureComponent<EnemyController>(enemyObject);
-            controller.moveSpeed   = Mathf.Max(3f, chaseSpeed - 0.6f);
-            controller.chaseSpeed  = chaseSpeed;
-            controller.attackDamage = enemyDamage;
-            controller.maxHealth   = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
+            controller.moveSpeed          = 3.2f;
+            controller.chaseSpeed         = 5.2f;
+            controller.sprintChaseSpeed   = 6.2f;
+            controller.agentAcceleration  = 14f;
+            controller.agentAngularSpeed  = 540f;
+            controller.attackDamage       = enemyDamage;
+            controller.maxHealth          = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
+
+            agent.speed            = controller.chaseSpeed;
+            agent.stoppingDistance = Mathf.Max(0.08f, controller.attackRadius * 0.85f);
 
             // Snap the agent onto the nearest NavMesh position before it begins moving.
             enemyObject.transform.position = agentSpawn;
             agent.enabled = true;
             PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn);
-            Debug.Log($"[LevelBuilder] Enemy_{i + 1} spawned at {agentSpawn}");
+
+            Vector3 finalPos = enemyObject.transform.position;
+            float distanceToNearest = DistanceToNearestPlaced(finalPos, placedPositions);
+            placedPositions.Add(finalPos);
+
+            if (debugSpawnSpacing)
+            {
+                Debug.Log(
+                    $"[SpawnSpacing] enemy={enemyObject.name} pos={finalPos} distanceToNearest={distanceToNearest}");
+            }
 
             // Attach the same melee weapon the player is using
             AttachWeaponToEnemy(enemyObject, currentLvl);
@@ -984,7 +1209,7 @@ public class LevelBuilder : MonoBehaviour
         // NavMesh island (sealed room baked separately, locked building) the
         // player can never reach it; relocate it to a candidate point that is
         // reachable, on the NavMesh, and clear of other enemies.
-        ValidateEnemyReachability(spawnedEnemies, playerPos, orderedSpawns);
+        ValidateEnemyReachability(spawnedEnemies, playerPos, arenaAnchors);
 
         // ── Issue #5: register the authoritative count with GameManager ──────
         // InitializeEnemyCount() sets BOTH enemiesRemaining AND totalEnemiesSpawned

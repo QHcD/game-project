@@ -160,9 +160,12 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
-        // Door / wall occlusion: if a static prop on the Environment layer
-        // sits between the attacker and us, the hit is blocked entirely.
-        if (DamageOcclusion.IsBlocked(attackerRoot, gameObject))
+        // Door / wall occlusion: static geometry between attacker and victim blocks the hit.
+        bool blocked = DamageOcclusion.IsBlocked(attackerRoot, gameObject);
+        if (CombatDebug.Enabled)
+            CombatDebug.Log($"blockedByWall={blocked}");
+
+        if (blocked)
             return;
 
         if (attackerRoot != null)
@@ -177,12 +180,22 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         {
             int hitsToKill = Mathf.Max(1, GameManager.Instance.GetPlayerHitsToKill());
             float perHitDamage = maxHealth / hitsToKill;
+            float hb = currentHealth;
+            if (CombatDebug.Enabled)
+                CombatDebug.Log($"applyingDamage amount={perHitDamage:F1} target={gameObject.name}");
             TakeDamage(perHitDamage);
+            if (CombatDebug.Enabled)
+                CombatDebug.Log($"healthBefore={hb:F1} healthAfter={currentHealth:F1}");
             return;
         }
 
         // Delegate to the existing float-based TakeDamage for non-enemy sources.
+        float hb2 = currentHealth;
+        if (CombatDebug.Enabled)
+            CombatDebug.Log($"applyingDamage amount={amount} target={gameObject.name}");
         TakeDamage((float)amount);
+        if (CombatDebug.Enabled)
+            CombatDebug.Log($"healthBefore={hb2:F1} healthAfter={currentHealth:F1}");
     }
 
     public void Heal(float amount)

@@ -32,6 +32,8 @@ public class WeaponHitbox : MonoBehaviour
         TryAdd(ref mask, "Player");
         TryAdd(ref mask, "Hittable");
         TryAdd(ref mask, "Character");
+        TryAdd(ref mask, "Enemy");
+        TryAdd(ref mask, "Enemies");
         if (mask == 0) return (LayerMask)~0;
         return (LayerMask)mask;
     }
@@ -138,34 +140,20 @@ public class WeaponHitbox : MonoBehaviour
         // Melee weapons deal flat body damage only — no headshot multipliers.
         int dmg = damage > 0 ? damage : 25;
 
-        // Wall-occlusion check: Linecast from weapon tip to target centre.
-        // If a wall or container is between them, the hit is blocked.
         Vector3 origin = GetWeaponTipWorldPosition();
-        Vector3 targetCenter = other.bounds.center;
-        int wallMask = BuildWallOcclusionMask();
-        if (wallMask != 0 && Physics.Linecast(origin, targetCenter, wallMask, QueryTriggerInteraction.Ignore))
-            return false;
+        bool blockedWorld = DamageOcclusion.IsBlockedFromPoint(resolvedOwner, target.gameObject, origin);
+        if (CombatDebug.Enabled)
+        {
+            CombatDebug.Log(
+                $"hit target={target.gameObject.name} blockedByWall={blockedWorld}");
+        }
 
-        // Secondary DamageOcclusion check (door/environment layer)
-        if (DamageOcclusion.IsBlockedFromPoint(resolvedOwner, target.gameObject, origin))
+        if (blockedWorld)
             return false;
 
         target.ReceiveDamage(dmg, resolvedOwner);
         hitThisSwing.Add(id);
         return true;
-    }
-
-    private static int BuildWallOcclusionMask()
-    {
-        int mask = 0;
-        void Add(string n) { int l = LayerMask.NameToLayer(n); if (l >= 0) mask |= 1 << l; }
-        Add("Environment");
-        Add("Default");
-        Add("Map");
-        Add("LevelContent");
-        Add("Wall");
-        Add("Obstacle");
-        return mask;
     }
 
     private Vector3 GetWeaponTipWorldPosition()

@@ -25,8 +25,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private const string PrefKeySawEuler = "Grip.Player.L12.Saw.Euler";
     // ── Tuning ──────────────────────────────────────────────────────────────
     [Header("Combat")]
-    public float detectionRadius  = 80f;
-    public float attackRadius     = 1.8f;
+    public float detectionRadius  = 12f;
+    public float attackRadius     = 2f;
     public float attackDamage     = 10f;
     public float attackCooldown   = 0.65f;
     public int   maxHealth        = 60;
@@ -34,16 +34,22 @@ public class EnemyController : MonoBehaviour, IDamageable
     public int   ragdollForceThreshold = 50;
 
     [Header("Movement — mirrors Player feel")]
-    [Tooltip("Base walking speed (matches PlayerController.moveSpeed = 3.5).")]
-    public float moveSpeed        = 3.5f;
-    [Tooltip("Chase/sprint speed — slightly faster than the player's sprint (4.8) for aggression.")]
-    public float chaseSpeed       = 5.8f;
-    [Tooltip("Manual rotation Slerp rate in Attack state (player body uses 8f — we bump slightly for responsiveness).")]
-    public float rotationSpeed    = 12f;
-    [Tooltip("NavMeshAgent acceleration. Raised to 40 so the agent reaches full speed in ~0.15 s — matches the player's snappy feel.")]
-    public float agentAcceleration = 40f;
-    [Tooltip("NavMeshAgent angular speed (deg/sec). 1080 = full turn in ~0.33 s, matching the player body Slerp.")]
-    public float agentAngularSpeed = 1080f;
+    [Tooltip("Base walking speed (patrol / evade).")]
+    public float moveSpeed        = 3.2f;
+    [Tooltip("Default chase speed toward targets.")]
+    public float chaseSpeed       = 5.2f;
+    [Tooltip("Upper cap when closing on a sprinting target — keeps aggression without rocket speeds.")]
+    public float sprintChaseSpeed = 6.2f;
+    [Tooltip("Manual rotation Slerp rate when smoothing toward movement / aim vectors.")]
+    public float rotationSpeed    = 10f;
+    [Tooltip("NavMeshAgent acceleration (units/s²).")]
+    public float agentAcceleration = 14f;
+    [Tooltip("NavMeshAgent angular speed (deg/sec). Visual turning uses LateUpdate Slerp when updateRotation is off.")]
+    public float agentAngularSpeed = 540f;
+    [Tooltip("Scales locomotion blend-tree Speed vs actual agent velocity so run cycles match chase cadence.")]
+    public float runAnimationMultiplier = 1.15f;
+    [Tooltip("Logs chase velocity, agent tuning, and animator sync.")]
+    public bool debugEnemyMovement = false;
 
     [Header("Flow Field Navigation")]
     [Tooltip("When enabled, chase movement follows the shared flow-field vectors instead of constantly pathing to target positions.")]
@@ -62,8 +68,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float obstacleCheckDist = 1.6f;
     [Tooltip("How long the enemy must be stuck before attempting a jump.")]
     public float stuckTime        = 1.2f;
-    [Tooltip("Velocity below this is considered 'stuck' even when path exists.")]
-    public float stuckVelocityThreshold = 0.25f;
+    [Tooltip("While jumping: ignore stuck-jump if horizontal agent speed exceeds this.")]
+    public float obstacleBlockedSpeedThreshold = 0.25f;
 
     [Header("Black Ops 3 Maneuvers (Enemies)")]
     [Tooltip("How often (seconds) the enemy may roll a combat maneuver (sprint/jump/slide/flip) while chasing.")]
@@ -120,9 +126,39 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Max seconds the 'last attacker' retaliation priority remains hot.")]
     public float retaliationMemory = 6f;
 
-    [Header("Separation (Anti-Stacking)")]
-    public float separationRadius   = 1.0f;
-    public float separationStrength = 1.0f;
+    [Header("AI / FSM")]
+    [Tooltip("Half-angle (degrees) of the horizontal vision cone for spotting threats.")]
+    public float fieldOfViewAngle = 120f;
+    [Tooltip("Below this fraction of max HP the enemy enters Evade.")]
+    [Range(0.05f, 0.95f)]
+    public float lowHealthPercent = 0.25f;
+    [Tooltip("Nav velocity below this while chasing counts toward stuck recovery.")]
+    public float stuckVelocityThreshold = 0.05f;
+    [Tooltip("Seconds at low velocity with an active path before StuckRecovery.")]
+    public float stuckTimeThreshold = 1.5f;
+    [Tooltip("How often to revalidate NavMesh path and refresh chase destination.")]
+    public float repathInterval = 0.5f;
+    [Tooltip("Seconds in Idle before starting Patrol.")]
+    public float idleToPatrolDelay = 0.85f;
+    [Tooltip("Max degrees off-forward allowed before swinging at the target.")]
+    public float attackFacingAngle = 50f;
+    public bool debugAI = false;
+
+    [Header("Flocking (group steering on NavMesh)")]
+    [Tooltip("Steer away from other enemies / player when closer than this (horizontal).")]
+    public float separationRadius = 1.45f;
+    [Tooltip("Neighbour enemies within this radius contribute to alignment.")]
+    public float alignmentRadius = 3f;
+    [Tooltip("Neighbour enemies within this radius contribute to cohesion centroid.")]
+    public float cohesionRadius = 4f;
+    [Tooltip("Weight for separation steering.")]
+    public float separationWeight = 1.6f;
+    [Tooltip("Weight for alignment steering (match neighbour velocity).")]
+    public float alignmentWeight = 0.4f;
+    [Tooltip("Weight for cohesion steering toward group centroid.")]
+    public float cohesionWeight = 0.5f;
+    [Tooltip("Cap on combined flock steering magnitude (world units per second scale).")]
+    public float maxFlockSteering = 1.2f;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -158,7 +194,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     // ── State ────────────────────────────────────────────────────────────────
   // ── State ────────────────────────────────────────────────────────────────
-    private enum State { Idle, Patrol, Chase, Attack, Flinch, Jumping, Dead }
+    private enum State { Idle, Patrol, Chase, Attack, Evade, StuckRecovery, Flinch, Jumping, Dead }
     private State _state = State.Idle;
 
     private NavMeshAgent _agent;
@@ -166,6 +202,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private AudioSource  _audio;
     private Rigidbody    _rb;
     private int          _currentHealth;
+
+    /// <summary>Read-only health for UI / combat diagnostics.</summary>
+    public int CurrentHealth => _currentHealth;
 
     // CharacterController is intentionally disabled at runtime — kept as a
     // reference only so the jump system can toggle it during the arc.
@@ -203,13 +242,6 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool  _isGrounded = true;
     private State _preJumpState;
 
-    // Heartbeat (anti-freeze): if we don't displace meaningfully for
-    // HeartbeatNoMoveThreshold seconds while in a movement state, force a
-    // NavMesh path recompute to the nearest target.
-    private const float HeartbeatNoMoveThreshold = 1.5f;
-    private const float HeartbeatMoveEpsilon     = 0.05f; // metres
-    private float _heartbeatTimer;
-    private Vector3 _heartbeatLastSampledPos;
     private HashSet<int> _animParameterHashes;
     private Transform _activeWeaponSocket;
     private Transform _activeWeaponHandBone;
@@ -221,7 +253,15 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _flowFieldSteerTimer;
     private Coroutine _attackHitboxRoutine;
     private WeaponHitbox _equippedWeaponHitbox;
-    private float _destinationRefreshTimer;
+    private float _repathTimer;
+    private float _idleTimer;
+    private float _navStuckTimer;
+    private State _resumeAfterStuck = State.Patrol;
+    private NavMeshPath _pathScratch;
+    private Transform _cachedPlayerTransform;
+
+    /// <summary>Duplicate root filtering for OverlapSphere hits (multi-collider rigs).</summary>
+    private readonly HashSet<int> _flockOverlapSeenRoots = new HashSet<int>();
 
     // Position-delta velocity (same technique the PlayerController uses)
     private Vector3 _lastFramePosition;
@@ -297,11 +337,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         _audio.playOnAwake  = false;
 
         // ── NavMeshAgent ──────────────────────────────────────────────────────
-        // The agent FULLY owns position AND rotation. Tuning below is chosen
-        // to mirror the PlayerController feel (MoveTowards with acceleration
-        // = 12, body rotation Slerp at 8f). With autoBraking DISABLED the
-        // enemy charges into melee range at full speed instead of ramping
-        // down — this is the single biggest "sluggish near target" fix.
+        // Agent owns position; yaw is smoothed in LateUpdate toward velocity / aim.
+        // With autoBraking DISABLED the enemy holds closing speed until melee hysteresis.
         if (_agent != null)
             ConfigureAgent();
 
@@ -345,13 +382,15 @@ public class EnemyController : MonoBehaviour, IDamageable
         // OverlapSphere returned zero hits and the enemy never acquired a target.
         detectionMask = ~0;
         LoadSavedRuntimeGripValues();
+
+        _pathScratch = new NavMeshPath();
     }
 
     private void Start()
     {
         detectionInterval = Mathf.Clamp(detectionInterval, 0.1f, 2.0f);
-        detectionRadius = Mathf.Max(detectionRadius, 80f);
-        aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, 120f);
+        detectionRadius = Mathf.Clamp(detectionRadius, 4f, 500f);
+        aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, Mathf.Max(detectionRadius * 2f, 24f));
         attackCooldown = Mathf.Min(attackCooldown, 0.65f);
         targetLockDuration = Mathf.Min(targetLockDuration, 0.15f);
         targetSwitchHysteresis = 0f;
@@ -401,6 +440,22 @@ public class EnemyController : MonoBehaviour, IDamageable
             _scanCoroutine = StartCoroutine(TargetScanLoop());
 
         _patrolTimer = Random.Range(0f, patrolRetargetInterval);
+        _repathTimer = Random.Range(0f, repathInterval);
+        _idleTimer = 0f;
+        CachePlayerTransform();
+    }
+
+    private void CachePlayerTransform()
+    {
+        PlayerHealth ph = Object.FindFirstObjectByType<PlayerHealth>();
+        _cachedPlayerTransform = ph != null ? ph.transform : null;
+    }
+
+    private Transform GetCachedPlayerTransform()
+    {
+        if (_cachedPlayerTransform == null)
+            CachePlayerTransform();
+        return _cachedPlayerTransform;
     }
 
     private bool _navMeshErrorLogged;
@@ -460,9 +515,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             _nextForceRetargetTime = Time.time + 0.5f;
             EvaluateTargets();
-            if (_target != null && (_state == State.Idle || _state == State.Patrol))
+            if (_target != null && (_state == State.Idle || _state == State.Patrol) && CanEngageChase(_target))
                 TransitionTo(State.Chase);
         }
+
+        TryGlobalAiTransitions();
 
         _attackTimer -= Time.deltaTime;
 
@@ -475,89 +532,80 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         switch (_state)
         {
-            case State.Idle:    UpdateIdle();    break;
-            case State.Patrol:  UpdatePatrol();  break;
-            case State.Chase:   UpdateChase();   break;
-            case State.Attack:  UpdateAttack();  break;
-            case State.Flinch:  UpdateFlinch();  break;
-            case State.Jumping: UpdateJumping(); break;
+            case State.Idle:           UpdateIdle();           break;
+            case State.Patrol:         UpdatePatrol();         break;
+            case State.Chase:          UpdateChase();          break;
+            case State.Attack:         UpdateAttack();         break;
+            case State.Evade:          UpdateEvade();          break;
+            case State.StuckRecovery:  UpdateStuckRecovery(); break;
+            case State.Flinch:         UpdateFlinch();         break;
+            case State.Jumping:        UpdateJumping();        break;
         }
 
-        TickHeartbeat();
-        // Warp logic removed per user request
         SyncAnimator();
     }
 
-    /// <summary>
-    /// Anti-freeze watchdog. While the enemy is in a state that should be
-    /// closing distance (Idle / Patrol / Chase) but its world position has
-    /// barely changed for 1.5 s, kick the NavMeshAgent: clear its current
-    /// path and re-target the nearest valid combatant (or the locked target).
-    /// Attack / Flinch / Jumping / Dead are excluded — they legitimately hold.
-    /// </summary>
-    private void TickHeartbeat()
+    private void TryGlobalAiTransitions()
     {
-        if (_state == State.Attack || _state == State.Flinch ||
-            _state == State.Jumping || _state == State.Dead)
+        if (_state == State.Dead || EndMatchCinematic.GameplayLocked)
+            return;
+
+        if (ShouldEnterEvade())
         {
-            _heartbeatTimer = 0f;
-            _heartbeatLastSampledPos = transform.position;
+            TransitionTo(State.Evade);
             return;
         }
 
-        Vector3 here = transform.position;
-        if ((here - _heartbeatLastSampledPos).sqrMagnitude > HeartbeatMoveEpsilon * HeartbeatMoveEpsilon)
-        {
-            _heartbeatTimer = 0f;
-            _heartbeatLastSampledPos = here;
-            return;
-        }
-
-        _heartbeatTimer += Time.deltaTime;
-        if (_heartbeatTimer < HeartbeatNoMoveThreshold) return;
-
-        _heartbeatTimer = 0f;
-        _heartbeatLastSampledPos = here;
-        ForcePathRecomputeToNearestTarget();
+        if (ShouldEnterStuckRecovery())
+            TransitionTo(State.StuckRecovery);
     }
 
-    private void ForcePathRecomputeToNearestTarget()
+    private bool ShouldEnterEvade()
     {
-        if (!IsAgentReady()) return;
+        if (_state == State.Dead || _state == State.Evade || _state == State.StuckRecovery ||
+            _state == State.Jumping)
+            return false;
 
-        Transform target = IsTargetValid(_target)
-            ? _target
-            : FindFfaTarget(Mathf.Max(detectionRadius, aggressiveScanRadius));
+        if (maxHealth <= 0)
+            return false;
 
-        if (target == null)
+        return (float)_currentHealth / maxHealth <= lowHealthPercent;
+    }
+
+    private bool ShouldEnterStuckRecovery()
+    {
+        if (_state == State.Dead || _state == State.StuckRecovery || _state == State.Jumping ||
+            _state == State.Attack || _state == State.Flinch || _state == State.Idle)
+            return false;
+
+        if (!IsAgentReady())
+            return false;
+
+        if (!_agent.hasPath || _agent.remainingDistance <= _agent.stoppingDistance + 0.08f)
         {
-            // Nothing valid to chase — at least re-issue the patrol so the
-            // agent doesn't keep idling against a stale internal path.
-            _agent.ResetPath();
-            TransitionTo(State.Patrol);
-            return;
+            _navStuckTimer = 0f;
+            return false;
         }
 
-        _target = target;
-        _agent.ResetPath();
-        Vector3 dest = target.position;
-        if (NavMesh.SamplePosition(dest, out NavMeshHit navHit, 2.0f, NavMesh.AllAreas))
-            dest = navHit.position;
+        if (_agent.velocity.magnitude > stuckVelocityThreshold)
+        {
+            _navStuckTimer = 0f;
+            return false;
+        }
 
-        _agent.isStopped = false;
-        _agent.SetDestination(dest);
-
-        if (_state != State.Chase && _state != State.Attack)
-            TransitionTo(State.Chase);
+        _navStuckTimer += Time.deltaTime;
+        return _navStuckTimer >= stuckTimeThreshold;
     }
 
     private void FixedUpdate()
     {
-        ApplyEnemySeparation();
+        ApplyFlockingSteering();
     }
 
     private void LateUpdate()
     {
+        ApplyMovementAlignedRotation();
+
         if (!stabilizeWeaponSocketAgainstHandPose)
             return;
 
@@ -567,6 +615,39 @@ public class EnemyController : MonoBehaviour, IDamageable
         _activeWeaponSocket.localRotation =
             Quaternion.Inverse(_activeWeaponHandBone.localRotation) *
             Quaternion.Euler(weaponSocketLocalEulerAngles);
+    }
+
+    /// <summary>
+    /// Smoothly aligns the body with horizontal NavMesh velocity so feet/locomotion match travel direction (no moonwalking).
+    /// NavMeshAgent.updateRotation stays false — rotation is driven here via Slerp.
+    /// </summary>
+    private void ApplyMovementAlignedRotation()
+    {
+        if (_state == State.Dead || EndMatchCinematic.GameplayLocked)
+            return;
+
+        if (_state == State.Attack || _state == State.Flinch || _state == State.Jumping)
+            return;
+
+        if (_agent == null || !_agent.enabled)
+            return;
+
+        Vector3 flatVel = _agent.velocity;
+        flatVel.y = 0f;
+
+        if (flatVel.sqrMagnitude > 0.07f)
+        {
+            FaceDirection(flatVel);
+            return;
+        }
+
+        if (_state == State.Chase && _target != null)
+        {
+            Vector3 toTarget = _target.position - transform.position;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude > 0.02f)
+                FaceDirection(toTarget);
+        }
     }
 
     // ── State handlers ────────────────────────────────────────────────────────
@@ -582,10 +663,14 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (IsAgentReady())
             _agent.isStopped = true;
 
-        // Immediately react to any valid target (no wait for scan tick).
-        if (IsTargetValid(_target))
+        if (IsTargetValid(_target) && CanEngageChase(_target))
+        {
             TransitionTo(State.Chase);
-        else
+            return;
+        }
+
+        _idleTimer += Time.deltaTime;
+        if (_idleTimer >= idleToPatrolDelay)
             TransitionTo(State.Patrol);
     }
 
@@ -594,7 +679,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (!IsAgentReady())
             return;
 
-        if (IsTargetValid(_target))
+        if (IsTargetValid(_target) && CanEngageChase(_target))
         {
             TransitionTo(State.Chase);
             return;
@@ -602,6 +687,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _agent.isStopped = false;
         _agent.speed = moveSpeed;
+        _agent.stoppingDistance = Mathf.Max(0.25f, attackRadius * 0.35f);
 
         if (_isTraversingOffMeshLink || _agent.isOnOffMeshLink)
             return;
@@ -615,14 +701,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
-    private float _stuckInChaseTimer;
-
     private void UpdateChase()
     {
         if (HandleOffMeshLinkTraversal())
             return;
 
-        // ── Validation ───────────────────────────────────────────────────────
         if (!IsTargetValid(_target))
         {
             _target = null;
@@ -631,93 +714,86 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         float dist = Vector3.Distance(transform.position, _target.position);
-
-        // Enter attack range. Padding so we commit rather than hover at the edge.
         float engageDist = attackRadius + attackRangePadding;
-        if (dist <= engageDist)
+
+        if (dist <= engageDist && HasCombatVisionTo(_target) &&
+            IsFacingTarget(_target, attackFacingAngle))
         {
             TransitionTo(State.Attack);
             return;
         }
 
-        // ── Drive the agent directly ────────────────────────────────────────
         if (IsAgentReady())
         {
-            if (_agent.isStopped) _agent.isStopped = false;
+            if (_agent.isStopped)
+                _agent.isStopped = false;
 
-            if (_agent.velocity.magnitude < 0.1f)
-            {
-                _stuckInChaseTimer += Time.deltaTime;
-                if (_stuckInChaseTimer >= 2.0f)
-                {
-                    _stuckInChaseTimer = 0f;
-                    _agent.ResetPath();
-                    _agent.SetDestination(_target.position);
-                }
-            }
-            else
-            {
-                _stuckInChaseTimer = 0f;
-            }
-
-            // ── Dynamic speed: exceed the player's actual sprint speed ───────
-            // Read the player's current max speed at runtime so a future tweak
-            // to PlayerController.moveSpeed / sprintMultiplier is automatically
-            // reflected here — no manual sync needed.
             float targetSpeed = chaseSpeed;
             PlayerController pc = _target != null
-                ? _target.GetComponentInParent<PlayerController>() : null;
+                ? _target.GetComponentInParent<PlayerController>()
+                : null;
             if (pc != null)
             {
-                // Player sprint = moveSpeed * sprintMultiplier ≈ 4.8 u/s.
-                // We add a 1.5 u/s margin so the enemy always closes the gap.
                 float playerTopSpeed = pc.moveSpeed * pc.sprintMultiplier;
-                targetSpeed = Mathf.Max(chaseSpeed, playerTopSpeed + 1.5f);
+                float boosted = Mathf.Max(chaseSpeed, playerTopSpeed + 0.35f);
+                targetSpeed = Mathf.Min(sprintChaseSpeed, boosted);
             }
 
-            _agent.speed            = targetSpeed;
-            _agent.acceleration     = agentAcceleration;
-            _agent.angularSpeed     = agentAngularSpeed;
-            _agent.autoBraking      = false;
-            _agent.stoppingDistance = Mathf.Max(0.1f, attackRadius * 0.5f);
+            _agent.speed = targetSpeed;
+            _agent.acceleration = agentAcceleration;
+            _agent.angularSpeed = agentAngularSpeed;
+            _agent.autoBraking = false;
+            _agent.stoppingDistance = Mathf.Max(0.08f, attackRadius * 0.85f);
 
-            // ── High-frequency destination refresh ───────────────────────────
-            // Old threshold was 0.6 sqrMag (≈ 0.77 m) guarded by !pathPending.
-            // Problem: if a path is always computing (pathPending == true) the
-            // destination was NEVER updated, making the enemy chase a stale
-            // position while the player sprinted away.
-            //
-            // Fix:
-            //   • Threshold → 0.04 sqrMag (≈ 0.2 m) so fast players are tracked
-            //     almost immediately.
-            //   • pathPending guard removed: re-issuing SetDestination while a
-            //     path is computing is safe on Unity 6 and overwrites the pending
-            //     request with the fresher target position.
-            _destinationRefreshTimer -= Time.deltaTime;
-            bool refreshDestination = _destinationRefreshTimer <= 0f;
-
-            if (useFlowFieldNavigation && FlowFieldManager.Instance != null)
-            {
-                if (refreshDestination)
-                    DriveChaseWithFlowField();
-            }
-            else if (refreshDestination)
-            {
-                bool setDirect = _agent.SetDestination(_target.position);
-                if (!setDirect || _agent.pathStatus == NavMeshPathStatus.PathInvalid)
-                    TrySetDestinationNearTarget();
-            }
-
-            if (refreshDestination)
-                _destinationRefreshTimer = 0.5f;
+            TryRefreshChaseDestination();
         }
 
         CheckAndJumpIfStuck();
-
-        // Black Ops 3 manoeuvre tick — gives enemies a small chance every
-        // <maneuverRollInterval> seconds to fire off a sprint, slide, jump or
-        // flip while chasing. Reuses the same physics as the player.
         TickCombatManeuver();
+    }
+
+    /// <summary>
+    /// Throttled NavMesh validation / destination refresh (see <see cref="repathInterval"/>).
+    /// </summary>
+    private void TryRefreshChaseDestination()
+    {
+        _repathTimer -= Time.deltaTime;
+        if (_repathTimer > 0f)
+            return;
+
+        _repathTimer = repathInterval;
+
+        if (_target == null || !IsAgentReady())
+            return;
+
+        if (useFlowFieldNavigation && FlowFieldManager.Instance != null)
+        {
+            _flowFieldSteerTimer = 0f;
+            DriveChaseWithFlowField();
+        }
+        else
+        {
+            NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
+
+            if (_pathScratch.status == NavMeshPathStatus.PathComplete)
+                _agent.SetDestination(_target.position);
+            else
+            {
+                RepositionOnInvalidPath();
+                if (debugAI)
+                    Debug.Log($"[EnemyAI] {name} chase path {_pathScratch.status}, repositioning.", this);
+            }
+
+            return;
+        }
+
+        NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
+        if (_pathScratch.status != NavMeshPathStatus.PathComplete)
+        {
+            RepositionOnInvalidPath();
+            if (debugAI)
+                Debug.Log($"[EnemyAI] {name} flow chase goal unreachable ({_pathScratch.status}).", this);
+        }
     }
 
     private void UpdateAttack()
@@ -735,32 +811,96 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (IsAgentReady())
         {
             _agent.isStopped = true;
-            // Zero velocity so the agent stops IMMEDIATELY — no drift-slide
-            // past the target while the swing animation plays.
-            _agent.velocity  = Vector3.zero;
+            _agent.velocity = Vector3.zero;
         }
 
         Vector3 toTarget = _target.position - transform.position;
         toTarget.y = 0f;
         float dist = toTarget.magnitude;
 
-        // Hysteresis: only leave Attack when the target has moved noticeably
-        // outside the engagement ring — prevents Chase↔Attack thrash.
         float breakDist = attackRadius + attackRangePadding + breakAttackPadding;
-        if (dist > breakDist)
+        if (dist > breakDist || !HasCombatVisionTo(_target))
         {
             TransitionTo(State.Chase);
             return;
         }
 
-        // Manual snappy rotation (agent is stopped, so it won't rotate itself).
         FaceDirection(toTarget);
 
-        if (_attackTimer <= 0f)
+        float engageDist = attackRadius + attackRangePadding;
+        if (dist <= engageDist && IsFacingTarget(_target, attackFacingAngle) && HasCombatVisionTo(_target))
         {
-            _attackTimer = attackCooldown;
-            ExecuteAttack();
+            if (_attackTimer <= 0f)
+            {
+                _attackTimer = attackCooldown;
+                ExecuteAttack();
+            }
         }
+    }
+
+    private void UpdateEvade()
+    {
+        if (HandleOffMeshLinkTraversal())
+            return;
+
+        float hpPct = (float)_currentHealth / Mathf.Max(1, maxHealth);
+        if (hpPct > lowHealthPercent + 0.02f)
+        {
+            TransitionTo(IsTargetValid(_target) && CanEngageChase(_target) ? State.Chase : State.Patrol);
+            return;
+        }
+
+        if (!IsAgentReady())
+            return;
+
+        _agent.isStopped = false;
+        _agent.speed = moveSpeed;
+        _agent.stoppingDistance = Mathf.Max(0.3f, attackRadius * 0.4f);
+
+        Transform player = GetCachedPlayerTransform();
+        if (player != null)
+        {
+            Vector3 away = transform.position - player.position;
+            away.y = 0f;
+            if (away.sqrMagnitude > 0.01f)
+            {
+                Vector3 fleeGoal = transform.position + away.normalized * 12f;
+                if (NavMesh.SamplePosition(fleeGoal, out NavMeshHit hit, 14f, NavMesh.AllAreas))
+                    _agent.SetDestination(hit.position);
+            }
+        }
+        else
+        {
+            SetRandomPatrolDestination();
+        }
+    }
+
+    private void UpdateStuckRecovery()
+    {
+        if (!IsAgentReady())
+        {
+            TransitionTo(_resumeAfterStuck);
+            return;
+        }
+
+        _agent.ResetPath();
+        _navStuckTimer = 0f;
+
+        if (NavMesh.SamplePosition(transform.position, out NavMeshHit near, 3f, NavMesh.AllAreas))
+        {
+            if ((near.position - transform.position).sqrMagnitude > 0.04f)
+                _agent.Warp(near.position);
+        }
+
+        Vector3 lateral = transform.position + Random.insideUnitSphere * 4f;
+        lateral.y = transform.position.y;
+        if (NavMesh.SamplePosition(lateral, out NavMeshHit dest, 8f, NavMesh.AllAreas))
+            _agent.SetDestination(dest.position);
+
+        if (debugAI)
+            Debug.Log($"[EnemyAI] {name} stuck recovery → {_resumeAfterStuck}", this);
+
+        TransitionTo(_resumeAfterStuck);
     }
 
     private void UpdateFlinch()
@@ -778,66 +918,137 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    //  SEPARATION (Anti-Stacking) — kinematic Rigidbody backup
-    //  NavMeshAgent.HQ avoidance is supposed to keep agents from overlapping,
-    //  but two failure modes still produce the "magnet merge" reported by the
-    //  player: (a) coincident spawn points, (b) a NavMesh that can't pull
-    //  agents apart because the area between them is unwalkable. Because the
-    //  Rigidbody is kinematic, the physics engine WILL NOT push these
-    //  capsules apart no matter what the layer collision matrix says — this
-    //  routine performs the push manually without teleporting the agent.
+    //  FLOCKING — separation / alignment / cohesion as NavMeshAgent.Move offsets
+    //  Single NonAlloc overlap per enemy per physics step (radius = max rule).
+    //  Does not replace pathfinding; Chase/Patrol still own SetDestination.
     // ════════════════════════════════════════════════════════════════════════
 
-    private static readonly Collider[] _separationBuffer = new Collider[24];
+    private static readonly Collider[] _flockColliderBuffer = new Collider[32];
 
-    private void ApplyEnemySeparation()
+    private void ApplyFlockingSteering()
     {
-        if (_state == State.Dead) return;
+        if (_state == State.Dead || _state == State.Attack || _state == State.Flinch ||
+            _state == State.Jumping || _state == State.StuckRecovery)
+            return;
 
+        if (EndMatchCinematic.GameplayLocked)
+            return;
+
+        if (!IsAgentReady() || !_agent.isOnNavMesh || _agent.isStopped)
+            return;
+
+        float queryRadius = Mathf.Max(0.15f, Mathf.Max(separationRadius, Mathf.Max(alignmentRadius, cohesionRadius)));
         Vector3 origin = transform.position + Vector3.up * 0.9f;
+
         int hitCount = Physics.OverlapSphereNonAlloc(
             origin,
-            Mathf.Max(0.1f, separationRadius),
-            _separationBuffer,
+            queryRadius,
+            _flockColliderBuffer,
             ResolveHittableMask(),
             QueryTriggerInteraction.Ignore);
-        Vector3 push = Vector3.zero;
+
+        Vector3 myFlat = new Vector3(transform.position.x, 0f, transform.position.z);
+
+        Vector3 separation = Vector3.zero;
+        Vector3 alignVelSum = Vector3.zero;
+        int alignCount = 0;
+        Vector3 cohesionPosSum = Vector3.zero;
+        int cohesionCount = 0;
+
+        _flockOverlapSeenRoots.Clear();
 
         for (int i = 0; i < hitCount; i++)
         {
-            Collider other = _separationBuffer[i];
-            if (other == null) continue;
-            if (other.transform == transform || other.transform.IsChildOf(transform)) continue;
+            Collider col = _flockColliderBuffer[i];
+            if (col == null) continue;
+            if (col.transform == transform || col.transform.IsChildOf(transform)) continue;
 
-            IDamageable damageable = other.GetComponentInParent<IDamageable>();
-            if (damageable == null || !damageable.IsAlive || damageable.gameObject == gameObject)
-                continue;
-
-            Vector3 delta = transform.position - damageable.transform.position;
-            delta.y = 0f;
-            float distance = delta.magnitude;
-
-            if (distance < 0.001f)
+            EnemyController otherEc = col.GetComponentInParent<EnemyController>();
+            if (otherEc != null)
             {
-                float jitter = GetInstanceID() < damageable.gameObject.GetInstanceID() ? 1f : -1f;
-                delta = new Vector3(jitter, 0f, jitter * 0.35f);
-                distance = delta.magnitude;
+                if (otherEc == this || !otherEc.IsAlive)
+                    continue;
+
+                int rootId = otherEc.gameObject.GetInstanceID();
+                if (!_flockOverlapSeenRoots.Add(rootId))
+                    continue;
+
+                Vector3 otherFlat = new Vector3(otherEc.transform.position.x, 0f, otherEc.transform.position.z);
+                Vector3 offset = myFlat - otherFlat;
+                float dist = offset.magnitude;
+
+                if (dist > 0.001f && dist < separationRadius)
+                {
+                    float t = (separationRadius - dist) / Mathf.Max(0.001f, separationRadius);
+                    separation += offset.normalized * t;
+                }
+                else if (dist <= 0.001f)
+                {
+                    float jitter = GetInstanceID() < rootId ? 1f : -1f;
+                    separation += new Vector3(jitter, 0f, jitter * 0.35f).normalized;
+                }
+
+                if (dist < alignmentRadius && otherEc._agent != null)
+                {
+                    Vector3 ov = otherEc._agent.velocity;
+                    ov.y = 0f;
+                    alignVelSum += ov;
+                    alignCount++;
+                }
+
+                if (dist < cohesionRadius)
+                {
+                    cohesionPosSum += otherEc.transform.position;
+                    cohesionCount++;
+                }
+
+                continue;
             }
 
-            float overlap = Mathf.Max(0f, separationRadius - distance);
-            if (overlap > 0f)
-                push += delta.normalized * overlap * Mathf.Max(0.1f, separationStrength);
+            PlayerHealth playerHealth = col.GetComponentInParent<PlayerHealth>();
+            if (playerHealth != null)
+            {
+                int rootId = playerHealth.gameObject.GetInstanceID();
+                if (!_flockOverlapSeenRoots.Add(rootId))
+                    continue;
+
+                Vector3 pFlat = new Vector3(playerHealth.transform.position.x, 0f, playerHealth.transform.position.z);
+                Vector3 offset = myFlat - pFlat;
+                float dist = offset.magnitude;
+                if (dist > 0.001f && dist < separationRadius)
+                {
+                    float t = (separationRadius - dist) / Mathf.Max(0.001f, separationRadius);
+                    separation += offset.normalized * t;
+                }
+            }
         }
 
-        if (push.sqrMagnitude < 1e-6f) return;
+        Vector3 alignment = Vector3.zero;
+        if (alignCount > 0)
+        {
+            Vector3 avgVel = alignVelSum / alignCount;
+            Vector3 myVel = _agent.velocity;
+            myVel.y = 0f;
+            alignment = avgVel - myVel;
+        }
 
-        Vector3 destination = transform.position + Vector3.ClampMagnitude(push, separationRadius);
-        if (_agent != null && _agent.enabled && _agent.isOnNavMesh)
-            _agent.Warp(destination);
-        else
-            transform.position = destination;
+        Vector3 cohesion = Vector3.zero;
+        if (cohesionCount > 0)
+        {
+            Vector3 center = cohesionPosSum / cohesionCount;
+            Vector3 toCenter = new Vector3(center.x, 0f, center.z) - myFlat;
+            if (toCenter.sqrMagnitude > 0.0001f)
+                cohesion = toCenter.normalized;
+        }
 
-        Physics.SyncTransforms();
+        Vector3 flock = separation * separationWeight + alignment * alignmentWeight + cohesion * cohesionWeight;
+        flock.y = 0f;
+        flock = Vector3.ClampMagnitude(flock, maxFlockSteering);
+
+        if (flock.sqrMagnitude < 1e-10f)
+            return;
+
+        _agent.Move(flock * Time.fixedDeltaTime);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -873,7 +1084,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (!IsAgentReady() || !_agent.hasPath) return;
 
         float speed = _agent.velocity.magnitude;
-        if (speed > stuckVelocityThreshold)
+        if (speed > obstacleBlockedSpeedThreshold)
         {
             _stuckTimer = 0f; // moving fine — reset timer
             return;
@@ -1043,6 +1254,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ── Combat ────────────────────────────────────────────────────────────────
     private void ExecuteAttack()
     {
+        if (CombatDebug.Enabled)
+            CombatDebug.Log($"EnemyAttack started enemy={name}");
+
         SetAnimatorTrigger(HashAttack);
 
         if (_attackHitboxRoutine != null)
@@ -1136,10 +1350,11 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
-        // Door / wall occlusion: a static prop on the Environment layer
-        // between attacker and us cancels the hit (the player can no longer
-        // be tagged through closed doors and the AI returns the courtesy).
-        if (DamageOcclusion.IsBlocked(attackerRoot, gameObject))
+        bool blocked = DamageOcclusion.IsBlocked(attackerRoot, gameObject);
+        if (CombatDebug.Enabled)
+            CombatDebug.Log($"blockedByWall={blocked}");
+
+        if (blocked)
             return;
 
         // ── Record attacker & retaliate immediately ─────────────────────────
@@ -1181,7 +1396,14 @@ public class EnemyController : MonoBehaviour, IDamageable
             appliedDamage = Mathf.Max(1, Mathf.CeilToInt((float)maxHealth / hitsToKill));
         }
 
+        int healthBefore = _currentHealth;
+        if (CombatDebug.Enabled)
+            CombatDebug.Log($"applyingDamage amount={appliedDamage} target={gameObject.name}");
+
         TakeDamage(appliedDamage, byPlayer: fromPlayer);
+
+        if (CombatDebug.Enabled)
+            CombatDebug.Log($"healthBefore={healthBefore} healthAfter={_currentHealth}");
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1465,9 +1687,10 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         float actualSpeed = agentVelocity.magnitude;
 
-        // Normalise against the current movement ceiling.
-        float maxSpeed        = Mathf.Max(0.01f, chaseSpeed);
-        float normalizedSpeed = Mathf.Clamp01(actualSpeed / maxSpeed);
+        // Normalise by sprint cap so full-speed chases register ~1.0 on the blend tree; optional runAnimationMultiplier
+        // nudges foot speed to match visible stride when the agent is at top chase velocity.
+        float refSpeed = Mathf.Max(0.01f, sprintChaseSpeed);
+        float normalizedSpeed = Mathf.Clamp01((actualSpeed * runAnimationMultiplier) / refSpeed);
 
         // Keep _lastFramePosition updated for any legacy callers.
         _lastFramePosition = transform.position;
@@ -1483,6 +1706,14 @@ public class EnemyController : MonoBehaviour, IDamageable
             ForceLocomotionState(normalizedSpeed);
 
         // ── Directional blend-tree params (VelocityX / VelocityZ) ────────
+        if (debugEnemyMovement && _state == State.Chase && _agent != null && (Time.frameCount % 15) == 0)
+        {
+            Debug.Log(
+                $"[EnemyMovement] enemy={name} velMag={actualSpeed:F2} agentSpeed={_agent.speed:F2} " +
+                $"animNorm={normalizedSpeed:F2} state={_state}",
+                this);
+        }
+
         if (actualSpeed > 0.05f)
         {
             Vector3 localVel = transform.InverseTransformDirection(
@@ -1763,20 +1994,128 @@ public class EnemyController : MonoBehaviour, IDamageable
         return dmg != null && dmg.IsAlive;
     }
 
-    /// <summary>Raycast-based LoS. Returns true if no blocker layer is set.</summary>
-    private bool HasLineOfSight(Transform t)
+    private static int _aiVisionBlockMask;
+    private static bool _aiVisionBlockMaskCached;
+
+    /// <summary>
+    /// Solid environment layers only — excludes characters so walls/doors block vision.
+    /// </summary>
+    private static int ResolveAiVisionBlockMask()
     {
-        if (t == null) return false;
-        if (lineOfSightBlockers.value == 0) return true;
+        if (_aiVisionBlockMaskCached)
+            return _aiVisionBlockMask;
+
+        int mask = 0;
+        void Add(string layerName)
+        {
+            int layer = LayerMask.NameToLayer(layerName);
+            if (layer >= 0)
+                mask |= 1 << layer;
+        }
+
+        Add("Environment");
+        Add("Building");
+        Add("StaticObstacle");
+        Add("Wall");
+        Add("Door");
+
+        _aiVisionBlockMask = mask;
+        _aiVisionBlockMaskCached = true;
+        return _aiVisionBlockMask;
+    }
+
+    /// <summary>Chest-to-chest line test using environment-only layers.</summary>
+    private bool HasCombatVisionTo(Transform t)
+    {
+        if (t == null)
+            return true;
+
+        int mask = ResolveAiVisionBlockMask();
+        if (mask == 0)
+            return true;
 
         Vector3 from = transform.position + Vector3.up * lineOfSightEyeHeight;
-        Vector3 to   = t.position + Vector3.up * lineOfSightEyeHeight;
-        Vector3 dir  = to - from;
-        float   d    = dir.magnitude;
-        if (d < 0.05f) return true;
+        Vector3 to = t.position + Vector3.up * lineOfSightEyeHeight;
+        return !Physics.Linecast(from, to, mask, QueryTriggerInteraction.Ignore);
+    }
 
-        return !Physics.Raycast(
-            from, dir / d, d, lineOfSightBlockers, QueryTriggerInteraction.Ignore);
+    private bool IsInCombatFieldOfView(Transform t)
+    {
+        Vector3 to = t.position - transform.position;
+        to.y = 0f;
+        if (to.sqrMagnitude < 0.0001f)
+            return true;
+
+        return Vector3.Angle(transform.forward, to) <= fieldOfViewAngle * 0.5f;
+    }
+
+    private bool IsFacingTarget(Transform t, float maxDegrees)
+    {
+        Vector3 to = t.position - transform.position;
+        to.y = 0f;
+        if (to.sqrMagnitude < 0.0001f)
+            return true;
+
+        return Vector3.Angle(transform.forward, to) <= maxDegrees;
+    }
+
+    /// <summary>
+    /// Patrol→Chase gate: range, FOV cone, AI vision, full NavMesh path.
+    /// </summary>
+    private bool CanEngageChase(Transform t)
+    {
+        if (!IsTargetValid(t))
+            return false;
+
+        float d = Vector3.Distance(transform.position, t.position);
+        if (d > detectionRadius * 1.05f)
+            return false;
+
+        if (!IsInCombatFieldOfView(t))
+            return false;
+
+        if (!HasCombatVisionTo(t))
+            return false;
+
+        NavMesh.CalculatePath(transform.position, t.position, NavMesh.AllAreas, _pathScratch);
+        return _pathScratch.status == NavMeshPathStatus.PathComplete;
+    }
+
+    private void TrySetChaseDestinationValidated()
+    {
+        if (_target == null || !IsAgentReady())
+            return;
+
+        NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
+
+        if (_pathScratch.status == NavMeshPathStatus.PathComplete)
+        {
+            _agent.SetDestination(_target.position);
+            return;
+        }
+
+        RepositionOnInvalidPath();
+        if (debugAI)
+            Debug.Log($"[EnemyAI] {name} initial chase path {_pathScratch.status}, repositioned.", this);
+    }
+
+    private void RepositionOnInvalidPath()
+    {
+        if (!IsAgentReady())
+            return;
+
+        Vector3 probe = transform.position + Random.insideUnitSphere * 5f;
+        probe.y = transform.position.y;
+
+        if (NavMesh.SamplePosition(probe, out NavMeshHit hit, 10f, NavMesh.AllAreas))
+        {
+            _agent.ResetPath();
+            _agent.SetDestination(hit.position);
+            return;
+        }
+
+        if (NavMesh.SamplePosition(transform.position, out NavMeshHit near, 4f, NavMesh.AllAreas))
+            _agent.Warp(near.position);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1788,7 +2127,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_agent == null) return;
 
         _agent.speed                 = chaseSpeed;
-        _agent.stoppingDistance      = Mathf.Max(0.1f, attackRadius * 0.5f);
+        _agent.stoppingDistance      = Mathf.Max(0.08f, attackRadius * 0.85f);
         _agent.acceleration          = agentAcceleration;
         _agent.angularSpeed          = agentAngularSpeed;
         _agent.avoidancePriority     = Random.Range(30, 70);
@@ -1797,13 +2136,17 @@ public class EnemyController : MonoBehaviour, IDamageable
         _agent.autoBraking           = false;
         _agent.autoRepath            = true;
         _agent.updatePosition        = true;
-        _agent.updateRotation        = true;
+        // Manual rotation in LateUpdate follows NavMesh velocity — avoids instant agent snap + moonwalk.
+        _agent.updateRotation        = false;
         _agent.autoTraverseOffMeshLink = false;
     }
 
     private void TransitionTo(State newState)
     {
         State prevState = _state;
+        if (newState == State.StuckRecovery && prevState != State.StuckRecovery)
+            _resumeAfterStuck = MapResumeAfterStuck(prevState);
+
         _state = newState;
 
         if (!IsAgentReady()) return;
@@ -1820,9 +2163,10 @@ public class EnemyController : MonoBehaviour, IDamageable
                 // Re-engage the agent and immediately seed a destination so
                 // there is never a frame where the agent reports no path.
                 _agent.isStopped = false;
-                _destinationRefreshTimer = 0f;
+                _idleTimer = 0f;
+                _repathTimer = 0f;
                 if (IsTargetValid(_target))
-                    _agent.SetDestination(_target.position);
+                    TrySetChaseDestinationValidated();
                 break;
 
             case State.Attack:
@@ -1842,6 +2186,27 @@ public class EnemyController : MonoBehaviour, IDamageable
             case State.Jumping:
                 // Jump handler takes over the agent entirely.
                 break;
+
+            case State.Evade:
+                _agent.isStopped = false;
+                _agent.speed = moveSpeed;
+                break;
+
+            case State.StuckRecovery:
+                _agent.isStopped = false;
+                break;
+        }
+    }
+
+    private static State MapResumeAfterStuck(State previous)
+    {
+        switch (previous)
+        {
+            case State.Attack:
+            case State.Flinch:
+                return State.Chase;
+            default:
+                return previous;
         }
     }
 
@@ -1911,14 +2276,16 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (candidate == null)
         {
             _target = null;
-            if (_state != State.Dead && _state != State.Flinch && _state != State.Jumping)
+            if (_state != State.Dead && _state != State.Flinch && _state != State.Jumping &&
+                _state != State.Evade)
                 TransitionTo(State.Patrol);
             return;
         }
 
         _target = candidate;
         _targetLockTimer = targetLockDuration;
-        if (_state == State.Idle || _state == State.Patrol || _state == State.Attack)
+        if ((_state == State.Idle || _state == State.Patrol || _state == State.Attack) &&
+            CanEngageChase(candidate))
             TransitionTo(State.Chase);
     }
 
@@ -2686,6 +3053,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         Gizmos.DrawWireSphere(transform.position, attackRadius);
         Gizmos.color = Color.cyan;
         Gizmos.DrawWireSphere(transform.position, separationRadius);
+        Gizmos.color = new Color(0.35f, 0.55f, 1f, 0.85f);
+        Gizmos.DrawWireSphere(transform.position, alignmentRadius);
+        Gizmos.color = new Color(0.35f, 0.85f, 0.45f, 0.85f);
+        Gizmos.DrawWireSphere(transform.position, cohesionRadius);
 
         // Show obstacle-check ray
         Gizmos.color = Color.magenta;
