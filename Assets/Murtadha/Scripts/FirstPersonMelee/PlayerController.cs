@@ -503,10 +503,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         // The Entry → default-state transition fires automatically on the first Update.
         CacheAnimatorParameters();
 
-        // ── 4. Patch any missing/blank materials so the body isn't a white statue ──
+        // ── 4. Third-person body colour (weapon subtree excluded in ApplyPlayerBodyBlackTint) ──
         if (thirdPersonBody != null)
             EnsureProperMaterial(thirdPersonBody);
         AssignMaterial();
+        ApplyPlayerBodyBlackTint();
 
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         EquipWeaponForLevel(level);
@@ -1463,6 +1464,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (IsRemoteNetworkPlayer()) return;
         if (attackCooldownTimer > 0f || isAttacking) return;
 
+        if (CombatDebug.Enabled)
+            CombatDebug.Log("PlayerAttack started");
+
         isAttacking         = true;
         attackCooldownTimer = AttackCooldown;
         attackResetTimer    = AttackResetTime;
@@ -2273,7 +2277,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         EnemyController enemy = target.GetComponentInParent<EnemyController>();
         if (enemy != null && enemy.gameObject != gameObject && enemy.IsAlive)
         {
-            if (DamageOcclusion.IsBlockedFromPoint(gameObject, enemy.gameObject, attackOriginWorld))
+            bool blocked = DamageOcclusion.IsBlockedFromPoint(gameObject, enemy.gameObject, attackOriginWorld);
+            if (CombatDebug.Enabled)
+                CombatDebug.Log($"blockedByWall={blocked}");
+
+            if (blocked)
                 return false;
 
             int appliedDamage = Mathf.Max(1, damage);
@@ -2283,7 +2291,15 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 appliedDamage = Mathf.Max(1, Mathf.CeilToInt((float)enemy.maxHealth / hitsToKill));
             }
 
+            int healthBefore = enemy.CurrentHealth;
+            if (CombatDebug.Enabled)
+                CombatDebug.Log($"hit target={enemy.gameObject.name}");
+
             enemy.TakeDamage(appliedDamage, byPlayer: true);
+
+            if (CombatDebug.Enabled)
+                CombatDebug.Log(
+                    $"applyingDamage amount={appliedDamage} target={enemy.gameObject.name} healthBefore={healthBefore} healthAfter={enemy.CurrentHealth}");
             return true;
         }
 
@@ -3042,7 +3058,63 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// </summary>
     private static void EnsureProperMaterial(GameObject body)
     {
-        // WeaponFix: preserve prefab-authored character sharedMaterials.
+        // Body colour is handled by <see cref="ApplyPlayerBodyBlackTint"/> (runtime-safe; preserves weapon materials).
+    }
+
+    /// <summary>
+    /// Forces all third-person body mesh materials to black. Skips the equipped weapon subtree
+    /// so weapon visuals stay prefab-accurate. Safe to call after weapon swaps / level loads.
+    /// </summary>
+    private void ApplyPlayerBodyBlackTint()
+    {
+        if (thirdPersonBody == null) return;
+
+        Renderer[] renderers = thirdPersonBody.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (r == null) continue;
+            if (r is ParticleSystemRenderer)
+                continue;
+            if (!(r is MeshRenderer) && !(r is SkinnedMeshRenderer))
+                continue;
+            if (IsEquippedWeaponRenderer(r))
+                continue;
+
+            Material[] mats = r.materials;
+            if (mats == null || mats.Length == 0) continue;
+
+            for (int j = 0; j < mats.Length; j++)
+            {
+                if (mats[j] == null) continue;
+                ApplyBlackToMaterialInstance(mats[j]);
+            }
+
+            r.materials = mats;
+        }
+    }
+
+    private bool IsEquippedWeaponRenderer(Renderer r)
+    {
+        Transform t = r.transform;
+        if (equippedWeaponObject != null && t.IsChildOf(equippedWeaponObject.transform))
+            return true;
+
+        return t.GetComponentInParent<WeaponBase>() != null;
+    }
+
+    private static void ApplyBlackToMaterialInstance(Material m)
+    {
+        if (m == null) return;
+
+        if (m.HasProperty("_BaseColor"))
+            m.SetColor("_BaseColor", Color.black);
+        if (m.HasProperty("_Color"))
+            m.SetColor("_Color", Color.black);
+        if (m.HasProperty("_EmissionColor"))
+            m.SetColor("_EmissionColor", Color.black);
+        if (m.HasProperty("_EmissiveColor"))
+            m.SetColor("_EmissiveColor", Color.black);
     }
 
     /// <summary>
@@ -3222,6 +3294,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         // Keep the FPS viewmodel in sync when the player swaps weapons.
         if (!isThirdPersonActive)
             RefreshFirstPersonWeaponModel(gameplayLevel);
+
+        ApplyPlayerBodyBlackTint();
     }
 
     /// <summary>

@@ -9,6 +9,7 @@ TagManager:
   - Environment
   - LevelContent
   - Map
+  - PlayerSpawn
   layers:
   - Default
   - TransparentFX

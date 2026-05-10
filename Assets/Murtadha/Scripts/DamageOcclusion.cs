@@ -1,29 +1,59 @@
 using UnityEngine;
 
 /// <summary>
-/// Shared occlusion gate for melee / ranged damage. If a static prop on the
-/// Environment layer (closed doors, walls, crates that block sightlines) sits
-/// between the attacker and the victim, the damage is suppressed at the
-/// receiving end. Both PlayerHealth.ReceiveDamage and
-/// EnemyController.ReceiveDamage call into this before applying any hit.
+/// Shared occlusion gate for melee / ranged damage. Linecasts between attacker and victim
+/// on solid-world layers only (Environment, walls, doors, etc.). Character layers are not
+/// part of the mask so player/enemy/weapon/hittable volumes never register as “walls”.
 /// </summary>
 public static class DamageOcclusion
 {
-    private const string EnvironmentLayerName = "Environment";
+    private static int _solidMask;
+    private static bool _solidMaskResolved;
 
-    private static int _envMask = -1;
-    private static bool _envMaskResolved;
+    /// <summary>
+    /// Layers that can block line-of-sight. Does not include Player, Hittable, Character,
+    /// or Weapon — those must never occlude in the physics matrix for this check.
+    /// </summary>
+    private static int ResolveSolidOcclusionMask()
+    {
+        if (_solidMaskResolved)
+            return _solidMask;
+
+        int mask = 0;
+        void Add(string layerName)
+        {
+            int layer = LayerMask.NameToLayer(layerName);
+            if (layer >= 0)
+                mask |= 1 << layer;
+        }
+
+        Add("Environment");
+        Add("Building");
+        Add("StaticObstacle");
+        Add("Wall");
+        Add("Door");
+        Add("Map");
+        Add("LevelContent");
+
+        // Projects that only tag world geometry as Default still need occlusion.
+        if (mask == 0)
+            Add("Default");
+
+        _solidMask = mask;
+        _solidMaskResolved = true;
+        return _solidMask;
+    }
 
     public static bool IsBlocked(GameObject attackerRoot, GameObject victim)
     {
         if (attackerRoot == null || victim == null) return false;
         if (attackerRoot == victim) return false;
 
-        int mask = ResolveEnvironmentMask();
+        int mask = ResolveSolidOcclusionMask();
         if (mask == 0) return false;
 
         Vector3 from = attackerRoot.transform.position + Vector3.up * 1.6f;
-        Vector3 to   = victim.transform.position + Vector3.up * 1.3f;
+        Vector3 to = victim.transform.position + Vector3.up * 1.3f;
 
         return EnvironmentSegmentBlocks(from, to, attackerRoot.transform, victim.transform, mask);
     }
@@ -34,11 +64,11 @@ public static class DamageOcclusion
         if (attackerRoot == null || victim == null) return false;
         if (attackerRoot == victim) return false;
 
-        int mask = ResolveEnvironmentMask();
+        int mask = ResolveSolidOcclusionMask();
         if (mask == 0) return false;
 
         Vector3 to = victim.transform.position + Vector3.up * 1.3f;
-        
+
         return EnvironmentSegmentBlocks(attackOriginWorld, to, attackerRoot.transform, victim.transform, mask);
     }
 
@@ -61,15 +91,5 @@ public static class DamageOcclusion
         if (attackerRoot != null && hitT.IsChildOf(attackerRoot)) return false;
         if (victimRoot != null && hitT.IsChildOf(victimRoot)) return false;
         return true;
-    }
-
-    private static int ResolveEnvironmentMask()
-    {
-        if (_envMaskResolved) return _envMask;
-
-        int layer = LayerMask.NameToLayer(EnvironmentLayerName);
-        _envMask = layer >= 0 ? (1 << layer) : 0;
-        _envMaskResolved = true;
-        return _envMask;
     }
 }
