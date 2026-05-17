@@ -1,8 +1,10 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.AI;
 
 #if PUN_2_OR_NEWER
 using Photon.Pun;
+using Photon.Realtime;
 #endif
 
 #if PUN_2_OR_NEWER
@@ -62,7 +64,11 @@ public class NetworkPlayerSpawner : MonoBehaviour
 
 #if PUN_2_OR_NEWER
         if (PhotonNetwork.InRoom)
+        {
+            EnsureLocalNicknameFallback();
+            RegisterPhotonPlayersForLeaderboard();
             SpawnLocalPlayer();
+        }
 #else
         Debug.LogWarning("[NetworkPlayerSpawner] Photon PUN 2 is not imported. Multiplayer spawning is disabled.");
 #endif
@@ -71,7 +77,14 @@ public class NetworkPlayerSpawner : MonoBehaviour
 #if PUN_2_OR_NEWER
     public override void OnJoinedRoom()
     {
+        EnsureLocalNicknameFallback();
+        RegisterPhotonPlayersForLeaderboard();
         SpawnLocalPlayer();
+    }
+
+    public override void OnPlayerEnteredRoom(Player newPlayer)
+    {
+        RegisterPhotonPlayerForLeaderboard(newPlayer);
     }
 
     private void SpawnLocalPlayer()
@@ -104,29 +117,41 @@ public class NetworkPlayerSpawner : MonoBehaviour
             // camera is live so there is no black-screen window.
             DisableScenePlayer();
             LogCameraState();
-
-            // Wire HUD to the confirmed local player and activate gameplay state.
-            PlayerController pc = spawned.GetComponent<PlayerController>();
-            PlayerHealth ph = spawned.GetComponent<PlayerHealth>();
-            if (HUDManager.Instance != null)
-            {
-                HUDManager.Instance.InitForMultiplayerLocalPlayer(pc, ph);
-            }
-            else
-            {
-                // HUD absent — lock cursor directly so the player isn't stuck.
-                Cursor.lockState = CursorLockMode.Locked;
-                Cursor.visible = false;
-                Debug.Log("[MPFlow] local player ready");
-                Debug.Log("[MPFlow] gameplay state active");
-                Debug.Log("[MPFlow] hiding match stats");
-                Debug.Log("[MPFlow] input enabled");
-            }
+            StartCoroutine(FinalizeLocalPlayerSpawn(spawned));
         }
         else
         {
             // Spawn failed — leave scene player active so the screen is not black.
             Debug.LogError("[PhotonSpawn] PhotonNetwork.Instantiate returned null. Keeping scene player/camera active.");
+        }
+    }
+
+    private IEnumerator FinalizeLocalPlayerSpawn(GameObject spawned)
+    {
+        // Let PlayerController.Start finish third-person body + camera setup first.
+        yield return null;
+
+        if (spawned == null)
+            yield break;
+
+        PlayerController pc = spawned.GetComponent<PlayerController>();
+        PlayerHealth ph = spawned.GetComponent<PlayerHealth>();
+
+        if (pc != null)
+            pc.ForceEquipLevelWeaponForMultiplayer();
+
+        if (HUDManager.Instance != null)
+        {
+            HUDManager.Instance.InitForMultiplayerLocalPlayer(pc, ph);
+        }
+        else
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            Debug.Log("[MPFlow] local player ready");
+            Debug.Log("[MPFlow] gameplay state active");
+            Debug.Log("[MPFlow] hiding match stats");
+            Debug.Log("[MPFlow] input enabled");
         }
     }
 
@@ -149,6 +174,33 @@ public class NetworkPlayerSpawner : MonoBehaviour
                 return view.gameObject;
         }
         return null;
+    }
+
+    private void EnsureLocalNicknameFallback()
+    {
+        if (PhotonNetwork.LocalPlayer != null && string.IsNullOrWhiteSpace(PhotonNetwork.NickName))
+            PhotonNetwork.NickName = $"Player_{PhotonNetwork.LocalPlayer.ActorNumber}";
+    }
+
+    private void RegisterPhotonPlayersForLeaderboard()
+    {
+        if (PhotonNetwork.PlayerList == null)
+            return;
+
+        for (int i = 0; i < PhotonNetwork.PlayerList.Length; i++)
+            RegisterPhotonPlayerForLeaderboard(PhotonNetwork.PlayerList[i]);
+    }
+
+    private void RegisterPhotonPlayerForLeaderboard(Player player)
+    {
+        if (player == null || MatchStatsManager.Instance == null)
+            return;
+
+        string displayName = string.IsNullOrWhiteSpace(player.NickName)
+            ? $"Player_{player.ActorNumber}"
+            : player.NickName;
+        MatchStatsManager.Instance.RegisterCombatant($"photon:{player.ActorNumber}", displayName, isPlayer: true);
+        Debug.Log($"[MPHUD] registered player actor={player.ActorNumber} name={displayName}");
     }
 #endif
 

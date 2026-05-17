@@ -8,6 +8,10 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.UI;
 using UnityEngine.UI;
 
+#if PUN_2_OR_NEWER
+using Photon.Pun;
+#endif
+
 public class HUDManager : MonoBehaviour
 {
     private sealed class ScoreboardRowUi
@@ -53,6 +57,9 @@ public class HUDManager : MonoBehaviour
     private Image healthFillVisual;
     private bool isFullMapVisible;
     private bool isScoreboardVisible;
+    private int localMultiplayerActorNumber = -1;
+    private string localMultiplayerPlayerName = "Player";
+    private bool singlePlayerInitComplete;
 
     // Kill counter (CoD-style)
     private TextMeshProUGUI killCountText;
@@ -93,32 +100,37 @@ public class HUDManager : MonoBehaviour
 
     private void Start()
     {
-        if (GameManager.Instance == null)
-        {
-            return;
-        }
-
         prismFont = ResolvePrismFont();
         EnsureRuntimeHud();
         EnsureDamageFlashLayer();
         EnsureLowHealthLayer();
 
-        if (!MultiplayerMode.IsMultiplayer)
+        if (GameManager.Instance == null)
         {
-            playerHealth = FindFirstObjectByType<PlayerHealth>();
-            playerController = FindFirstObjectByType<PlayerController>();
+            if (!MultiplayerMode.IsMultiplayer)
+                InitializeSinglePlayerGameplay();
+            return;
         }
+
+        BindMatchHudFromGameManager();
+
+        if (!MultiplayerMode.IsMultiplayer)
+            InitializeSinglePlayerGameplay();
         // In multiplayer, player refs are injected by NetworkPlayerSpawner
         // via InitForMultiplayerLocalPlayer() after the local player spawns.
+    }
+
+    private void BindMatchHudFromGameManager()
+    {
+        if (GameManager.Instance == null)
+            return;
 
         int level = GameManager.Instance.currentLevel;
         timeLimit = GameManager.Instance.LevelTimeLimitSeconds;
         elapsed = 0f;
 
         if (levelText != null)
-        {
             levelText.text = "LEVEL " + level;
-        }
 
         if (weaponText != null)
         {
@@ -129,15 +141,33 @@ public class HUDManager : MonoBehaviour
 
         UpdateScore(GameManager.Instance.score);
         UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
+    }
 
-        if (playerHealth != null)
-            UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth);
+    /// <summary>
+    /// Single-player only: bind scene PlayerHealth/PlayerController, refresh HUD,
+    /// enable input, lock cursor, and restore time scale.
+    /// </summary>
+    public void InitializeSinglePlayerGameplay()
+    {
+        if (MultiplayerMode.IsMultiplayer || singlePlayerInitComplete)
+            return;
 
-        // ── Register the local player in MatchStatsManager ──────────────────
-        // Skipped in multiplayer — InitForMultiplayerLocalPlayer() registers
-        // the confirmed local player after PhotonNetwork.Instantiate succeeds,
-        // avoiding accidental registration of a remote player's PlayerHealth.
-        if (!MultiplayerMode.IsMultiplayer && MatchStatsManager.Instance != null && playerHealth != null)
+        playerHealth = FindFirstObjectByType<PlayerHealth>();
+        playerController = FindFirstObjectByType<PlayerController>();
+        if (playerHealth == null || playerController == null)
+            return;
+
+        singlePlayerInitComplete = true;
+
+        if (GameManager.Instance != null)
+            BindMatchHudFromGameManager();
+
+        Debug.Log("[SPInit] HUD local player assigned");
+        Debug.Log("[SPInit] PlayerController enabled");
+        ApplySinglePlayerGameplayState();
+        Debug.Log("[SPInit] TimeScale=1");
+
+        if (MatchStatsManager.Instance != null)
         {
             string playerId = MatchStatsManager.BuildCombatantId(playerHealth);
             string playerLabel = PlayerProfile.HasUsername ? PlayerProfile.Username : "YOU";
@@ -145,6 +175,30 @@ public class HUDManager : MonoBehaviour
             MatchStatsManager.Instance.StatsChanged -= HandleMatchStatsChanged;
             MatchStatsManager.Instance.StatsChanged += HandleMatchStatsChanged;
         }
+
+        ApplySinglePlayerGameplayState();
+    }
+
+    /// <summary>Re-applies SP cursor, time scale, and HP after loading/countdown.</summary>
+    public void ApplySinglePlayerGameplayState()
+    {
+        if (MultiplayerMode.IsMultiplayer)
+            return;
+
+        Time.timeScale = 1f;
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+
+        if (playerController != null)
+        {
+            playerController.enabled = true;
+            CharacterController cc = playerController.GetComponent<CharacterController>();
+            if (cc != null)
+                cc.enabled = true;
+        }
+
+        if (playerHealth != null)
+            UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth);
     }
 
     private void Update()
@@ -168,15 +222,15 @@ public class HUDManager : MonoBehaviour
         TickDamageFlash();
         TickLowHealthVignette();
 
-        if (playerHealth == null && !MultiplayerMode.IsMultiplayer)
-            playerHealth = FindFirstObjectByType<PlayerHealth>();
-
-        if (playerController == null && !MultiplayerMode.IsMultiplayer)
-            playerController = FindFirstObjectByType<PlayerController>();
+        if (!MultiplayerMode.IsMultiplayer && !singlePlayerInitComplete)
+            InitializeSinglePlayerGameplay();
 
         if (playerHealth != null)
         {
-            UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth);
+            UpdateHealth(
+                playerHealth.currentHealth,
+                playerHealth.maxHealth,
+                MultiplayerMode.IsMultiplayer ? playerHealth : null);
         }
 
         if (playerController != null && weaponText != null)
@@ -194,13 +248,19 @@ public class HUDManager : MonoBehaviour
         RefreshScoreboard(force: false);
     }
 
-    public void UpdateHealth(float current, float max)
+    public void UpdateHealth(float current, float max, PlayerHealth source = null)
     {
+        if (MultiplayerMode.IsMultiplayer && playerHealth != null && source != null && source != playerHealth)
+            return;
+
         float ratio = Mathf.Clamp01(current / Mathf.Max(1f, max));
 
         if (healthText != null)
         {
             healthText.text = "HP  " + Mathf.CeilToInt(current) + " / " + Mathf.CeilToInt(max);
+            healthText.enabled = true;
+            if (healthText.color.a < 0.05f)
+                healthText.color = Color.white;
         }
 
         // Drive the fill image directly — this is the most reliable approach
@@ -216,6 +276,13 @@ public class HUDManager : MonoBehaviour
             healthBar.value = ratio;
         }
     }
+
+    public bool IsLocalHealthTarget(PlayerHealth ph)
+    {
+        return ph != null && ph == playerHealth;
+    }
+
+    public bool IsFullMapOpen => isFullMapVisible || (fullMapOverlay != null && fullMapOverlay.activeSelf);
 
     public void UpdateScore(int score)
     {
@@ -336,6 +403,8 @@ public class HUDManager : MonoBehaviour
     private void EnsureRuntimeHud()
     {
         GameObject canvasObject = GameObject.Find("HUDCanvas");
+        ResolveHealthHudWidgets(canvasObject);
+
         if (healthText != null && scoreText != null && levelText != null &&
             weaponText != null && enemyCountText != null && timerText != null && healthBar != null)
         {
@@ -469,6 +538,73 @@ public class HUDManager : MonoBehaviour
         EnsureFullMapOverlay(canvasObject.transform);
         EnsureScoreboardOverlay(canvasObject.transform);
         EnsurePlayerIdentityChip(canvasObject.transform);
+        ResolveHealthHudWidgets(canvasObject);
+    }
+
+    /// <summary>
+    /// Binds HP label + bar fill from an existing HUD canvas (EXE builds may have
+    /// the bar wired in-scene while the TMP reference on HUDManager is still null).
+    /// </summary>
+    private void ResolveHealthHudWidgets(GameObject canvasObject = null)
+    {
+        canvasObject ??= GameObject.Find("HUDCanvas");
+        if (canvasObject == null)
+            return;
+
+        if (healthText == null)
+        {
+            Transform hpTransform = canvasObject.transform.Find("BottomHealthPanel/HPText");
+            if (hpTransform == null)
+                hpTransform = FindHudChildRecursive(canvasObject.transform, "HPText");
+            if (hpTransform != null)
+                healthText = hpTransform.GetComponent<TextMeshProUGUI>();
+        }
+
+        if (healthFillVisual == null)
+        {
+            Transform fillTransform = canvasObject.transform.Find("BottomHealthPanel/HealthTrack/HealthFill");
+            if (fillTransform == null)
+                fillTransform = FindHudChildRecursive(canvasObject.transform, "HealthFill");
+            if (fillTransform != null)
+                healthFillVisual = fillTransform.GetComponent<Image>();
+        }
+
+        if (healthBar == null)
+        {
+            Transform trackTransform = canvasObject.transform.Find("BottomHealthPanel/HealthTrack");
+            if (trackTransform == null)
+                trackTransform = FindHudChildRecursive(canvasObject.transform, "HealthTrack");
+            if (trackTransform != null)
+                healthBar = trackTransform.GetComponent<Slider>();
+        }
+
+        if (healthText != null)
+        {
+            healthText.gameObject.SetActive(true);
+            healthText.enabled = true;
+            if (prismFont != null && healthText.font == null)
+                healthText.font = prismFont;
+            if (healthText.color.a < 0.05f)
+                healthText.color = Color.white;
+        }
+    }
+
+    private static Transform FindHudChildRecursive(Transform root, string childName)
+    {
+        if (root == null)
+            return null;
+
+        if (root.name == childName)
+            return root;
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform found = FindHudChildRecursive(root.GetChild(i), childName);
+            if (found != null)
+                return found;
+        }
+
+        return null;
     }
 
     /// <summary>Small top-left name strip — semi-transparent, sized to the handle.</summary>
@@ -658,7 +794,11 @@ public class HUDManager : MonoBehaviour
         if (frameTransform != null)
             EnsureEnemyArrowPool(frameTransform, enemyFullMapArrows, "EnemyFullMapArrow_", 34f);
 
+        isFullMapVisible = false;
         fullMapOverlay.SetActive(false);
+        MinimapCameraFollow minimap = FindFirstObjectByType<MinimapCameraFollow>();
+        if (minimap != null)
+            minimap.SetFullMapMode(false, playerController != null ? playerController.transform : null);
     }
 
     private void EnsureScoreboardOverlay(Transform canvasTransform)
@@ -733,6 +873,9 @@ public class HUDManager : MonoBehaviour
                 }
             }
         }
+
+        if (scoreboardTitleText != null)
+            scoreboardTitleText.text = MultiplayerMode.IsMultiplayer ? "MULTIPLAYER LEADERBOARD" : "MATCH STATS";
 
         scoreboardOverlay.SetActive(false);
     }
@@ -875,15 +1018,42 @@ public class HUDManager : MonoBehaviour
         if (Keyboard.current == null)
             return;
 
-        SetFullMapVisible(Keyboard.current.tabKey.isPressed);
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            if (Cursor.visible)
+                return;
+
+            if (Keyboard.current.tabKey.wasPressedThisFrame)
+                SetFullMapVisible(!IsFullMapOpen);
+        }
+        else
+        {
+            SetFullMapVisible(Keyboard.current.tabKey.isPressed);
+        }
 
         if (Keyboard.current.capsLockKey.wasPressedThisFrame)
             ToggleScoreboard();
     }
 
-    private void SetFullMapVisible(bool visible)
+    public bool CloseFullMapFromEscape()
     {
-        if (isFullMapVisible == visible)
+        if (!IsFullMapOpen)
+            return false;
+
+        SetFullMapVisible(false, force: true);
+        Debug.Log("[MPUI] ESC closed full map");
+        return true;
+    }
+
+    public void ForceCloseFullMapOnMultiplayerSpawn()
+    {
+        SetFullMapVisible(false, force: true);
+        Debug.Log("[MPUI] full map forced closed on spawn");
+    }
+
+    private void SetFullMapVisible(bool visible, bool force = false)
+    {
+        if (!force && isFullMapVisible == visible && (fullMapOverlay == null || fullMapOverlay.activeSelf == visible))
             return;
 
         isFullMapVisible = visible;
@@ -918,9 +1088,18 @@ public class HUDManager : MonoBehaviour
 
         // Header row stays as a fixed column guide.
         if (scoreboardSummaryText != null)
-            scoreboardSummaryText.text = $"LIVE MATCH LEADERBOARD  ({stats.GetRegisteredCombatantCount()} COMBATANTS)";
+        {
+            int registeredCount = MultiplayerMode.IsMultiplayer
+                ? stats.GetRegisteredPlayerCount()
+                : stats.GetRegisteredCombatantCount();
+            scoreboardSummaryText.text = MultiplayerMode.IsMultiplayer
+                ? $"MULTIPLAYER LEADERBOARD  ({registeredCount} PLAYERS)"
+                : $"LIVE MATCH LEADERBOARD  ({registeredCount} COMBATANTS)";
+        }
 
-        var entries = stats.GetTopCombatants(scoreboardRows.Length);
+        var entries = MultiplayerMode.IsMultiplayer
+            ? stats.GetTopPlayers(scoreboardRows.Length)
+            : stats.GetTopCombatants(scoreboardRows.Length);
         for (int i = 0; i < scoreboardRows.Length; i++)
         {
             ScoreboardRowUi row = scoreboardRows[i];
@@ -928,13 +1107,12 @@ public class HUDManager : MonoBehaviour
 
             if (i >= entries.Count)
             {
-                row.NameText.text = $"{i + 1}. ---";
-                row.KillsText.text = "0";
-                row.StatusText.text = "---";
+                row.Root.SetActive(false);
                 ApplyScoreboardRowStyle(row, false, false, true);
                 continue;
             }
 
+            row.Root.SetActive(true);
             MatchStatsManager.CombatantSnapshot entry = entries[i];
             row.NameText.text = $"{i + 1}. {entry.DisplayName}";
             row.KillsText.text = entry.Kills.ToString();
@@ -985,20 +1163,20 @@ public class HUDManager : MonoBehaviour
         layout.childControlWidth = true;
         layout.childForceExpandHeight = false;
         layout.childForceExpandWidth = true;
-        layout.spacing = 8f;
+        layout.spacing = 6f;
         layout.padding = new RectOffset(0, 0, 0, 0);
 
-        scoreboardRows = new ScoreboardRowUi[5];
+        scoreboardRows = new ScoreboardRowUi[8];
         for (int i = 0; i < scoreboardRows.Length; i++)
         {
             GameObject rowObject = new GameObject($"ScoreboardRow_{i + 1}");
             rowObject.transform.SetParent(rowsRoot.transform, false);
 
             RectTransform rowRect = rowObject.AddComponent<RectTransform>();
-            rowRect.sizeDelta = new Vector2(480f, 52f);
+            rowRect.sizeDelta = new Vector2(480f, 42f);
 
             LayoutElement rowLayout = rowObject.AddComponent<LayoutElement>();
-            rowLayout.preferredHeight = 52f;
+            rowLayout.preferredHeight = 42f;
 
             Image rowBg = rowObject.AddComponent<Image>();
             rowBg.color = i % 2 == 0 ? new Color(1f, 1f, 1f, 0.035f) : new Color(1f, 1f, 1f, 0.015f);
@@ -1030,7 +1208,7 @@ public class HUDManager : MonoBehaviour
         if (rowsRoot == null)
             return;
 
-        scoreboardRows = new ScoreboardRowUi[5];
+        scoreboardRows = new ScoreboardRowUi[8];
         for (int i = 0; i < scoreboardRows.Length; i++)
         {
             Transform row = rowsRoot.Find($"ScoreboardRow_{i + 1}");
@@ -1094,6 +1272,9 @@ public class HUDManager : MonoBehaviour
 
     private void ShowMatchFinishedOverlay()
     {
+        if (MultiplayerMode.IsMultiplayer)
+            return;
+
         matchFinished = true;
         Time.timeScale = 0f;
         Cursor.lockState = CursorLockMode.None;
@@ -1203,7 +1384,13 @@ public class HUDManager : MonoBehaviour
     /// user's UIManager references) can trigger the end-game screen directly.
     /// Guarantees: timeScale=0, cursor unlocked, EventSystem active.
     /// </summary>
-    public void ShowGameFinishedMenu() => ShowMatchFinishedOverlay();
+    public void ShowGameFinishedMenu()
+    {
+        if (MultiplayerMode.IsMultiplayer)
+            return;
+
+        ShowMatchFinishedOverlay();
+    }
 
     private GameObject CreateActionButton(Transform parent, string label, Vector2 position, UnityEngine.Events.UnityAction action)
     {
@@ -1324,8 +1511,20 @@ public class HUDManager : MonoBehaviour
     /// </summary>
     public void InitForMultiplayerLocalPlayer(PlayerController pc, PlayerHealth ph)
     {
+        if (!MultiplayerMode.IsMultiplayer)
+            return;
+
+        prismFont ??= ResolvePrismFont();
+        EnsureRuntimeHud();
+        ResolveHealthHudWidgets();
+
         playerController = pc;
         playerHealth = ph;
+        localMultiplayerActorNumber = -1;
+        localMultiplayerPlayerName = PlayerProfile.HasUsername ? PlayerProfile.Username : "Player";
+
+        if (GameManager.Instance != null)
+            BindMatchHudFromGameManager();
 
         // Ensure scoreboard is hidden during active gameplay.
         if (scoreboardOverlay != null)
@@ -1333,6 +1532,9 @@ public class HUDManager : MonoBehaviour
             scoreboardOverlay.SetActive(false);
             isScoreboardVisible = false;
         }
+
+        ForceCloseFullMapOnMultiplayerSpawn();
+        HideStrayMultiplayerMenuCanvas();
 
         // Destroy any stale match-finished overlay that may have carried over.
         if (matchFinishedOverlay != null)
@@ -1351,7 +1553,20 @@ public class HUDManager : MonoBehaviour
         {
             string playerId = MatchStatsManager.BuildCombatantId(ph);
             string playerLabel = PlayerProfile.HasUsername ? PlayerProfile.Username : "YOU";
+#if PUN_2_OR_NEWER
+            PhotonView view = ph.GetComponent<PhotonView>();
+            if (view != null && view.Owner != null)
+            {
+                localMultiplayerActorNumber = view.Owner.ActorNumber;
+                playerId = $"photon:{view.Owner.ActorNumber}";
+                playerLabel = string.IsNullOrWhiteSpace(view.Owner.NickName)
+                    ? $"Player_{view.Owner.ActorNumber}"
+                    : view.Owner.NickName;
+            }
+#endif
+            localMultiplayerPlayerName = playerLabel;
             MatchStatsManager.Instance.RegisterCombatant(playerId, playerLabel, isPlayer: true, transform: ph.transform);
+            Debug.Log($"[MPHUD] registered player actor={localMultiplayerActorNumber} name={playerLabel}");
             MatchStatsManager.Instance.StatsChanged -= HandleMatchStatsChanged;
             MatchStatsManager.Instance.StatsChanged += HandleMatchStatsChanged;
         }
@@ -1359,13 +1574,40 @@ public class HUDManager : MonoBehaviour
         if (pc != null && weaponText != null)
             weaponText.text = pc.equippedWeaponName.ToUpperInvariant();
 
-        if (ph != null)
-            UpdateHealth(ph.currentHealth, ph.maxHealth);
+        RefreshMultiplayerLocalHealth(ph);
 
         Debug.Log("[MPFlow] local player ready");
         Debug.Log("[MPFlow] gameplay state active");
         Debug.Log("[MPFlow] hiding match stats");
         Debug.Log("[MPFlow] input enabled");
+    }
+
+    private void RefreshMultiplayerLocalHealth(PlayerHealth ph)
+    {
+        if (ph == null)
+            return;
+
+        bool hpTextAssigned = healthText != null;
+        Debug.Log($"[MPHUD] hp text assigned={hpTextAssigned}");
+
+        UpdateHealth(ph.currentHealth, ph.maxHealth, ph);
+        Debug.Log($"[MPHUD] local HP refresh current={ph.currentHealth} max={ph.maxHealth}");
+
+        if (healthText != null)
+        {
+            healthText.ForceMeshUpdate();
+            Canvas.ForceUpdateCanvases();
+        }
+    }
+
+    private void HideStrayMultiplayerMenuCanvas()
+    {
+        GameObject menuCanvas = GameObject.Find("NeonCanvas");
+        if (menuCanvas == null || !menuCanvas.activeSelf)
+            return;
+
+        menuCanvas.SetActive(false);
+        Debug.Log("[MPUI] multiplayer menu hidden");
     }
 
     private TMP_FontAsset ResolvePrismFont()

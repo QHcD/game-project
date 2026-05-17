@@ -1,5 +1,9 @@
 using UnityEngine;
 
+#if PUN_2_OR_NEWER
+using Photon.Pun;
+#endif
+
 /// <summary>
 /// Player health with Call of Duty-style auto-regeneration.
 /// After taking damage, if the player avoids further damage for 5 seconds,
@@ -25,6 +29,7 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     private float timeSinceLastDamage;
     private bool isRegenerating;
     private string _lastAttackerStatsId;
+    private bool _loggedRemoteHudIgnored;
 
     private void Awake()
     {
@@ -34,7 +39,7 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         timeSinceLastDamage = regenDelay + 1f; // Start fully healed, no regen needed
 
-        if (MatchStatsManager.Instance != null)
+        if (!MultiplayerMode.IsMultiplayer && MatchStatsManager.Instance != null)
         {
             // Use the persistent username from PlayerProfile so the player
             // shows up under their real handle in the leaderboard / kill feed.
@@ -64,8 +69,8 @@ public class PlayerHealth : MonoBehaviour, IDamageable
             currentHealth = Mathf.Min(maxHealth, currentHealth + healAmount);
 
             // Update HUD during regen
-            if (HUDManager.Instance != null)
-                HUDManager.Instance.UpdateHealth(currentHealth, maxHealth);
+            if (ShouldDriveLocalHud())
+                HUDManager.Instance.UpdateHealth(currentHealth, maxHealth, this);
 
             // Regen complete
             if (currentHealth >= maxHealth)
@@ -90,9 +95,9 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         if (SessionManager.Instance != null)
             SessionManager.Instance.OnPlayerTookDamage();
 
-        if (HUDManager.Instance != null)
+        if (ShouldDriveLocalHud())
         {
-            HUDManager.Instance.UpdateHealth(currentHealth, maxHealth);
+            HUDManager.Instance.UpdateHealth(currentHealth, maxHealth, this);
             HUDManager.Instance.ShowDamageFlash(absorbed);
         }
 
@@ -144,7 +149,7 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         if (MatchStatsManager.Instance != null)
         {
-            MatchStatsManager.Instance.MarkEliminated(MatchStatsManager.BuildCombatantId(this));
+            MatchStatsManager.Instance.MarkEliminated(GetStatsId());
             MatchStatsManager.Instance.RecordKill(_lastAttackerStatsId);
         }
 
@@ -202,7 +207,47 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     {
         currentHealth = Mathf.Min(maxHealth, currentHealth + Mathf.Abs(amount));
 
-        if (HUDManager.Instance != null)
-            HUDManager.Instance.UpdateHealth(currentHealth, maxHealth);
+        if (ShouldDriveLocalHud())
+            HUDManager.Instance.UpdateHealth(currentHealth, maxHealth, this);
+    }
+
+    private bool ShouldDriveLocalHud()
+    {
+        if (HUDManager.Instance == null)
+            return false;
+
+        if (!MultiplayerMode.IsMultiplayer)
+            return true;
+
+        if (HUDManager.Instance.IsLocalHealthTarget(this))
+            return true;
+
+        if (!_loggedRemoteHudIgnored)
+        {
+            _loggedRemoteHudIgnored = true;
+            Debug.Log($"[MPHUD] remote player ignored for local HP actor={GetPhotonActorNumber()}");
+        }
+
+        return false;
+    }
+
+    private int GetPhotonActorNumber()
+    {
+#if PUN_2_OR_NEWER
+        PhotonView view = GetComponent<PhotonView>();
+        if (view != null && view.Owner != null)
+            return view.Owner.ActorNumber;
+#endif
+        return -1;
+    }
+
+    private string GetStatsId()
+    {
+#if PUN_2_OR_NEWER
+        PhotonView view = GetComponent<PhotonView>();
+        if (MultiplayerMode.IsMultiplayer && view != null && view.Owner != null)
+            return $"photon:{view.Owner.ActorNumber}";
+#endif
+        return MatchStatsManager.BuildCombatantId(this);
     }
 }

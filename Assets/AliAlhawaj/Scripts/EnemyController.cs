@@ -363,6 +363,14 @@ public class EnemyController : MonoBehaviour, IDamageable
                                | RigidbodyConstraints.FreezeRotationZ;
         _rb.isKinematic       = true;  // NavMeshAgent owns movement normally
 
+        // Freeze ALL bone rigidbodies before any FixedUpdate fires to prevent ragdoll explosion at spawn.
+        foreach (Rigidbody bone in GetComponentsInChildren<Rigidbody>(true))
+        {
+            if (bone == null || bone == _rb) continue;
+            bone.isKinematic = true;
+            bone.useGravity = false;
+        }
+
         // Cache renderers for hit flash (URP-compatible: prefer _BaseColor over _Color)
         _renderers      = GetComponentsInChildren<Renderer>(true);
         _originalColors = new Color[_renderers.Length];
@@ -472,7 +480,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_agent.isOnNavMesh)
             return;
 
-        if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 12f, NavMesh.AllAreas))
+        if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 20f, NavMesh.AllAreas))
         {
             transform.position = hit.position;
             _agent.Warp(hit.position);

@@ -32,7 +32,6 @@ public class PhotonLauncher : MonoBehaviour
 
     private void Awake()
     {
-        MultiplayerMode.SetMultiplayer();
         PlayerProfile.Reload();
         if (playerNameInput != null && string.IsNullOrWhiteSpace(playerNameInput.text))
             playerNameInput.text = PlayerProfile.HasUsername ? PlayerProfile.Username : "Player";
@@ -223,12 +222,15 @@ public class PhotonLauncher : MonoBehaviour
         if (canvas != null)
         {
             canvas.gameObject.SetActive(false);
+            Debug.Log("[MPUI] multiplayer menu hidden");
             return;
         }
         // Fallback: disable any Canvas children of this GameObject.
         Canvas[] children = GetComponentsInChildren<Canvas>(true);
         foreach (Canvas c in children)
             c.gameObject.SetActive(false);
+        if (children.Length > 0)
+            Debug.Log("[MPUI] multiplayer menu hidden");
     }
 
     public override void OnDisconnected(DisconnectCause cause)
@@ -241,13 +243,14 @@ public class PhotonLauncher : MonoBehaviour
     private void ApplyPlayerName()
     {
         PlayerProfile.Reload();
-        string playerName = playerNameInput != null ? playerNameInput.text : string.Empty;
-        playerName = string.IsNullOrWhiteSpace(playerName) ? PlayerProfile.Username : playerName.Trim();
+        string rawName = playerNameInput != null ? playerNameInput.text : string.Empty;
+        string playerName = PlayerProfile.Sanitize(rawName);
+        if (string.IsNullOrWhiteSpace(playerName) && PlayerProfile.HasUsername)
+            playerName = PlayerProfile.Username;
         if (string.IsNullOrWhiteSpace(playerName))
             playerName = PlayerProfile.DefaultUsername;
 
-        PlayerPrefs.SetString(PlayerProfile.PlayerNameKey, playerName);
-        PlayerPrefs.Save();
+        PlayerProfile.SetUsername(playerName);
         PlayerProfile.Reload();
 #if PUN_2_OR_NEWER
         PhotonNetwork.NickName = PlayerProfile.Username;

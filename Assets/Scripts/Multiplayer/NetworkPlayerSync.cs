@@ -44,6 +44,7 @@ public class NetworkPlayerSync : MonoBehaviour
 
     private void Start()
     {
+        EnsurePhotonNicknameFallback();
         RegisterForScoreboard();
     }
 
@@ -84,7 +85,7 @@ public class NetworkPlayerSync : MonoBehaviour
 
         if (photonView.IsMine && HUDManager.Instance != null)
         {
-            HUDManager.Instance.UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth);
+            HUDManager.Instance.UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth, playerHealth);
             HUDManager.Instance.ShowDamageFlash(damage);
         }
 
@@ -139,14 +140,37 @@ public class NetworkPlayerSync : MonoBehaviour
             return;
 
         string displayName = "PLAYER";
+        int actorNumber = -1;
 #if PUN_2_OR_NEWER
-        if (photonView != null && photonView.Owner != null && !string.IsNullOrWhiteSpace(photonView.Owner.NickName))
-            displayName = photonView.Owner.NickName;
+        if (photonView != null && photonView.Owner != null)
+        {
+            actorNumber = photonView.Owner.ActorNumber;
+            displayName = string.IsNullOrWhiteSpace(photonView.Owner.NickName)
+                ? $"Player_{actorNumber}"
+                : photonView.Owner.NickName;
+        }
         else
 #endif
         if (PlayerProfile.HasUsername)
             displayName = PlayerProfile.Username;
 
         MatchStatsManager.Instance.RegisterCombatant(CombatantId, displayName, isPlayer: true, transform: transform);
+        Debug.Log($"[MPHUD] registered player actor={actorNumber} name={displayName}");
+
+#if PUN_2_OR_NEWER
+        if (MultiplayerMode.IsMultiplayer && photonView != null && !photonView.IsMine && playerHealth != null)
+            Debug.Log($"[MPHUD] remote player ignored for local HP actor={actorNumber}");
+#endif
+    }
+
+    private void EnsurePhotonNicknameFallback()
+    {
+#if PUN_2_OR_NEWER
+        if (!MultiplayerMode.IsMultiplayer || photonView == null || !photonView.IsMine)
+            return;
+
+        if (PhotonNetwork.LocalPlayer != null && string.IsNullOrWhiteSpace(PhotonNetwork.NickName))
+            PhotonNetwork.NickName = $"Player_{PhotonNetwork.LocalPlayer.ActorNumber}";
+#endif
     }
 }

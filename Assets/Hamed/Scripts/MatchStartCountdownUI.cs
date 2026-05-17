@@ -27,7 +27,9 @@ public class MatchStartCountdownUI : MonoBehaviour
     private IEnumerator RunSequence()
     {
         float prevScale = Time.timeScale;
-        Time.timeScale = 0f;
+        bool pausedForCountdown = !MultiplayerMode.IsMultiplayer;
+        if (pausedForCountdown)
+            Time.timeScale = 0f;
 
         BuildOverlay();
         VoClipAutoIndex.EnsureLoaded();
@@ -59,7 +61,8 @@ public class MatchStartCountdownUI : MonoBehaviour
 
         yield return new WaitForSecondsRealtime(GoHoldSeconds);
 
-        Time.timeScale = Mathf.Approximately(prevScale, 0f) ? 1f : prevScale;
+        if (pausedForCountdown)
+            Time.timeScale = Mathf.Approximately(prevScale, 0f) ? 1f : prevScale;
     }
 
     private void SetBigText(string t)
