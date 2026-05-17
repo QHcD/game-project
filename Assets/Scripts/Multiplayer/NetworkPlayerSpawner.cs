@@ -55,7 +55,9 @@ public class NetworkPlayerSpawner : MonoBehaviour
             MatchStatsManager.Instance.ResetMatch();
             statsResetForCurrentMultiplayerScene = true;
         }
-        DisableScenePlayer();
+        // DisableScenePlayer is deferred to after the local Photon player is
+        // confirmed spawned so the scene camera stays alive during the spawn
+        // window. If spawn fails the scene player remains as a fallback.
         DisableAiEnemies();
 
 #if PUN_2_OR_NEWER
@@ -94,7 +96,47 @@ public class NetworkPlayerSpawner : MonoBehaviour
         Debug.Log("[PhotonSpawn] spawning local player");
         Vector3 spawn = ResolveSpawnPosition();
         GameObject spawned = PhotonNetwork.Instantiate(playerPrefabPath, spawn, Quaternion.identity);
-        Debug.Log($"[PhotonSpawn] spawned local player {spawned?.name} at {spawn}");
+
+        if (spawned != null)
+        {
+            Debug.Log($"[PhotonSpawn] spawned local player {spawned.name} at {spawn}");
+            // Only now disable the scene-placed player — the Photon player's
+            // camera is live so there is no black-screen window.
+            DisableScenePlayer();
+            LogCameraState();
+
+            // Wire HUD to the confirmed local player and activate gameplay state.
+            PlayerController pc = spawned.GetComponent<PlayerController>();
+            PlayerHealth ph = spawned.GetComponent<PlayerHealth>();
+            if (HUDManager.Instance != null)
+            {
+                HUDManager.Instance.InitForMultiplayerLocalPlayer(pc, ph);
+            }
+            else
+            {
+                // HUD absent — lock cursor directly so the player isn't stuck.
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+                Debug.Log("[MPFlow] local player ready");
+                Debug.Log("[MPFlow] gameplay state active");
+                Debug.Log("[MPFlow] hiding match stats");
+                Debug.Log("[MPFlow] input enabled");
+            }
+        }
+        else
+        {
+            // Spawn failed — leave scene player active so the screen is not black.
+            Debug.LogError("[PhotonSpawn] PhotonNetwork.Instantiate returned null. Keeping scene player/camera active.");
+        }
+    }
+
+    private static void LogCameraState()
+    {
+        Camera[] allCams = Object.FindObjectsByType<Camera>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        int enabledCount = 0;
+        foreach (Camera c in allCams)
+            if (c.enabled) enabledCount++;
+        Debug.Log($"[MPDebug] active cameras count={enabledCount}");
     }
 
     private GameObject FindOwnedPlayer()

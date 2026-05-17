@@ -476,6 +476,17 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         DisableRemotePlayerLocalSystems();
 
+#if PUN_2_OR_NEWER
+        if (!IsRemoteNetworkPlayer())
+        {
+            Debug.Log($"[MPDebug] local player spawned ({gameObject.name})");
+            if (runtimeThirdPersonCamera != null && runtimeThirdPersonCamera.enabled)
+                Debug.Log("[MPDebug] local camera enabled");
+            else
+                Debug.LogWarning("[MPDebug] local camera NOT enabled after spawn — check EnsureThirdPersonCamera");
+        }
+#endif
+
         // ── 3. Acquire the body animator and bind the intended player controller ──
         animator = null;
         if (thirdPersonBody != null)
@@ -531,9 +542,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (firstPersonCam == null)
             firstPersonCam = GetComponentInChildren<Camera>(true);
 
-        EnsureThirdPersonCamera();
-        if (runtimeThirdPersonCamera == null)
-            Debug.LogError("[PlayerController] No gameplay camera could be created. Movement is still enabled.");
+        // Remote network players have their camera/audio disabled by
+        // DisableRemotePlayerLocalSystems() — do not create a camera for them.
+        if (!IsRemoteNetworkPlayer())
+        {
+            EnsureThirdPersonCamera();
+            if (runtimeThirdPersonCamera == null)
+                Debug.LogError("[PlayerController] No gameplay camera could be created. Movement is still enabled.");
+        }
     }
 
     private void ResetLevelOneWeaponOffsets()
@@ -2373,6 +2389,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         AudioListener[] listeners = GetComponentsInChildren<AudioListener>(true);
         for (int i = 0; i < listeners.Length; i++)
             if (listeners[i] != null) listeners[i].enabled = false;
+
+        Debug.Log($"[MPDebug] remote camera disabled ({gameObject.name})");
 #endif
     }
 
@@ -2830,6 +2848,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void EnsureThirdPersonCamera()
     {
+        // Never create a camera for a remote network player.
+        if (IsRemoteNetworkPlayer()) return;
+
         if (runtimeThirdPersonCamera != null)
         {
             thirdPersonCam = runtimeThirdPersonCamera;
@@ -2846,6 +2867,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             CameraController existingFollow = existingFollows[i];
             if (existingFollow == null)
                 continue;
+
+#if PUN_2_OR_NEWER
+            // Skip cameras that belong to a different (remote) Photon player —
+            // reusing them would orphan that player's camera and could tag a
+            // remote camera as "MainCamera" on the local client.
+            Photon.Pun.PhotonView camPv = existingFollow.GetComponentInParent<Photon.Pun.PhotonView>();
+            if (camPv != null && !camPv.IsMine) continue;
+
+            // Skip cameras already adopted by a different local PlayerController.
+            PlayerController camOwner = existingFollow.GetComponentInParent<PlayerController>();
+            if (camOwner != null && camOwner != this) continue;
+#endif
 
             runtimeThirdPersonCamera = existingFollow.GetComponent<Camera>();
             if (runtimeThirdPersonCamera != null)

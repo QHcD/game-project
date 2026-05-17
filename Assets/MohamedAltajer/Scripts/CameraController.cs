@@ -160,10 +160,27 @@ public class CameraController : MonoBehaviour
 
     private void Awake()
     {
+#if PUN_2_OR_NEWER
+        // Remote-player cameras must be disabled, not destroyed. Destroying them
+        // during Awake (before PlayerController.Start runs) causes NullRefs and
+        // — critically — if the remote Awake fires before the local one, the
+        // singleton slot is taken by a remote camera and DestroyImmediate then
+        // kills the LOCAL player's camera, leaving the screen black.
+        Photon.Pun.PhotonView pv = GetComponentInParent<Photon.Pun.PhotonView>();
+        if (pv != null && !pv.IsMine)
+        {
+            // PlayerController.DisableRemotePlayerLocalSystems() will handle the
+            // full cleanup; we just make sure this component does not run or
+            // register itself as the singleton.
+            enabled = false;
+            return;
+        }
+#endif
+
         if (Instance != null && Instance != this)
         {
             Debug.LogWarning($"[CameraController] Duplicate destroyed: \"{gameObject.name}\". Only one CameraController allowed.");
-            DestroyImmediate(this.gameObject);
+            Destroy(gameObject); // Destroy (not DestroyImmediate) — safe at runtime
             return;
         }
         Instance = this;
