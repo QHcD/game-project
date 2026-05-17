@@ -112,9 +112,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     [Header("Target Locking & LoS")]
     [Tooltip("How long (seconds) the AI commits to a target before considering switching.")]
-    public float targetLockDuration = 0.15f;
+    public float targetLockDuration = 1.6f;
     [Tooltip("A new candidate target must be this many metres closer than the current one to steal focus.")]
-    public float targetSwitchHysteresis = 0f;
+    public float targetSwitchHysteresis = 2.0f;
     [Tooltip("Extra metres added to attackRadius when deciding it is time to swing.")]
     public float attackRangePadding = 0.35f;
     [Tooltip("Extra metres beyond attack radius before the attacker breaks off to chase again (hysteresis).")]
@@ -400,8 +400,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         detectionRadius = Mathf.Clamp(detectionRadius, 4f, 500f);
         aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, Mathf.Max(detectionRadius * 2f, 24f));
         attackCooldown = Mathf.Min(attackCooldown, 0.65f);
-        targetLockDuration = Mathf.Min(targetLockDuration, 0.15f);
-        targetSwitchHysteresis = 0f;
+        // Keep a real commitment window: too short (the old 0.15s cap) and the
+        // AI re-snaps to whoever is marginally nearest every scan, which makes
+        // every enemy dogpile the player. Clamp to a sane FFA range instead.
+        targetLockDuration = Mathf.Clamp(targetLockDuration, 0.6f, 3f);
+        targetSwitchHysteresis = Mathf.Max(0f, targetSwitchHysteresis);
 
         // LevelBuilder assigns maxHealth/chaseSpeed after AddComponent(), so
         // re-apply runtime state here once the spawner has finished tuning us.
@@ -1386,7 +1389,8 @@ public class EnemyController : MonoBehaviour, IDamageable
                  Vector3.Distance(transform.position, _target.position) - 0.5f))
             {
                 _target          = attackerT;
-                _targetLockTimer = targetLockDuration;
+                // Lock onto the recent attacker so retaliation actually sticks.
+                _targetLockTimer = Time.time + targetLockDuration;
             }
         }
 
@@ -2290,10 +2294,30 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        _target = candidate;
-        _targetLockTimer = targetLockDuration;
+        // Target-commitment gate. While the lock timer is still running, keep
+        // the current valid target unless a new candidate is meaningfully
+        // closer (targetSwitchHysteresis metres). Previously _targetLockTimer
+        // was set but never read, so EvaluateTargets re-picked the nearest
+        // combatant every scan — that is what caused the per-scan target
+        // thrash and the all-enemies-swarm-the-player behaviour. With the gate
+        // active, an enemy that has locked onto another enemy keeps fighting
+        // it instead of re-snapping to the player.
+        if (IsTargetValid(_target) && _target != candidate && Time.time < _targetLockTimer)
+        {
+            float currentDist   = Vector3.Distance(transform.position, _target.position);
+            float candidateDist = Vector3.Distance(transform.position, candidate.position);
+            if (candidateDist > currentDist - Mathf.Max(0f, targetSwitchHysteresis))
+                candidate = _target;
+        }
+
+        if (candidate != _target)
+        {
+            _target = candidate;
+            _targetLockTimer = Time.time + targetLockDuration;
+        }
+
         if ((_state == State.Idle || _state == State.Patrol || _state == State.Attack) &&
-            CanEngageChase(candidate))
+            CanEngageChase(_target))
             TransitionTo(State.Chase);
     }
 
