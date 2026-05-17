@@ -235,13 +235,6 @@ public class LevelBuilder : MonoBehaviour
         GameObject arenaRoot = GameObject.Find(ArenaRootName);
         EnsureSceneGroundVisible(arenaRoot != null ? arenaRoot.transform : null);
     }
-
-    private static void SetRootActive(string objectName)
-    {
-        GameObject obj = GameObject.Find(objectName);
-        if (obj != null && !obj.activeSelf)
-            obj.SetActive(true);
-    }
 #endif
 
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -2502,6 +2495,14 @@ public class LevelBuilder : MonoBehaviour
         go.layer = layer;
         foreach (Transform child in go.transform)
             SetLayerRecursively(child.gameObject, layer);
+    }
+
+    private static void SetRootActive(string objectName)
+    {
+        if (string.IsNullOrEmpty(objectName)) return;
+        GameObject obj = GameObject.Find(objectName);
+        if (obj != null && !obj.activeSelf)
+            obj.SetActive(true);
     }
 
     private static void EnsureHierarchyActive(Transform root)
