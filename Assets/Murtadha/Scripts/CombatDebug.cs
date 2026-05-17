@@ -5,7 +5,7 @@ using UnityEngine;
 /// </summary>
 public static class CombatDebug
 {
-    public static bool debugCombatDamage = true;
+    public static bool debugCombatDamage = false;
 
     public static bool Enabled => debugCombatDamage;
 

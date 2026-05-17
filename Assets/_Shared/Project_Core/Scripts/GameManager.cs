@@ -49,6 +49,7 @@ public class GameManager : MonoBehaviour
     public enum WeaponType
     {
         Melee,
+        TwoHandedMelee,   // Two-handed swords, spears, axes — enables left-hand IK grip
         UltimateMelee
     }
 
@@ -81,10 +82,14 @@ public class GameManager : MonoBehaviour
     };
 
     private static readonly WeaponType[] LevelWeaponTypes = {
-        WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee,
-        WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee,
-        WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee, WeaponType.Melee,
-        WeaponType.Melee
+        //          Knife              Katana                  Shovel                  Baseball Bat            Nunchucks
+        WeaponType.Melee,  WeaponType.TwoHandedMelee, WeaponType.TwoHandedMelee, WeaponType.TwoHandedMelee, WeaponType.Melee,
+        //          Wrench             Crowbar                 Hammer                  Axe                     Spear
+        WeaponType.Melee,  WeaponType.Melee, WeaponType.TwoHandedMelee, WeaponType.TwoHandedMelee, WeaponType.TwoHandedMelee,
+        //          Nailed Plank           Saw                Sickle             Morgenstern              L3FTE
+        WeaponType.TwoHandedMelee, WeaponType.Melee, WeaponType.Melee, WeaponType.TwoHandedMelee, WeaponType.Melee,
+        //          Riot Shield
+        WeaponType.TwoHandedMelee
     };
 
     private static readonly Color[] LevelWeaponColors = {
@@ -737,7 +742,7 @@ public class GameManager : MonoBehaviour
     }
 
     public int GetUnlockedLevelCount()
-        => Mathf.Clamp(PlayerPrefs.GetInt("UnlockedLevels", 1), 1, TotalLevels);
+        => TotalLevels; // Level gating removed — all levels available from the start.
 
     private void ResetLevelState()
     {

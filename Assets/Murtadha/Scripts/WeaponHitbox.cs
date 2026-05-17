@@ -14,6 +14,10 @@ public class WeaponHitbox : MonoBehaviour
     [Tooltip("Radius checked around the weapon tip during each active swing.")]
     public float overlapRadius = 0.85f;
 
+    [Tooltip("Max distance from the weapon owner to a valid target. " +
+             "Set from EnemyController.attackRadius + buffer. 0 = no limit (player weapons).")]
+    public float maxAttackRange = 0f;
+
     [Tooltip("Layers that can receive melee damage. Default = Player + Hittable + Character.")]
     public LayerMask meleeVictimMask;
 
@@ -34,7 +38,10 @@ public class WeaponHitbox : MonoBehaviour
         TryAdd(ref mask, "Character");
         TryAdd(ref mask, "Enemy");
         TryAdd(ref mask, "Enemies");
-        if (mask == 0) return (LayerMask)~0;
+        // Also include layer 0 (Default) so player prefabs that haven't been
+        // explicitly moved to a named layer are still detectable. IDamageable
+        // guard in TryDamageCollider prevents false positives on environment.
+        mask |= 1 << 0;
         return (LayerMask)mask;
     }
 
@@ -110,9 +117,9 @@ public class WeaponHitbox : MonoBehaviour
     private void DealOverlapSphereDamage()
     {
         Vector3 tip = GetWeaponTipWorldPosition();
-        int mask = meleeVictimMask.value != 0
-            ? meleeVictimMask.value
-            : BuildDefaultMeleeVictimMask().value;
+        // Always merge with the default mask so serialized Inspector values
+        // cannot silently exclude layer 0 (Default), where most characters live.
+        int mask = meleeVictimMask.value | BuildDefaultMeleeVictimMask().value;
         int hitCount = Physics.OverlapSphereNonAlloc(
             tip,
             Mathf.Max(0.1f, overlapRadius),
@@ -134,13 +141,31 @@ public class WeaponHitbox : MonoBehaviour
         if (target == null || target.gameObject == resolvedOwner) return false;
         if (!target.IsAlive) return false;
 
+        // Phantom-range guard: reject hits where the attacker is physically too
+        // far away for the weapon to reach. Prevents mis-computed weapon-tip
+        // OverlapSpheres from landing damage across the room.
+        if (maxAttackRange > 0f && resolvedOwner != null)
+        {
+            float dist = Vector3.Distance(
+                resolvedOwner.transform.position,
+                target.gameObject.transform.position);
+            if (dist > maxAttackRange)
+                return false;
+        }
+
         int id = target.gameObject.GetInstanceID();
         if (hitThisSwing.Contains(id)) return false;
 
         // Melee weapons deal flat body damage only — no headshot multipliers.
         int dmg = damage > 0 ? damage : 25;
 
-        Vector3 origin = GetWeaponTipWorldPosition();
+        // Use the attacker's chest as the occlusion origin — the weapon-tip
+        // calculation depends on the weapon's rotation and can land inside the
+        // floor or a wall for curved/rotated weapons (sickle, shovel, etc.),
+        // which causes every hit to appear "blocked by geometry."
+        Vector3 origin = resolvedOwner != null
+            ? resolvedOwner.transform.position + Vector3.up * 1.4f
+            : GetWeaponTipWorldPosition();
         bool blockedWorld = DamageOcclusion.IsBlockedFromPoint(resolvedOwner, target.gameObject, origin);
         if (CombatDebug.Enabled)
         {

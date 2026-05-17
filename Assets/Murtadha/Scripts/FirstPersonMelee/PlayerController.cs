@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.InputSystem;
+using UnityEngine.EventSystems;
 #if PHOTON_UNITY_NETWORKING
 using Photon.Pun;
 #endif
@@ -15,8 +16,21 @@ using Photon.Pun;
 /// Parameters fed each frame: Speed, IsGrounded, IsAttacking, IsSprinting.
 /// The Animator Controller is responsible for all blending and leg motion.
 /// </summary>
-public class PlayerController : MonoBehaviour
+public class PlayerController : MonoBehaviour, IDamageable
 {
+    // ── IDamageable bridge ───────────────────────────────────────────────────
+    // PlayerHealth is the authoritative health component but may be missing from
+    // the prefab. Implementing IDamageable here guarantees enemy weapon hitboxes
+    // always find a valid damage receiver on the player GameObject.
+    public bool IsAlive => _playerHealth == null || _playerHealth.IsAlive;
+    public void ReceiveDamage(int amount, GameObject attackerRoot)
+    {
+        if (_playerHealth == null)
+            _playerHealth = GetComponent<PlayerHealth>() ?? gameObject.AddComponent<PlayerHealth>();
+        _playerHealth.ReceiveDamage(amount, attackerRoot);
+    }
+    private PlayerHealth _playerHealth;
+
     private const string WeaponSocketName = "PlayerRightHandWeaponSocket";
     private const string RuntimeThirdPersonCameraName = "RuntimeThirdPersonCamera";
     private const float ThirdPersonMinPitch = -12f;
@@ -87,6 +101,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     [Tooltip("How quickly the character rotates to face movement direction (deg/sec).")]
     public float turnSpeed = 720f;
 
+    [Tooltip("How strongly the camera yaw drifts toward the character's movement direction while moving (0 = no drift, 3 = snappy follow).")]
+    [Range(0f, 6f)]
+    public float cameraMovementFollowStrength = 1.8f;
+
     [Header("Tactical Maneuvers")]
     public float crouchHeight = 1.3f;
     public float proneHeight = 0.7f;
@@ -149,7 +167,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     public float attackSpeed = 1f;
 
     [Tooltip("Base damage per hit.")]
-    public int attackDamage = 1;
+    public int attackDamage = 25;
 
     [Tooltip("Physics layer mask for attack raycasts.")]
     public LayerMask attackLayer;
@@ -331,6 +349,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     [HideInInspector] public GameObject equippedWeaponObject;
     private int equippedWeaponLevel = -1;
     private bool weaponAttachInProgress;
+    private float      _combatReadyBlend;
+    private Quaternion _weaponAttachLocalRot;
+    private GameObject _weaponAttachCachedObj;
     private WeaponHitbox equippedWeaponHitbox;
     private WeaponEquipper playerWeaponEquipper;
     private Coroutine weaponHitboxRoutine;
@@ -456,6 +477,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void Start()
     {
+        _playerHealth = GetComponent<PlayerHealth>() ?? gameObject.AddComponent<PlayerHealth>();
         EnsureCriticalComponents();
         ResetLevelOneWeaponOffsets();
 
@@ -890,6 +912,15 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void ReadInput()
     {
+        // Deselect UI when cursor is locked so arrow keys reach movement input
+        // instead of being consumed by the EventSystem's UI navigation.
+        if (Cursor.lockState == CursorLockMode.Locked &&
+            EventSystem.current != null &&
+            EventSystem.current.currentSelectedGameObject != null)
+        {
+            EventSystem.current.SetSelectedGameObject(null);
+        }
+
         if (Keyboard.current != null && Keyboard.current.f9Key.wasPressedThisFrame)
             _overlayEnabled = !_overlayEnabled;
 
@@ -1522,6 +1553,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         cameraYaw += mouseX;
 
+        // Soft camera follow: drift cameraYaw toward the player's facing direction while moving.
+        if (isThirdPersonActive &&
+            cameraMovementFollowStrength > 0.001f &&
+            moveInputSmoothed.sqrMagnitude > 0.04f)
+        {
+            float facingYaw  = transform.eulerAngles.y;
+            float yawDelta   = Mathf.DeltaAngle(cameraYaw, facingYaw);
+            float followRate = cameraMovementFollowStrength * Time.deltaTime;
+            float speedFactor = Mathf.Clamp01(moveInputSmoothed.magnitude);
+            cameraYaw += yawDelta * followRate * speedFactor;
+        }
+
         if (isThirdPersonActive && runtimeThirdPersonCamera != null)
         {
             CameraController orbitCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
@@ -2022,7 +2065,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void ApplyAttackLunge()
     {
-        if (controller == null) return;
+        if (controller == null || !controller.enabled) return;
         Vector3 lunge = transform.forward * attackLungeDistance;
         lunge.y = 0f;
         if (staticObstacleMask.value != 0)
@@ -2641,8 +2684,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         ConfigureAnimatorBinding(anim, forceControllerAssignment: false);
         if (anim.runtimeAnimatorController == null) return;
 
-        float maxGroundSpeed = Mathf.Max(0.01f, moveSpeed * Mathf.Max(1f, sprintMultiplier));
-        float normalizedSpeed = Mathf.Clamp01(GetActualHorizontalVelocity().magnitude / maxGroundSpeed);
+        // Use input magnitude so Speed snaps to 0 immediately when keys are released,
+        // preventing residual physics velocity keeping the Run animation active while standing still.
+        float normalizedSpeed = moveInputSmoothed.sqrMagnitude > 0.01f
+            ? Mathf.Clamp01(moveInputSmoothed.magnitude)
+            : 0f;
 
         // ── Locomotion (Float) ──────────────────────────────────────────────
         bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.1f);
@@ -3678,6 +3724,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 ForceWeaponRenderable(weapon);
                 ApplySickleHandPose(handBone, weapon.transform);
             }
+            else if (level == 3 && prefab != null &&
+                     prefab.name.IndexOf("shovel", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                // Shovel: hold mid-handle, blade tilted forward-up so it clears the ground.
+                weapon.transform.localPosition = new Vector3(-0.06f, 0.08f, 0f);
+                weapon.transform.localRotation = Quaternion.Euler(-50f, 0f, 90f);
+                ForceWeaponRenderable(weapon);
+            }
             else if (ShouldUsePlayerChainsawGrip(level, prefab))
             {
                 ApplyPlayerChainsawGrip(weapon.transform);
@@ -3803,11 +3857,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private static int ResolveHittableMask()
     {
-        int hittable = LayerMask.NameToLayer("Hittable");
-        if (hittable >= 0) return 1 << hittable;
-
-        int character = LayerMask.NameToLayer("Character");
-        return character >= 0 ? 1 << character : ~0;
+        int mask = 0;
+        void TryAdd(string name) { int l = LayerMask.NameToLayer(name); if (l >= 0) mask |= 1 << l; }
+        TryAdd("Hittable");
+        TryAdd("Character");
+        TryAdd("Enemy");
+        TryAdd("Enemies");
+        mask |= 1 << 0; // Default layer — enemies/players without explicit layer assignment
+        return mask;
     }
 
     // Resolves the player right-hand bone using explicit names first, then the

@@ -86,6 +86,12 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 Level16EnemyLocalEuler = ReversedOneHandedGripEuler;
     private static readonly Vector3 PolePlayerLocalPosition = new Vector3(-0.06f, -0.0075f, 0f);
     private static readonly Vector3 PoleEnemyLocalPosition = new Vector3(-0.05f, -0.003f, 0f);
+    // Level 3 shovel: tilt blade forward/up so it clears the ground during idle.
+    // -60° X pitch lifts the blade end; Z=90 keeps the standard one-handed convention.
+    private static readonly Vector3 ShovelPlayerLocalPosition = new Vector3(-0.06f, -0.0075f, 0f);
+    private static readonly Vector3 ShovelPlayerLocalEuler    = new Vector3(-90f, 0f, 90f);
+    private static readonly Vector3 ShovelEnemyLocalPosition  = new Vector3(-0.05f, -0.003f, 0f);
+    private static readonly Vector3 ShovelEnemyLocalEuler     = new Vector3(-90f, 0f, 90f);
     // Level 6 wrench: dedicated exact grip values. The imported FBX long axis
     // is local Y with bounds roughly [-25.1559 .. +18.9399]. After the 0.40m
     // autoscale, the handle butt sits ~0.228m from the pivot on the -Y end.
@@ -213,7 +219,7 @@ public static class WeaponLoadoutCatalog
     // from the head — the natural grip section of the handle, not at the
     // extreme butt edge. Level 9 enemy now uses the same final handle
     // placement once the socket basis is normalized to the player's style.
-    private static readonly Vector3 AxePlayerLocalPosition = new Vector3(0f, -0.475f, 0f);
+    private static readonly Vector3 AxePlayerLocalPosition = new Vector3(0f, -0.30f, 0.015f);
     private static readonly Vector3 AxePlayerLocalEuler = new Vector3(0f, 180f, 90f);
     private static readonly Vector3 AxeEnemyLocalPosition = AxePlayerLocalPosition;
     private static readonly Vector3 AxeEnemyLocalEuler = AxePlayerLocalEuler;
@@ -284,10 +290,12 @@ public static class WeaponLoadoutCatalog
                     "Weapons/Imported/Katana(level2)/source/Katana_low",
                     "Weapons/Imported/Katana(level2)/source/melee");
             case 3:
-                return CreatePlayerMatchedGrip(
-                    1.00f,
-                    PolePlayerLocalPosition,
-                    DefaultPlayerLocalEuler,
+                return CreateExactGrip(
+                    0.72f,
+                    ShovelPlayerLocalPosition,
+                    ShovelPlayerLocalEuler,
+                    ShovelEnemyLocalPosition,
+                    ShovelEnemyLocalEuler,
                     "Weapons/Imported/shovel(level3)/source/Shovel/Shovel");
             case 4:
                 return CreateExactGrip(
@@ -323,7 +331,7 @@ public static class WeaponLoadoutCatalog
                     "Weapons/Imported/crowbar(level7)/source/CrowbarV2");
             case 8:
                 return CreateExactGrip(
-                    0.85f,
+                    0.65f,
                     HammerPlayerLocalPosition,
                     HammerPlayerLocalEuler,
                     HammerEnemyLocalPosition,
@@ -339,7 +347,7 @@ public static class WeaponLoadoutCatalog
                     "Weapons/Imported/axe(level9)/source/axe");
             case 10:
                 return CreatePlayerMatchedGrip(
-                    1.40f,
+                    0.70f,
                     PolePlayerLocalPosition,
                     DefaultPlayerLocalEuler,
                     "Weapons/Imported/Spear(level10)/source/Spear/Spear");
@@ -362,8 +370,8 @@ public static class WeaponLoadoutCatalog
                     0.72f,
                     SicklePlayerLocalPosition,
                     SicklePlayerLocalEuler,
-                    DefaultEnemyLocalPosition,
-                    DefaultEnemyLocalEuler,
+                    SicklePlayerLocalPosition,
+                    SicklePlayerLocalEuler,
                     "Weapons/Imported/sickle(level13)/source/Sickle");
             case 14:
                 // Morgenstern grip is forced by hardcoded post-grip overrides in
