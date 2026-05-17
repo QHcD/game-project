@@ -60,6 +60,9 @@ public class NetworkPlayerSpawner : MonoBehaviour
         // DisableScenePlayer is deferred to after the local Photon player is
         // confirmed spawned so the scene camera stays alive during the spawn
         // window. If spawn fails the scene player remains as a fallback.
+        // Mode must be read before spawning so bots/HUD react correctly.
+        MpRoomConfig.ApplyToLocalState();
+
         DisableAiEnemies();
 
 #if PUN_2_OR_NEWER
@@ -68,6 +71,10 @@ public class NetworkPlayerSpawner : MonoBehaviour
             EnsureLocalNicknameFallback();
             RegisterPhotonPlayersForLeaderboard();
             SpawnLocalPlayer();
+
+            // Master client owns the match lifecycle and bot director.
+            if (PhotonNetwork.IsMasterClient)
+                MpMatchController.EnsureExists();
         }
 #else
         Debug.LogWarning("[NetworkPlayerSpawner] Photon PUN 2 is not imported. Multiplayer spawning is disabled.");

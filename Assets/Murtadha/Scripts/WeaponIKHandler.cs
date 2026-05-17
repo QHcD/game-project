@@ -53,9 +53,9 @@ public class WeaponIKHandler : MonoBehaviour
             return;
         }
 
-        // Only enable two-handed IK for ranged/heavy weapons
-        bool isTwoHanded = weaponType != GameManager.WeaponType.Melee
-                        && weaponType != GameManager.WeaponType.UltimateMelee;
+        // Enable two-handed IK for two-handed and ultimate melee weapons
+        bool isTwoHanded = weaponType == GameManager.WeaponType.TwoHandedMelee
+                        || weaponType == GameManager.WeaponType.UltimateMelee;
 
         if (!isTwoHanded)
         {
@@ -113,7 +113,7 @@ public class WeaponIKHandler : MonoBehaviour
         // This method is kept as a no-op for compatibility.
         Bounds weaponBounds = CalculateWeaponBounds(weapon);
         float weaponLength = Mathf.Max(weaponBounds.size.x, Mathf.Max(weaponBounds.size.y, weaponBounds.size.z));
-        grip.localPosition = new Vector3(0f, 0f, weaponLength * 0.3f);
+        grip.localPosition = new Vector3(0f, -weaponLength * 0.25f, 0f);
         grip.localRotation = Quaternion.identity;
     }
 

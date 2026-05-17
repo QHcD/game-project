@@ -165,14 +165,6 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
-        // Door / wall occlusion: static geometry between attacker and victim blocks the hit.
-        bool blocked = DamageOcclusion.IsBlocked(attackerRoot, gameObject);
-        if (CombatDebug.Enabled)
-            CombatDebug.Log($"blockedByWall={blocked}");
-
-        if (blocked)
-            return;
-
         if (attackerRoot != null)
         {
             EnemyController attackerEnemy = attackerRoot.GetComponentInParent<EnemyController>();

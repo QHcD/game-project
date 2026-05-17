@@ -212,6 +212,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float        _attackTimer;
     private Transform    _target;
     private bool         _playerDamagedThisLife;
+
+    // Multiplayer Co-op: when set, bots prioritise these human players over other bots.
+    private System.Collections.Generic.List<Transform> _mpHumanTargets;
     private bool         _killedByPlayer;
     private RagdollController _ragdoll;
     private Vector3      _lastHitDirection;
@@ -248,6 +251,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private GameObject _equippedWeaponPrefab;
     private int _equippedWeaponLevel = -1;
     private bool _weaponAttachInProgress;
+    private float      _combatReadyBlend;
+    private Quaternion _weaponAttachLocalRot;
+    private GameObject _weaponAttachCachedObj;
     private float _patrolTimer;
     private bool _isTraversingOffMeshLink;
     private float _flowFieldSteerTimer;
@@ -617,16 +623,16 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         ApplyMovementAlignedRotation();
 
-        if (!stabilizeWeaponSocketAgainstHandPose)
-            return;
+        if (stabilizeWeaponSocketAgainstHandPose &&
+            _activeWeaponSocket != null && _activeWeaponHandBone != null)
+        {
+            _activeWeaponSocket.localRotation =
+                Quaternion.Inverse(_activeWeaponHandBone.localRotation) *
+                Quaternion.Euler(weaponSocketLocalEulerAngles);
+        }
 
-        if (_activeWeaponSocket == null || _activeWeaponHandBone == null)
-            return;
-
-        _activeWeaponSocket.localRotation =
-            Quaternion.Inverse(_activeWeaponHandBone.localRotation) *
-            Quaternion.Euler(weaponSocketLocalEulerAngles);
     }
+
 
     /// <summary>
     /// Smoothly aligns the body with horizontal NavMesh velocity so feet/locomotion match travel direction (no moonwalking).
@@ -2277,8 +2283,40 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
+    /// <summary>
+    /// Called by MpBotDirector on master client to give bots a priority
+    /// human-player target list (Co-op Survival mode).
+    /// Pass null or empty list to revert to default FFA targeting.
+    /// </summary>
+    public void SetMultiplayerTargets(System.Collections.Generic.List<Transform> humanTargets)
+    {
+        _mpHumanTargets = humanTargets;
+    }
+
     private void EvaluateTargets()
     {
+        // Co-op Survival: prefer the nearest living human player from the MP list.
+        if (_mpHumanTargets != null && _mpHumanTargets.Count > 0)
+        {
+            Transform nearest  = null;
+            float     nearestD = float.MaxValue;
+            foreach (Transform t in _mpHumanTargets)
+            {
+                if (t == null) continue;
+                IDamageable dmg = t.GetComponentInParent<IDamageable>();
+                if (dmg == null || !dmg.IsAlive) continue;
+                float d = Vector3.Distance(transform.position, t.position);
+                if (d < nearestD) { nearestD = d; nearest = t; }
+            }
+            if (nearest != null && nearestD <= Mathf.Max(detectionRadius, aggressiveScanRadius))
+            {
+                if (nearest != _target) { _target = nearest; _targetLockTimer = Time.time + targetLockDuration; }
+                if ((_state == State.Idle || _state == State.Patrol || _state == State.Attack) && CanEngageChase(_target))
+                    TransitionTo(State.Chase);
+                return;
+            }
+        }
+
         Transform candidate = FindFfaTarget(Mathf.Max(detectionRadius, aggressiveScanRadius));
 
         // Minimal freeze fix: fall back to nearest living enemy/player (no hard player priority).
@@ -2539,7 +2577,11 @@ public class EnemyController : MonoBehaviour, IDamageable
 
             if (equippedWeaponObject != null)
             {
-                _equippedWeaponHitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
+                WeaponHitbox wh = equippedWeaponObject.GetComponent<WeaponHitbox>();
+                if (wh == null) wh = equippedWeaponObject.AddComponent<WeaponHitbox>();
+                wh.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
+                wh.maxAttackRange = attackRadius + 1.0f;
+                _equippedWeaponHitbox = wh;
                 _equippedWeaponPrefab = weaponPrefab;
                 _equippedWeaponLevel = level;
                 _weaponAttachInProgress = false;
@@ -2555,7 +2597,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         weaponGripLocalPosition          = loadout.EnemyLocalPosition;
         weaponGripLocalEulerAngles       = loadout.EnemyLocalEuler;
         weaponSocketLocalEulerAngles     = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
-        stabilizeWeaponSocketAgainstHandPose = (level == 9 || WeaponLoadoutCatalog.IsChainsawLevel(level, weaponPrefab));
+        stabilizeWeaponSocketAgainstHandPose = true;
         ApplySavedRuntimeGripValuesForLevel(level);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
@@ -2675,6 +2717,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
         if (hitbox == null) hitbox = equippedWeaponObject.AddComponent<WeaponHitbox>();
         hitbox.damage = (int)attackDamage;
+        // Clamp hits to attackRadius + 1 m so a mis-computed weapon-tip sphere
+        // cannot register damage from across the room.
+        hitbox.maxAttackRange = attackRadius + 1.0f;
         hitbox.DisableHitbox();
         _equippedWeaponHitbox = hitbox;
 
