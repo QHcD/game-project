@@ -77,8 +77,24 @@ public class NetworkPlayerSpawner : MonoBehaviour
         if (FindOwnedPlayer() != null)
             return;
 
+        Debug.Log($"[PhotonSpawn] prefab path={playerPrefabPath}");
+
+        // Validate prefab is loadable from Resources before instantiating.
+        GameObject prefabCheck = Resources.Load<GameObject>(playerPrefabPath);
+        bool pvReady = prefabCheck != null && prefabCheck.GetComponent<PhotonView>() != null;
+        Debug.Log($"[PhotonSpawn] PhotonView ready={pvReady}");
+
+        if (!pvReady)
+        {
+            Debug.LogError($"[PhotonSpawn] Player prefab at Resources/{playerPrefabPath} is missing a PhotonView. " +
+                           "Run PRISM/Multiplayer/Fix Photon Player Prefab from the Unity menu to add it.");
+            return;
+        }
+
+        Debug.Log("[PhotonSpawn] spawning local player");
         Vector3 spawn = ResolveSpawnPosition();
-        PhotonNetwork.Instantiate(playerPrefabPath, spawn, Quaternion.identity);
+        GameObject spawned = PhotonNetwork.Instantiate(playerPrefabPath, spawn, Quaternion.identity);
+        Debug.Log($"[PhotonSpawn] spawned local player {spawned?.name} at {spawn}");
     }
 
     private GameObject FindOwnedPlayer()

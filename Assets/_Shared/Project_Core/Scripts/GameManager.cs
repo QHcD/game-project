@@ -671,18 +671,10 @@ public class GameManager : MonoBehaviour
             playerWon = killCount >= highestKillCount;
         }
 
-        // Black Ops 3 "Winners Circle" sequence — slow-mo, podium orbit, victory
-        // pose, scoreboard. Hands back to LevelComplete/GameOver when the
-        // player picks Play Again or Main Menu.
-        EndMatchCinematic.Begin(playerWon, () =>
-        {
-            // The cinematic now drives Play Again / Main Menu directly via
-            // GameManager.ReplayCurrentLevel / GoToMainMenu, so this callback
-            // exists only as a safety net for cases where the cinematic ends
-            // without user input (e.g. forced abort).
-            if (playerWon) LevelComplete();
-            else           GameOver();
-        });
+        // Skip EndMatchCinematic (Winners Circle + VICTORY scoreboard popup).
+        // Transition straight to the main-menu results flow instead.
+        if (playerWon) LevelComplete();
+        else           GameOver();
     }
 
     public void LoadNextLevel()
