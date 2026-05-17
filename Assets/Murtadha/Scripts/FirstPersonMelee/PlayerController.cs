@@ -265,6 +265,13 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private bool isSprinting;
     private bool wasMoving;
     private bool jumpRequested;
+
+    // ── F9 movement debug overlay ─────────────────────────────────────────────
+    private bool    _overlayEnabled;
+    private Vector2 _dbgKeyboard;
+    private Vector2 _dbgGamepad;
+    private float   _dbgGamepadRawMag;
+    private string  _dbgBlocked = "";
     private bool isCrouching;
     private bool isProne;
     private bool isSliding;
@@ -694,6 +701,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             return;
         }
 
+        _dbgBlocked = EndMatchCinematic.GameplayLocked ? "GameplayLocked"
+                    : IsRemoteNetworkPlayer()          ? "RemotePlayer"
+                    : Time.timeScale <= 0.0001f        ? "Paused(timeScale=0)"
+                    : "";
+
         ReadInput();
         HandleActionInput();
         ApplyMovement();
@@ -720,6 +732,32 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible   = false;
         }
+    }
+
+    // F9 on-screen movement debug overlay — disabled by default (_overlayEnabled = false).
+    private void OnGUI()
+    {
+        if (!_overlayEnabled || IsRemoteNetworkPlayer()) return;
+
+        Vector3 moveDir = GetCameraRelativeMoveDirection(moveInputSmoothed);
+        float   spd     = actualHorizontalVelocity.magnitude;
+
+        string txt =
+            "[F9] Movement Debug\n" +
+            $"Keyboard raw:     ({_dbgKeyboard.x:F3}, {_dbgKeyboard.y:F3})\n" +
+            $"Gamepad raw mag:  {_dbgGamepadRawMag:F3}  raw=({_dbgGamepad.x:F3},{_dbgGamepad.y:F3})\n" +
+            $"Final raw input:  ({moveInputRaw.x:F3}, {moveInputRaw.y:F3})\n" +
+            $"Smoothed input:   ({moveInputSmoothed.x:F3}, {moveInputSmoothed.y:F3})\n" +
+            $"Move direction:   ({moveDir.x:F3}, {moveDir.z:F3})\n" +
+            $"Speed (actual):   {spd:F2} m/s\n" +
+            $"isGrounded:       {isGrounded}\n" +
+            $"timeScale:        {Time.timeScale:F3}\n" +
+            $"Blocked by:       {(_dbgBlocked.Length > 0 ? _dbgBlocked : "none")}";
+
+        var bg  = new Rect(8, 8, 336, 208);
+        var lbl = new Rect(14, 14, 324, 196);
+        GUI.Box(bg, GUIContent.none);
+        GUI.Label(lbl, txt);
     }
 
     private void LateUpdate()
@@ -852,6 +890,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void ReadInput()
     {
+        if (Keyboard.current != null && Keyboard.current.f9Key.wasPressedThisFrame)
+            _overlayEnabled = !_overlayEnabled;
+
         moveInputRaw = ReadMovementInput();
         moveInputRaw = Vector2.ClampMagnitude(moveInputRaw, 1f);
 
@@ -859,6 +900,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         float moveDt = Mathf.Max(0.0001f, Time.deltaTime);
         float moveK = 1f - Mathf.Exp(-InputSmoothing * moveDt);
         moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, moveK);
+
+        // Exponential smoothing only ASYMPTOTES toward zero — it never reaches
+        // it. Without this hard snap the tiny residual keeps feeding a non-zero
+        // move vector after every key release, so the character glides on
+        // forever ("movement continues after releasing keys"). Once raw input
+        // is released and the residual is negligible, force a true full stop.
+        if (moveInputRaw.sqrMagnitude < 0.0001f && moveInputSmoothed.sqrMagnitude < 0.0004f)
+            moveInputSmoothed = Vector2.zero;
 
         // Read raw mouse delta (Input System gives pixels-per-frame-ish deltas).
         // We clamp it to avoid giant spikes (alt-tab, focus changes, or 10 FPS stutters).
@@ -870,6 +919,30 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         float dt = Mathf.Max(0.0001f, Time.unscaledDeltaTime);
         float k = 1f - Mathf.Exp(-lookSmoothing * dt);
         lookInputSmoothed = Vector2.Lerp(lookInputSmoothed, lookInput, k);
+    }
+
+    // Losing window focus (alt-tab in an EXE build) can leave the last key
+    // state cached on the input device, and the cached velocity keeps the
+    // character running when focus returns. Hard-reset movement state on focus
+    // loss / pause so input can never "stick" across a focus change.
+    private void OnApplicationFocus(bool hasFocus)
+    {
+        if (!hasFocus)
+            ResetMovementInputState();
+    }
+
+    private void OnApplicationPause(bool paused)
+    {
+        if (paused)
+            ResetMovementInputState();
+    }
+
+    private void ResetMovementInputState()
+    {
+        moveInputRaw = Vector2.zero;
+        moveInputSmoothed = Vector2.zero;
+        horizontalVelocity = Vector3.zero;
+        actualHorizontalVelocity = Vector3.zero;
     }
 
     private void HandleActionInput()
@@ -914,19 +987,39 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// </summary>
     private Vector2 ReadMovementInput()
     {
+        // ── Keyboard (always wins) ────────────────────────────────────────────
         Vector2 keyboard = BuildNormalizedKeyboardMoveInput();
-        if (keyboard.sqrMagnitude > 0.0001f)
-            return keyboard;
+        _dbgKeyboard = keyboard;
+
+        // ── Gamepad ───────────────────────────────────────────────────────────
+        _dbgGamepad       = Vector2.zero;
+        _dbgGamepadRawMag = 0f;
+        Vector2 gamepadOut = Vector2.zero;
 
         if (Gamepad.current != null)
         {
             Vector2 stick = Gamepad.current.leftStick.ReadValue();
-            float deadzone = Mathf.Clamp01(gamepadMoveDeadzone);
-            if (stick.magnitude >= deadzone)
-                return Vector2.ClampMagnitude(stick, 1f);
+            _dbgGamepadRawMag = stick.magnitude;
+            _dbgGamepad       = stick;
+
+            // Hard floor: ignore gamepad entirely if raw magnitude ≤ 0.35.
+            // Anything below this is considered drift regardless of the inspector
+            // deadzone setting. This prevents a drifting stick from producing a
+            // non-zero moveInputRaw that defeats the snap-to-zero guard.
+            float threshold = Mathf.Max(0.35f, Mathf.Clamp01(gamepadMoveDeadzone));
+            float mag = stick.magnitude;
+            if (mag > threshold)
+            {
+                float scaled = Mathf.Clamp01((mag - threshold) / (1f - threshold));
+                gamepadOut = (stick / mag) * scaled;
+            }
         }
 
-        return Vector2.zero;
+        // Keyboard always overrides gamepad; when no key is held return gamepad.
+        if (keyboard.sqrMagnitude > 0.0001f)
+            return keyboard;
+
+        return gamepadOut;
     }
 
     private static Vector2 BuildNormalizedKeyboardMoveInput()
@@ -1225,13 +1318,25 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
             horizontalVelocity = DampHorizontalVelocityIntoWalls(horizontalVelocity);
 
-            if (moveDirection.sqrMagnitude > 0.0001f && !isMantling)
+            // Facing is driven by RAW input, not the smoothed move vector.
+            // The smoothed vector decays slowly on release, and its
+            // .normalized keeps pointing the old way the whole time — so the
+            // body used to keep rotating toward a stale facing after the keys
+            // were released (the backward / strafe "rotation desync"). Raw
+            // input recomputes the true desired facing angle every frame, so
+            // S produces an immediate 180° target and rotation gates off
+            // cleanly the instant all keys are released.
+            if (moveInputRaw.sqrMagnitude > 0.02f && !isMantling)
             {
-                Quaternion targetRotation = Quaternion.LookRotation(moveDirection.normalized, Vector3.up);
-                transform.rotation = Quaternion.RotateTowards(
-                    transform.rotation,
-                    Quaternion.Euler(0f, targetRotation.eulerAngles.y, 0f),
-                    Mathf.Max(1f, turnSpeed) * Time.deltaTime);
+                Vector3 faceDir = GetCameraRelativeMoveDirection(moveInputRaw);
+                if (faceDir.sqrMagnitude > 0.0001f)
+                {
+                    float targetYaw = Quaternion.LookRotation(faceDir.normalized, Vector3.up).eulerAngles.y;
+                    transform.rotation = Quaternion.RotateTowards(
+                        transform.rotation,
+                        Quaternion.Euler(0f, targetYaw, 0f),
+                        Mathf.Max(1f, turnSpeed) * Time.deltaTime);
+                }
             }
 
             DebugMovementInput(moveDirection);
