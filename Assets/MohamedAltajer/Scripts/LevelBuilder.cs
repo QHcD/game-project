@@ -1744,6 +1744,9 @@ public class LevelBuilder : MonoBehaviour
             hud.UpdateScore(GameManager.Instance.score);
         }
 
+        if (!MultiplayerMode.IsMultiplayer && hud != null)
+            hud.InitializeSinglePlayerGameplay();
+
         // MatchCommentator is attached to the DDOL GameManager in GameManager.Awake (fully programmatic VO).
     }
 

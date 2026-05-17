@@ -2452,6 +2452,47 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             EquipWeaponForLevel(weaponLevel);
     }
 
+    /// <summary>
+    /// Photon local spawn: same equip path as single-player after the third-person
+    /// body and hand socket exist (LevelBuilder does not run in multiplayer scenes).
+    /// </summary>
+    public void ForceEquipLevelWeaponForMultiplayer()
+    {
+        if (!MultiplayerMode.IsMultiplayer)
+            return;
+
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        level = Mathf.Clamp(level, 1, GameManager.TotalLevels);
+        string weaponName = GameManager.Instance != null
+            ? GameManager.Instance.GetWeaponNameForLevel(level)
+            : (level == 2 ? "Razor Katana" : "Tactical Knife");
+
+        Debug.Log($"[MPWeapon] equipping level={level} weapon={weaponName}");
+
+        RefreshGameplayPreferences();
+        EnsureThirdPersonBody();
+
+        if (equippedWeaponObject != null)
+        {
+            Destroy(equippedWeaponObject);
+            equippedWeaponObject = null;
+        }
+
+        equippedWeaponLevel = -1;
+        EquipWeaponForLevel(level);
+
+        string socketName = "none";
+        bool weaponActive = false;
+        if (equippedWeaponObject != null)
+        {
+            Transform socket = equippedWeaponObject.transform.parent;
+            socketName = socket != null ? socket.name : equippedWeaponObject.name;
+            weaponActive = equippedWeaponObject.activeInHierarchy;
+        }
+
+        Debug.Log($"[MPWeapon] equipped parent={socketName} active={weaponActive}");
+    }
+
     private void HitTarget(Vector3 pos)
     {
         if (audioSource != null && hitSound != null)

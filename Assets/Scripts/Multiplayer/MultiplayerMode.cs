@@ -6,6 +6,12 @@ public static class MultiplayerMode
 
     public static bool IsMultiplayer { get; private set; }
 
+    [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetStaticsForPlayMode()
+    {
+        IsMultiplayer = false;
+    }
+
     public static void SetSinglePlayer()
     {
         IsMultiplayer = false;

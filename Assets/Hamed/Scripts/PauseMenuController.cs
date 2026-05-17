@@ -30,7 +30,9 @@ public class PauseMenuController : MonoBehaviour
 
     private void Update()
     {
-        if (SceneManager.GetActiveScene().name != "GameScene")
+        bool isGameplayScene = SceneManager.GetActiveScene().name == MultiplayerMode.SinglePlayerSceneName ||
+                               SceneManager.GetActiveScene().name == MultiplayerMode.MultiplayerSceneName;
+        if (!isGameplayScene)
         {
             if (isPaused)
                 ResumeGame();
@@ -44,6 +46,9 @@ public class PauseMenuController : MonoBehaviour
         if (Keyboard.current == null || !Keyboard.current.escapeKey.wasPressedThisFrame)
             return;
 
+        if (MultiplayerMode.IsMultiplayer && hudManager != null && hudManager.CloseFullMapFromEscape())
+            return;
+
         if (isPaused) ResumeGame();
         else ShowPauseMenu();
     }
@@ -54,15 +59,26 @@ public class PauseMenuController : MonoBehaviour
         BuildPauseMenu();
         ShowPanel(mainPanel);
 
-        Time.timeScale = 0f;
+        if (!MultiplayerMode.IsMultiplayer)
+            Time.timeScale = 0f;
         isPaused = true;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+    }
+
+    private void LateUpdate()
+    {
+        if (!isPaused)
+            return;
+
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
     }
 
     private void ResumeGame()
     {
-        Time.timeScale = 1f;
+        if (!MultiplayerMode.IsMultiplayer)
+            Time.timeScale = 1f;
         isPaused = false;
 
         if (pauseCanvas != null)
@@ -707,7 +723,8 @@ public class PauseMenuController : MonoBehaviour
 
     private void OnDisable()
     {
-        Time.timeScale = 1f;
+        if (!MultiplayerMode.IsMultiplayer)
+            Time.timeScale = 1f;
         isPaused = false;
     }
 }

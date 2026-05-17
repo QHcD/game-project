@@ -112,6 +112,9 @@ public class UIManager : MonoBehaviour
 
     public void ShowGameFinishedMenu()
     {
+        if (MultiplayerMode.IsMultiplayer)
+            return;
+
         Time.timeScale = 0f;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;

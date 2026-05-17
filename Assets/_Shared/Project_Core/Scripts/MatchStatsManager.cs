@@ -159,9 +159,39 @@ public class MatchStatsManager : MonoBehaviour
             .ToArray();
     }
 
+    public IReadOnlyList<CombatantSnapshot> GetTopPlayers(int count)
+    {
+        if (count <= 0)
+            return System.Array.Empty<CombatantSnapshot>();
+
+        return _combatants.Values
+            .Where(entry => entry.IsPlayer)
+            .OrderByDescending(entry => entry.Kills)
+            .ThenBy(entry => entry.Deaths)
+            .ThenBy(entry => entry.DisplayName)
+            .Take(count)
+            .Select(entry => new CombatantSnapshot
+            {
+                Id          = entry.Id,
+                DisplayName = entry.DisplayName,
+                Kills       = entry.Kills,
+                Deaths      = entry.Deaths,
+                Score       = entry.Score,
+                IsPlayer    = entry.IsPlayer,
+                IsAlive     = entry.IsAlive,
+                Transform   = entry.Transform,
+            })
+            .ToArray();
+    }
+
     public int GetRegisteredCombatantCount()
     {
         return _combatants.Count;
+    }
+
+    public int GetRegisteredPlayerCount()
+    {
+        return _combatants.Values.Count(entry => entry.IsPlayer);
     }
 
     private void NotifyStatsChanged()

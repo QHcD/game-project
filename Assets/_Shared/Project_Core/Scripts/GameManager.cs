@@ -430,6 +430,7 @@ public class GameManager : MonoBehaviour
     // ── Game flow ─────────────────────────────────────────────���───────────────
     public void StartRun(int level = 1)
     {
+        MultiplayerMode.SetSinglePlayer();
         Time.timeScale = 1f;
         score = 0;
         // A "regular" run always clears any pending custom-match overrides
@@ -453,6 +454,7 @@ public class GameManager : MonoBehaviour
     /// <param name="level">Which weapon level to play with (defaults to 1).</param>
     public void StartCustomRun(int enemyCount, int matchTimeSeconds, string difficultyLabel, int level = 1)
     {
+        MultiplayerMode.SetSinglePlayer();
         Time.timeScale = 1f;
         score = 0;
 
@@ -472,6 +474,7 @@ public class GameManager : MonoBehaviour
 
     public void ReplayCurrentLevel()
     {
+        MultiplayerMode.SetSinglePlayer();
         Time.timeScale = 1f;
         if (MatchStatsManager.Instance != null)
             MatchStatsManager.Instance.ResetMatch();
@@ -679,6 +682,7 @@ public class GameManager : MonoBehaviour
 
     public void LoadNextLevel()
     {
+        MultiplayerMode.SetSinglePlayer();
         Time.timeScale = 1f;
         currentLevel++;
         if (currentLevel > TotalLevels)
@@ -714,6 +718,7 @@ public class GameManager : MonoBehaviour
 
     public void GoToMainMenu()
     {
+        MultiplayerMode.SetSinglePlayer();
         Time.timeScale = 1f;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible   = true;
@@ -806,7 +811,24 @@ public class GameManager : MonoBehaviour
             loadingUi.DestroySelf();
 
         if (sceneName == "GameScene")
+        {
             yield return MatchStartCountdownUI.Play();
+            if (!MultiplayerMode.IsMultiplayer)
+            {
+                Time.timeScale = 1f;
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+                PlayerController pc = FindFirstObjectByType<PlayerController>();
+                if (pc != null)
+                {
+                    pc.enabled = true;
+                    CharacterController cc = pc.GetComponent<CharacterController>();
+                    if (cc != null) cc.enabled = true;
+                }
+                if (HUDManager.Instance != null)
+                    HUDManager.Instance.ApplySinglePlayerGameplayState();
+            }
+        }
 
         _sceneLoadRoutine = null;
     }
