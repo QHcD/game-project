@@ -206,8 +206,29 @@ public class PhotonLauncher : MonoBehaviour
         MultiplayerMode.SetMultiplayer();
         SetStatus($"Joined room: {PhotonNetwork.CurrentRoom.Name}");
 
+        // Hide the launcher canvas for every client immediately — non-master
+        // clients do not call LoadLevel so the menu would stay visible and
+        // block input until the scene finishes loading.
+        HideLauncherCanvas();
+
         if (PhotonNetwork.IsMasterClient)
             PhotonNetwork.LoadLevel(multiplayerSceneName);
+    }
+
+    private void HideLauncherCanvas()
+    {
+        // Walk up to the root canvas that contains this launcher.
+        Canvas canvas = GetComponentInParent<Canvas>();
+        if (canvas == null) canvas = GetComponent<Canvas>();
+        if (canvas != null)
+        {
+            canvas.gameObject.SetActive(false);
+            return;
+        }
+        // Fallback: disable any Canvas children of this GameObject.
+        Canvas[] children = GetComponentsInChildren<Canvas>(true);
+        foreach (Canvas c in children)
+            c.gameObject.SetActive(false);
     }
 
     public override void OnDisconnected(DisconnectCause cause)

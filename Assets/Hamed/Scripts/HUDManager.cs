@@ -102,8 +102,14 @@ public class HUDManager : MonoBehaviour
         EnsureRuntimeHud();
         EnsureDamageFlashLayer();
         EnsureLowHealthLayer();
-        playerHealth = FindFirstObjectByType<PlayerHealth>();
-        playerController = FindFirstObjectByType<PlayerController>();
+
+        if (!MultiplayerMode.IsMultiplayer)
+        {
+            playerHealth = FindFirstObjectByType<PlayerHealth>();
+            playerController = FindFirstObjectByType<PlayerController>();
+        }
+        // In multiplayer, player refs are injected by NetworkPlayerSpawner
+        // via InitForMultiplayerLocalPlayer() after the local player spawns.
 
         int level = GameManager.Instance.currentLevel;
         timeLimit = GameManager.Instance.LevelTimeLimitSeconds;
@@ -128,13 +134,12 @@ public class HUDManager : MonoBehaviour
             UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth);
 
         // ── Register the local player in MatchStatsManager ──────────────────
-        // Without this the RecordKill(playerId) call in EnemyController has
-        // no matching row, so kill counts stay at 0 in the leaderboard.
-        if (MatchStatsManager.Instance != null && playerHealth != null)
+        // Skipped in multiplayer — InitForMultiplayerLocalPlayer() registers
+        // the confirmed local player after PhotonNetwork.Instantiate succeeds,
+        // avoiding accidental registration of a remote player's PlayerHealth.
+        if (!MultiplayerMode.IsMultiplayer && MatchStatsManager.Instance != null && playerHealth != null)
         {
             string playerId = MatchStatsManager.BuildCombatantId(playerHealth);
-            // Use the persistent username (if the player has set one) so the
-            // leaderboard/feed shows their handle instead of a generic "YOU".
             string playerLabel = PlayerProfile.HasUsername ? PlayerProfile.Username : "YOU";
             MatchStatsManager.Instance.RegisterCombatant(playerId, playerLabel, isPlayer: true, transform: playerHealth.transform);
             MatchStatsManager.Instance.StatsChanged -= HandleMatchStatsChanged;
@@ -152,28 +157,22 @@ public class HUDManager : MonoBehaviour
             timerText.text = "TIME  " + Mathf.CeilToInt(remaining);
         }
 
-        if (GameManager.Instance != null)
-        {
+        if (GameManager.Instance != null && !MultiplayerMode.IsMultiplayer)
             GameManager.Instance.levelTime = elapsed;
-        }
 
-        if (!matchFinished && remaining <= 0.001f)
-        {
+        // In multiplayer, never freeze time — clients each run their own
+        // HUD timer but the match end is server-driven, not timer-driven.
+        if (!matchFinished && remaining <= 0.001f && !MultiplayerMode.IsMultiplayer)
             ShowMatchFinishedOverlay();
-        }
 
         TickDamageFlash();
         TickLowHealthVignette();
 
-        if (playerHealth == null)
-        {
+        if (playerHealth == null && !MultiplayerMode.IsMultiplayer)
             playerHealth = FindFirstObjectByType<PlayerHealth>();
-        }
 
-        if (playerController == null)
-        {
+        if (playerController == null && !MultiplayerMode.IsMultiplayer)
             playerController = FindFirstObjectByType<PlayerController>();
-        }
 
         if (playerHealth != null)
         {
@@ -1316,6 +1315,57 @@ public class HUDManager : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = Vector2.zero;
         rect.offsetMax = Vector2.zero;
+    }
+
+    /// <summary>
+    /// Called by NetworkPlayerSpawner after the local Photon player is confirmed
+    /// spawned. Wires HUD to the correct local player, hides any stale overlays,
+    /// locks the cursor, and registers the combatant in MatchStatsManager.
+    /// </summary>
+    public void InitForMultiplayerLocalPlayer(PlayerController pc, PlayerHealth ph)
+    {
+        playerController = pc;
+        playerHealth = ph;
+
+        // Ensure scoreboard is hidden during active gameplay.
+        if (scoreboardOverlay != null)
+        {
+            scoreboardOverlay.SetActive(false);
+            isScoreboardVisible = false;
+        }
+
+        // Destroy any stale match-finished overlay that may have carried over.
+        if (matchFinishedOverlay != null)
+        {
+            Destroy(matchFinishedOverlay);
+            matchFinishedOverlay = null;
+            matchFinished = false;
+        }
+
+        // Lock cursor so the player can look around immediately.
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+
+        // Register local player in leaderboard with confirmed identity.
+        if (MatchStatsManager.Instance != null && ph != null)
+        {
+            string playerId = MatchStatsManager.BuildCombatantId(ph);
+            string playerLabel = PlayerProfile.HasUsername ? PlayerProfile.Username : "YOU";
+            MatchStatsManager.Instance.RegisterCombatant(playerId, playerLabel, isPlayer: true, transform: ph.transform);
+            MatchStatsManager.Instance.StatsChanged -= HandleMatchStatsChanged;
+            MatchStatsManager.Instance.StatsChanged += HandleMatchStatsChanged;
+        }
+
+        if (pc != null && weaponText != null)
+            weaponText.text = pc.equippedWeaponName.ToUpperInvariant();
+
+        if (ph != null)
+            UpdateHealth(ph.currentHealth, ph.maxHealth);
+
+        Debug.Log("[MPFlow] local player ready");
+        Debug.Log("[MPFlow] gameplay state active");
+        Debug.Log("[MPFlow] hiding match stats");
+        Debug.Log("[MPFlow] input enabled");
     }
 
     private TMP_FontAsset ResolvePrismFont()
