@@ -6,11 +6,16 @@ using UnityEngine;
 ///
 /// Attach on the same GameObject as the humanoid Animator that plays the clips.
 /// The WeaponHitbox is found automatically via the PlayerController's equipped weapon.
+///
+/// Also forwards the "OnKatanaStrike" Animation Event to KatanaCombatHandler,
+/// which lives on the character root (potentially a different GameObject than
+/// the Animator, so we search up the hierarchy).
 /// </summary>
 [DisallowMultipleComponent]
 public class MeleeAnimationEventSink : MonoBehaviour
 {
-    private WeaponHitbox cachedHitbox;
+    private WeaponHitbox         cachedHitbox;
+    private KatanaCombatHandler  cachedKatanaHandler;
 
     private WeaponHitbox FindWeaponHitbox()
     {
@@ -25,7 +30,29 @@ public class MeleeAnimationEventSink : MonoBehaviour
     }
 
     // Called when the weapon cache should be refreshed (e.g. weapon re-equip)
-    public void ClearCache() => cachedHitbox = null;
+    public void ClearCache()
+    {
+        cachedHitbox        = null;
+        cachedKatanaHandler = null;
+    }
+
+    private KatanaCombatHandler FindKatanaHandler()
+    {
+        if (cachedKatanaHandler != null) return cachedKatanaHandler;
+        cachedKatanaHandler = GetComponentInParent<KatanaCombatHandler>(true);
+        return cachedKatanaHandler;
+    }
+
+    // ── Katana Animation Event ──────────────────────────────────────────────
+    //
+    // Place an Animation Event named "OnKatanaStrike" in the katana swing clip
+    // at the frame of peak blade contact.  Unity fires it on this GameObject
+    // (the Animator host); we forward it to KatanaCombatHandler on the root.
+
+    public void OnKatanaStrike()
+    {
+        FindKatanaHandler()?.OnKatanaStrike();
+    }
 
     // ── Animation Event Receivers ──
     //
