@@ -95,6 +95,12 @@ public class EnemyController : MonoBehaviour, IDamageable
     public Vector3 weaponSocketLocalEulerAngles = Vector3.zero;
     [Tooltip("When enabled, continuously removes the animated hand bone basis so the weapon can keep a player-matched pose on Crosby.")]
     public bool stabilizeWeaponSocketAgainstHandPose = false;
+
+    [Header("Level 2 Katana Carry Pose")]
+    [Tooltip("Extra euler offset applied ON TOP of the player-matched rotation during the carry/idle pose.\n" +
+             "X negative = raise blade tip up.  Tweak in Play Mode to match the player's guard stance.\n" +
+             "Has no effect during the attack animation.")]
+    public Vector3 katanaCarryExtraEuler = new Vector3(-15f, 0f, 0f);
     [Header("Runtime Grip Persistence")]
     [Tooltip("When enabled, enemy sickle/saw grip uses the latest saved runtime tune values.")]
     public bool useSavedRuntimeGripValues = true;
@@ -250,6 +256,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private Transform _activeWeaponHandBone;
     private GameObject _equippedWeaponPrefab;
     private int _equippedWeaponLevel = -1;
+    private PlayerController _cachedPlayer;
     private bool _weaponAttachInProgress;
     private float      _combatReadyBlend;
     private Quaternion _weaponAttachLocalRot;
@@ -631,6 +638,45 @@ public class EnemyController : MonoBehaviour, IDamageable
                 Quaternion.Euler(weaponSocketLocalEulerAngles);
         }
 
+        // ── Level 2 katana grip — carry pose only (not during attack) ───────
+        //
+        // During the ATTACK state the weapon follows the animated hand bone
+        // naturally through the parent chain so the swing plays correctly.
+        //
+        // During every OTHER state (idle / walk / chase / flinch) we lock the
+        // carry pose to match the player's blade angle exactly:
+        //
+        //   playerCharSpaceRot  = Inverse(player.root) * player.weapon.rotation
+        //   enemy.weapon.rotation = enemy.root * playerCharSpaceRot * extraOffset
+        //
+        // katanaCarryExtraEuler lets designers tweak the raise angle in Play Mode.
+        if (_equippedWeaponLevel == 2 &&
+            equippedWeaponObject  != null &&
+            _state != State.Attack)          // ← let the swing anim run freely
+        {
+            if (_cachedPlayer == null)
+                _cachedPlayer = Object.FindObjectOfType<PlayerController>(false);
+
+            if (_cachedPlayer != null && _cachedPlayer.equippedWeaponObject != null)
+            {
+                // Player weapon orientation in the player's own body-local space.
+                Quaternion playerCharSpaceRot =
+                    Quaternion.Inverse(_cachedPlayer.transform.rotation)
+                    * _cachedPlayer.equippedWeaponObject.transform.rotation;
+
+                // Extra raise offset so the carry stance matches the player's guard.
+                Quaternion extra = Quaternion.Euler(katanaCarryExtraEuler);
+
+                equippedWeaponObject.transform.rotation =
+                    transform.rotation * playerCharSpaceRot * extra;
+            }
+            else if (_activeWeaponHandBone != null)
+            {
+                // Fallback — no player in scene (multiplayer bot-only match).
+                equippedWeaponObject.transform.rotation =
+                    _activeWeaponHandBone.rotation * Quaternion.Euler(0f, 0f, 160f);
+            }
+        }
     }
 
 
@@ -1273,6 +1319,17 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         if (CombatDebug.Enabled)
             CombatDebug.Log($"EnemyAttack started enemy={name}");
+
+        // KatanaCombatHandler owns the full attack pipeline for the katana level.
+        // It fires the animator trigger, casts the hit-box on the animation event,
+        // and routes damage through Photon RPC in multiplayer — so we return early
+        // and skip the WeaponHitbox coroutine entirely.
+        KatanaCombatHandler katanaHandler = GetComponent<KatanaCombatHandler>();
+        if (katanaHandler != null)
+        {
+            katanaHandler.TriggerAttack();
+            return;
+        }
 
         SetAnimatorTrigger(HashAttack);
 
@@ -2577,6 +2634,17 @@ public class EnemyController : MonoBehaviour, IDamageable
 
             if (equippedWeaponObject != null)
             {
+                WeaponLoadout catalogLoadout = WeaponLoadoutCatalog.Get(level);
+                equippedWeaponObject.transform.localPosition    = catalogLoadout.EnemyLocalPosition;
+                equippedWeaponObject.transform.localEulerAngles = catalogLoadout.EnemyLocalEuler;
+                if (level == 2) ApplyKatanaHumanoidGrip(equippedWeaponObject, null);
+
+                // Expose the hand bone so LateUpdate's world-space rotation fix
+                // can run for this path too.  WeaponGripSystem parents the weapon
+                // directly to the hand bone (no intermediate socket), so the
+                // weapon's immediate parent IS the hand bone.
+                _activeWeaponHandBone = equippedWeaponObject.transform.parent;
+
                 WeaponHitbox wh = equippedWeaponObject.GetComponent<WeaponHitbox>();
                 if (wh == null) wh = equippedWeaponObject.AddComponent<WeaponHitbox>();
                 wh.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
@@ -2597,7 +2665,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         weaponGripLocalPosition          = loadout.EnemyLocalPosition;
         weaponGripLocalEulerAngles       = loadout.EnemyLocalEuler;
         weaponSocketLocalEulerAngles     = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
-        stabilizeWeaponSocketAgainstHandPose = true;
+        // Level 2 katana: use identity socket (mirrors PlayerController) so
+        // euler (0,0,160) lands in the same humanoid hand-space on every rig.
+        stabilizeWeaponSocketAgainstHandPose = level != 2;
         ApplySavedRuntimeGripValuesForLevel(level);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
@@ -2612,6 +2682,32 @@ public class EnemyController : MonoBehaviour, IDamageable
             handBone = transform;
             Debug.LogWarning($"[EnemyController] '{name}': Right hand bone not found. " +
                              "Weapon attached to root. Drag the hand bone into 'Weapon Attach Point'.");
+        }
+
+        // Level 2 katana: we must bypass weapon_bone_R (Crosby's weapon socket)
+        // because it has a different local orientation than j_wrist_ri (Ronin/player).
+        // Priority 1 — Unity humanoid API (normalises world rotation across rigs).
+        // Priority 2 — bip_hand_R by name (Crosby's actual palm bone, works even
+        //              when the Avatar is set to Generic instead of Humanoid).
+        if (level == 2)
+        {
+            Transform overrideHand = null;
+
+            if (_anim != null && _anim.isHuman)
+                overrideHand = _anim.GetBoneTransform(HumanBodyBones.RightHand);
+
+            if (overrideHand == null)
+                overrideHand = FindBoneByName(transform, "bip_hand_R");
+
+            if (overrideHand != null)
+            {
+                handBone = overrideHand;
+                Debug.Log($"[EnemyController] '{name}' lvl=2 katana: handBone overridden to '{handBone.name}' (isHuman={(_anim != null && _anim.isHuman)})");
+            }
+            else
+            {
+                Debug.LogWarning($"[EnemyController] '{name}' lvl=2 katana: could not find humanoid RightHand or bip_hand_R — grip may look wrong.");
+            }
         }
 
         // ── 2. Instantiate unparented (clean world-space bounds) ────────────
@@ -2663,6 +2759,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         else if (!WeaponLoadoutCatalog.ApplyRuntimeGripPose(level, weaponPrefab, equippedWeaponObject.transform))
             ApplyWeaponGripPose();
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, weaponPrefab, equippedWeaponObject);
+
+        if (level == 2) ApplyKatanaHumanoidGrip(equippedWeaponObject, _activeWeaponSocket);
 
         // Level-specific grip fixes by weapon name (player/AI rigs differ).
         if (weaponPrefab != null)
@@ -2730,6 +2828,16 @@ public class EnemyController : MonoBehaviour, IDamageable
         _equippedWeaponPrefab = weaponPrefab;
         _equippedWeaponLevel = level;
         _weaponAttachInProgress = false;
+
+        // Bind KatanaCombatHandler — it enforces the final grip pose via
+        // WeaponGripOffset.Enforce() and routes hit detection on anim events.
+        KatanaCombatHandler katanaHandler = GetComponent<KatanaCombatHandler>();
+        if (katanaHandler != null)
+        {
+            WeaponGripOffset grip = equippedWeaponObject.GetComponent<WeaponGripOffset>();
+            if (grip != null)
+                katanaHandler.BindKatana(grip);
+        }
     }
 
     private static Transform GetOrCreateWeaponSocket(Transform handBone)
@@ -2765,6 +2873,26 @@ public class EnemyController : MonoBehaviour, IDamageable
     private static readonly Vector3 MorgensternEnemyGripBasePosition = new Vector3(-0.025f, -0.0025f, 0f);
     private const float MorgensternEnemyHandleGripInsetNormalized = 0.82f;
     private const bool MorgensternEnemyHandleAtDominantMax = true;
+
+    /// <summary>
+    /// Attaches the katana so its euler (0,0,160) is applied in humanoid
+    /// RightHand space — identical to PlayerController's approach.
+    /// If weaponSocket is provided and non-null, the socket localRotation is
+    /// reset to identity so no Crosby-basis compensation interferes.
+    /// </summary>
+    private void ApplyKatanaHumanoidGrip(GameObject weaponObj, Transform weaponSocket)
+    {
+        if (weaponObj == null) return;
+
+        // Reset socket to identity — mirrors PlayerController.GetOrCreateWeaponSocket
+        // which always sets localRotation = Quaternion.identity.
+        if (weaponSocket != null)
+            weaponSocket.localRotation = Quaternion.identity;
+
+        // Apply the same grip euler the player uses.
+        weaponObj.transform.localPosition    = WeaponLoadoutCatalog.Get(2).EnemyLocalPosition;
+        weaponObj.transform.localEulerAngles = new Vector3(0f, 0f, 160f);
+    }
 
     private static void ApplyMorgensternEnemyGripPose(Transform weaponRoot)
     {

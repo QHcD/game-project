@@ -3,7 +3,10 @@
     "allow": [
       "Read(//c/Program Files/Unity/Hub/Editor/**)",
       "Read(//c/Program Files/Unity/**)",
-      "Bash(xargs grep -l \"EnemyController\")"
+      "Bash(xargs grep -l \"EnemyController\")",
+      "Bash(cd /d \"C:\\\\Users\\\\murta\\\\Desktop\\\\project1\\\\PRISM-7\")",
+      "Bash(Get-ChildItem -Directory)",
+      "Bash(Select-Object Name)"
     ]
   }
 }

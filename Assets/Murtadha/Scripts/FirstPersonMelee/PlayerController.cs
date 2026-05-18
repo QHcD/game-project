@@ -29,7 +29,8 @@ public class PlayerController : MonoBehaviour, IDamageable
             _playerHealth = GetComponent<PlayerHealth>() ?? gameObject.AddComponent<PlayerHealth>();
         _playerHealth.ReceiveDamage(amount, attackerRoot);
     }
-    private PlayerHealth _playerHealth;
+    private PlayerHealth        _playerHealth;
+    private KatanaCombatHandler _katanaCombatHandler;
 
     private const string WeaponSocketName = "PlayerRightHandWeaponSocket";
     private const string RuntimeThirdPersonCameraName = "RuntimeThirdPersonCamera";
@@ -58,8 +59,9 @@ public class PlayerController : MonoBehaviour, IDamageable
     // Matches the enemy sword basis so the handle stays in the right palm/fingers.
 // جرّب هذه بدل القيم الحالية
 private static readonly Vector3 PlayerKatanaGripLocalPosition = new Vector3(-0.01f, -0.0025f, 0f);
-private static readonly Vector3 PlayerKatanaGripLocalEuler = new Vector3(0f, 0f, 90f);
+private static readonly Vector3 PlayerKatanaGripLocalEuler = new Vector3(0f, 0f, 160f);
 private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0.3f, 0.2f);
+
     // ════════════════════════════════════════════════════════════════════════
     //  INSPECTOR FIELDS
     // ════════════════════════════════════════════════════════════════════════
@@ -386,6 +388,13 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     public bool IsMeleeWeapon => true;
     public int GetEquippedWeaponLevel() => equippedWeaponLevel > 0 ? equippedWeaponLevel : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
 
+    // ── ThirdPersonOrbitCamera bridge ────────────────────────────────────────
+    // Called every LateUpdate by ThirdPersonOrbitCamera to keep the player's
+    // cameraYaw / cameraPitch in sync so movement and first-person camera kick
+    // both remain camera-relative without any other code changes.
+    public void SetOrbitYaw(float yaw)    { cameraYaw   = yaw; }
+    public void SetOrbitPitch(float pitch){ cameraPitch = pitch; }
+
     // ════════════════════════════════════════════════════════════════════════
     //  LIFECYCLE
     // ════════════════════════════════════════════════════════════════════════
@@ -456,6 +465,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible   = false;
         LoadSavedGripOverrides();
+
+        // Cache KatanaCombatHandler — when present it owns attack input for
+        // the katana level so HandleActionInput must not call Attack() too.
+        _katanaCombatHandler = GetComponent<KatanaCombatHandler>();
 
         // Refresh the runtime mouse sensitivity multiplier from PlayerPrefs
         // each time a player spawns. Guarantees the Options-menu slider value
@@ -1009,7 +1022,12 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             TryThrusterJumpOrQueueNormalJump();
 
         if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
-            Attack();
+        {
+            // KatanaCombatHandler handles its own left-click input in Update().
+            // Skip Attack() here to avoid a double-trigger on the katana level.
+            if (_katanaCombatHandler == null)
+                Attack();
+        }
     }
 
     /// <summary>
@@ -3101,17 +3119,40 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         else
         {
             runtimeThirdPersonCamera.fieldOfView     = 70f;
-            runtimeThirdPersonCamera.nearClipPlane   = 0.1f;
+            runtimeThirdPersonCamera.nearClipPlane   = 0.08f;
             runtimeThirdPersonCamera.farClipPlane    = 1000f;
             runtimeThirdPersonCamera.clearFlags      = CameraClearFlags.Skybox;
         }
         runtimeThirdPersonCamera.tag = "MainCamera";
         camObj.AddComponent<AudioListener>();
 
+        // ── Orbit camera (self-contained mouse input + wall collision) ────────
+        // ThirdPersonOrbitCamera owns mouse reading so the camera never freezes
+        // when isThirdPersonActive is toggled or the CameraController link breaks.
+        ThirdPersonOrbitCamera orbitCam = camObj.AddComponent<ThirdPersonOrbitCamera>();
+        orbitCam.target               = transform;
+        orbitCam.sensitivityX         = sensitivity / 30f;   // normalise from PlayerController scale
+        orbitCam.sensitivityY         = sensitivity / 30f;
+        orbitCam.pivotHeightOffset    = 1.45f;
+        orbitCam.shoulderOffset       = 0.35f;
+        orbitCam.defaultDistance      = 4.65f;
+        orbitCam.minDistance          = 0.35f;
+        orbitCam.pitchMin             = ThirdPersonMinPitch;
+        orbitCam.pitchMax             = ThirdPersonMaxPitch;
+        orbitCam.pivotSmoothTime      = 0.08f;
+        orbitCam.distanceSmoothTime   = 0.12f;
+        orbitCam.enableCollision      = true;
+        orbitCam.collisionRadius      = 0.25f;
+        orbitCam.wallPadding          = 0.18f;
+        orbitCam.lockCursor           = true;
+
+        // Legacy CameraController kept for API compatibility (SnapToTarget, zoom calls, etc.)
+        // but with collision disabled so only ThirdPersonOrbitCamera positions the camera.
         CameraController follow = camObj.AddComponent<CameraController>();
         if (follow != null)
         {
             ApplyThirdPersonCameraSettings(follow, runtimeThirdPersonCamera);
+            follow.enabled = false;   // ThirdPersonOrbitCamera drives position instead
         }
 
         thirdPersonCam = runtimeThirdPersonCamera;
@@ -3759,6 +3800,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         {
             ApplyWeaponGripPose(weapon.transform, PlayerKatanaGripLocalPosition, PlayerKatanaGripLocalEuler);
             ForceWeaponRenderable(weapon);
+
             Debug.Log($"[KatanaGrip] Player katana applied on '{weaponParent.name}' pos={weapon.transform.localPosition} rot={weapon.transform.localEulerAngles} scale={weapon.transform.localScale}");
         }
 
@@ -3829,6 +3871,15 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         equippedWeaponObject = weapon;
         equippedWeaponLevel = level;
         weaponAttachInProgress = false;
+
+        // Bind KatanaCombatHandler so it can enforce the final grip pose and
+        // knows which bladeCenter to cast from during the attack event.
+        if (_katanaCombatHandler != null)
+        {
+            WeaponGripOffset grip = weapon.GetComponent<WeaponGripOffset>();
+            if (grip != null)
+                _katanaCombatHandler.BindKatana(grip);
+        }
     }
 
     private static bool ShouldUsePlayerChainsawGrip(int level, GameObject prefab)

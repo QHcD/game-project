@@ -71,10 +71,14 @@ public static class WeaponLoadoutCatalog
     private static readonly Vector3 MediumEnemyLocalPosition = new Vector3(-0.025f, -0.0025f, 0f);
     private static readonly Vector3 LongPlayerLocalPosition = new Vector3(-0.045f, -0.005f, 0f);
     private static readonly Vector3 LongEnemyLocalPosition = new Vector3(-0.035f, -0.0025f, 0f);
-    // Crosby's right-hand basis inverts the katana end-for-end relative to
-    // the Ronin wrist basis, so level 2 needs an enemy-only grip reversal
-    // while keeping the player pose unchanged.
-    private static readonly Vector3 KatanaEnemyLocalEuler = ReversedOneHandedGripEuler;
+    // Katana player grip: catalog fallback (PlayerController overrides with
+    // PlayerKatanaGripLocalEuler directly, so these are secondary).
+    private static readonly Vector3 KatanaPlayerLocalEuler    = new Vector3(0f, 0f, 160f);
+    private static readonly Vector3 KatanaPlayerLocalPosition = new Vector3(-0.045f, -0.005f, 0f);
+    // Enemy katana grip matches player grip exactly — socket stabilization in
+    // AttachWeaponToHand already cancels the hand bone's local rotation, so no
+    // Y=180 Crosby correction is needed here.
+    private static readonly Vector3 KatanaEnemyLocalEuler = new Vector3(0f, 0f, 160f);
     // Same Crosby hand basis issue as the katana: the bat needs an enemy-only
     // end-for-end correction while preserving the player grip basis.
     private static readonly Vector3 BaseballBatEnemyLocalEuler = ReversedOneHandedGripEuler;
@@ -283,8 +287,8 @@ public static class WeaponLoadoutCatalog
             case 2:
                 return CreateExactGrip(
                     0.95f,
-                    LongPlayerLocalPosition,
-                    DefaultPlayerLocalEuler,
+                    KatanaPlayerLocalPosition,
+                    KatanaPlayerLocalEuler,
                     LongEnemyLocalPosition,
                     KatanaEnemyLocalEuler,
                     "Weapons/Imported/Katana(level2)/source/Katana_low",
