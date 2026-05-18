@@ -96,11 +96,16 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("When enabled, continuously removes the animated hand bone basis so the weapon can keep a player-matched pose on Crosby.")]
     public bool stabilizeWeaponSocketAgainstHandPose = false;
 
-    [Header("Level 2 Katana Carry Pose")]
+    [Header("Level 2 Katana — Hand Grip")]
+    [Tooltip("Offset FROM the hand bone TO the katana grip point, in the hand bone's local space.\n" +
+             "Default (0,0,0) = weapon pivot sits exactly at the hand bone (wrist/palm).\n" +
+             "Tweak in Play Mode: positive Y moves the grip toward the fingers, negative toward the wrist.")]
+    public Vector3 katanaHandGripOffset = new Vector3(0f, 0.06f, 0.02f);
+
     [Tooltip("Extra euler offset applied ON TOP of the player-matched rotation during the carry/idle pose.\n" +
              "X negative = raise blade tip up.  Tweak in Play Mode to match the player's guard stance.\n" +
              "Has no effect during the attack animation.")]
-    public Vector3 katanaCarryExtraEuler = new Vector3(-15f, 0f, 0f);
+    public Vector3 katanaCarryExtraEuler = new Vector3(-20f, 0f, 0f);
     [Header("Runtime Grip Persistence")]
     [Tooltip("When enabled, enemy sickle/saw grip uses the latest saved runtime tune values.")]
     public bool useSavedRuntimeGripValues = true;
@@ -652,25 +657,32 @@ public class EnemyController : MonoBehaviour, IDamageable
         // katanaCarryExtraEuler lets designers tweak the raise angle in Play Mode.
         if (_equippedWeaponLevel == 2 &&
             equippedWeaponObject  != null &&
+            _activeWeaponHandBone != null &&
             _state != State.Attack)          // ← let the swing anim run freely
         {
             if (_cachedPlayer == null)
                 _cachedPlayer = Object.FindObjectOfType<PlayerController>(false);
 
+            // ── POSITION: pin the weapon pivot to the hand bone + grip offset ──
+            // This ensures the handle is physically inside the palm regardless
+            // of which socket or local-position offset was set at attach-time.
+            equippedWeaponObject.transform.position =
+                _activeWeaponHandBone.position
+                + _activeWeaponHandBone.rotation * katanaHandGripOffset;
+
+            // ── ROTATION: match the player's blade angle in character space ───
             if (_cachedPlayer != null && _cachedPlayer.equippedWeaponObject != null)
             {
-                // Player weapon orientation in the player's own body-local space.
                 Quaternion playerCharSpaceRot =
                     Quaternion.Inverse(_cachedPlayer.transform.rotation)
                     * _cachedPlayer.equippedWeaponObject.transform.rotation;
 
-                // Extra raise offset so the carry stance matches the player's guard.
                 Quaternion extra = Quaternion.Euler(katanaCarryExtraEuler);
 
                 equippedWeaponObject.transform.rotation =
                     transform.rotation * playerCharSpaceRot * extra;
             }
-            else if (_activeWeaponHandBone != null)
+            else
             {
                 // Fallback — no player in scene (multiplayer bot-only match).
                 equippedWeaponObject.transform.rotation =
