@@ -1471,12 +1471,17 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        bool blocked = DamageOcclusion.IsBlocked(attackerRoot, gameObject);
+        // Occlusion is already checked by every caller before ReceiveDamage is
+        // invoked (WeaponHitbox.TryDamageCollider, PlayerController.TryDamageTargetFromPoint,
+        // etc.). A second linecast here doubles the false-block surface area: if the
+        // first check passes but an in-between geometry grazes the second origin
+        // (attacker.position+1.6m vs the caller's origin), damage is silently eaten.
+        // We keep the log for CombatDebug diagnostics but skip the early return.
         if (CombatDebug.Enabled)
-            CombatDebug.Log($"blockedByWall={blocked}");
-
-        if (blocked)
-            return;
+        {
+            bool blocked = DamageOcclusion.IsBlocked(attackerRoot, gameObject);
+            CombatDebug.Log($"[ReceiveDamage] blockedByWall={blocked} (occlusion not re-enforced here)");
+        }
 
         // ── Record attacker & retaliate immediately ─────────────────────────
         if (attackerRoot != null && attackerRoot != gameObject)
@@ -2715,9 +2720,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         weaponGripLocalPosition          = loadout.EnemyLocalPosition;
         weaponGripLocalEulerAngles       = loadout.EnemyLocalEuler;
         weaponSocketLocalEulerAngles     = WeaponLoadoutCatalog.GetEnemySocketLocalEuler(level);
-        // Level 2 katana: use identity socket (mirrors PlayerController) so
-        // euler (0,0,160) lands in the same humanoid hand-space on every rig.
-        stabilizeWeaponSocketAgainstHandPose = level != 2;
+        // Level 2 katana / Level 9 axe: use identity socket (mirrors PlayerController)
+        // so the grip euler lands in the same humanoid hand-space on every rig.
+        // Both are single-handed weapons whose catalog euler already matches the
+        // player's grip exactly — socket stabilization via weapon_bone_R would
+        // cancel out the hand-bone rotation and produce a flipped/inverted result.
+        stabilizeWeaponSocketAgainstHandPose = (level != 2 && level != 9);
         ApplySavedRuntimeGripValuesForLevel(level);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
@@ -2734,12 +2742,12 @@ public class EnemyController : MonoBehaviour, IDamageable
                              "Weapon attached to root. Drag the hand bone into 'Weapon Attach Point'.");
         }
 
-        // Level 2 katana: we must bypass weapon_bone_R (Crosby's weapon socket)
-        // because it has a different local orientation than j_wrist_ri (Ronin/player).
+        // Level 2 katana / Level 9 axe: bypass weapon_bone_R (Crosby's weapon socket
+        // which has a pre-baked orientation) in favour of bip_hand_R (the actual palm
+        // bone whose world-space orientation matches j_wrist_ri on the player rig).
         // Priority 1 — Unity humanoid API (normalises world rotation across rigs).
-        // Priority 2 — bip_hand_R by name (Crosby's actual palm bone, works even
-        //              when the Avatar is set to Generic instead of Humanoid).
-        if (level == 2)
+        // Priority 2 — bip_hand_R by name (works even when Avatar is Generic).
+        if (level == 2 || level == 9)
         {
             Transform overrideHand = null;
 
@@ -2752,11 +2760,11 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (overrideHand != null)
             {
                 handBone = overrideHand;
-                Debug.Log($"[EnemyController] '{name}' lvl=2 katana: handBone overridden to '{handBone.name}' (isHuman={(_anim != null && _anim.isHuman)})");
+                Debug.Log($"[EnemyController] '{name}' lvl={level}: handBone overridden to '{handBone.name}' (isHuman={(_anim != null && _anim.isHuman)})");
             }
             else
             {
-                Debug.LogWarning($"[EnemyController] '{name}' lvl=2 katana: could not find humanoid RightHand or bip_hand_R — grip may look wrong.");
+                Debug.LogWarning($"[EnemyController] '{name}' lvl={level}: could not find humanoid RightHand or bip_hand_R — grip may look wrong.");
             }
         }
 

@@ -6,7 +6,9 @@
       "Bash(xargs grep -l \"EnemyController\")",
       "Bash(cd /d \"C:\\\\Users\\\\murta\\\\Desktop\\\\project1\\\\PRISM-7\")",
       "Bash(Get-ChildItem -Directory)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(find /Users/mohammad/Desktop/PRISM-7 -type d -name \"Murtadha\" -o -type d -name \"MohamedAltajer\" | head -20)",
+      "Bash(ls -la /Users/mohamed/Desktop/ | grep -i prism)"
     ]
   }
 }
