@@ -8,6 +8,9 @@ public class LevelCompleteManager : MonoBehaviour
     void Start()
     {
         BuildUI();
+        // Plays the assigned victory clip exactly once (PlayerSfx guards
+        // against duplicate triggers if this manager respawns).
+        PlayerSfx.PlayVictory();
     }
 
     void BuildUI()

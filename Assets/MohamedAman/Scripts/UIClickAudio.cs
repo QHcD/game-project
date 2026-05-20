@@ -2,26 +2,25 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
-using UnityEngine.Video;
 
 /// <summary>
 /// Global UI click-sound bootstrap. Auto-attaches a click sound effect to
 /// every <see cref="Button"/> in every scene loaded for the rest of the
 /// session.
 ///
-/// Loading order, picked at boot:
-///   1. <c>Resources/Audio/ClickButtonSound</c> as <see cref="AudioClip"/>.
-///   2. <c>Resources/Audio/ClickButtonSound</c> as <see cref="VideoClip"/>
-///      (auto-extracted into the AudioSource via <see cref="VideoPlayer"/>).
+/// Click clip source (in priority order):
+///   1. Runtime override via <see cref="SetClickClip"/> — used by
+///      <see cref="PlayerSfx"/> to push the project's
+///      Assets/MohamedAman/Materials/UI_clickSound.mp3 in at Awake.
+///   2. <c>Resources/Audio/ClickButtonSound</c> as <see cref="AudioClip"/>
+///      (drop a .wav/.ogg/.mp3 with that name to override globally).
 ///   3. A snappy procedural click synthesised at runtime — guaranteed
-///      fallback so the system always produces audio even if the asset
-///      can't be decoded (e.g. <c>.mov</c> codec not supported by Unity's
-///      audio backend).
+///      fallback so menus are never silent.
 ///
-/// Add or change the source clip by dropping a <c>.wav</c>, <c>.ogg</c>
-/// or <c>.mp3</c> named <c>ClickButtonSound</c> into
-/// <c>Assets/MohamedAman/Resources/Audio/</c> — the loader prefers <see cref="AudioClip"/>
-/// over <see cref="VideoClip"/> so any audio asset overrides the fallback.
+/// The legacy VideoClip-based loader (which read a .mov via VideoPlayer)
+/// was removed — PlayerSfx + the AudioClip override path are the only
+/// supported routes. If a legacy ClickButtonSound.mov is still present in
+/// Resources at boot, a one-shot warning is emitted so it can be deleted.
 /// </summary>
 public class UIClickAudio : MonoBehaviour
 {
@@ -37,7 +36,6 @@ public class UIClickAudio : MonoBehaviour
 
     private AudioSource _audioSource;
     private AudioClip   _clickClip;
-    private VideoPlayer _videoFallback;
 
     // Track the buttons we've already wired so we don't stack listeners on
     // the same Button across multiple scene loads.
@@ -95,6 +93,18 @@ public class UIClickAudio : MonoBehaviour
     }
 
     /// <summary>
+    /// Runtime override for the click clip. Used by PlayerSfx so a single
+    /// Inspector field on the Player prefab can route the project's UI click
+    /// asset (e.g. UI_clickSound.mp3) into this global system without needing
+    /// the asset to live under a Resources/ folder.
+    /// </summary>
+    public void SetClickClip(AudioClip clip)
+    {
+        if (clip == null) return;
+        _clickClip = clip;
+    }
+
+    /// <summary>
     /// Plays the click sound. Safe to call from any UnityEvent listener.
     /// </summary>
     public void PlayClick()
@@ -105,19 +115,7 @@ public class UIClickAudio : MonoBehaviour
         _audioSource.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
 
         if (_clickClip != null)
-        {
             _audioSource.PlayOneShot(_clickClip, Mathf.Clamp01(volume));
-            return;
-        }
-
-        if (_videoFallback != null)
-        {
-            // VideoPlayer audio extraction — restart from t=0 so rapid clicks
-            // don't run into the previous play tail.
-            _videoFallback.Stop();
-            _videoFallback.time = 0;
-            _videoFallback.Play();
-        }
     }
 
     /// <summary>
@@ -157,8 +155,11 @@ public class UIClickAudio : MonoBehaviour
 
     private void ResolveClickClip()
     {
-        // Priority 1 — AudioClip. Works for .wav/.ogg/.mp3 dropped at
-        //   Resources/Audio/ClickButtonSound.
+        // Priority 1 — AudioClip override at Resources/Audio/ClickButtonSound.
+        //   The recommended path is to assign Assets/MohamedAman/Materials/
+        //   UI_clickSound.mp3 via PlayerSfx.uiClickOverride (forwarded into
+        //   SetClickClip at Awake). This Resources lookup is a secondary
+        //   "drop-in override" mechanism.
         AudioClip ac = Resources.Load<AudioClip>(ResourcePath);
         if (ac != null)
         {
@@ -166,27 +167,37 @@ public class UIClickAudio : MonoBehaviour
             return;
         }
 
-        // Priority 2 — VideoClip. .mov/.mp4 import as VideoClip; route their
-        //   audio track through a hidden VideoPlayer into our AudioSource.
-        VideoClip vc = Resources.Load<VideoClip>(ResourcePath);
-        if (vc != null)
-        {
-            _videoFallback = gameObject.AddComponent<VideoPlayer>();
-            _videoFallback.playOnAwake       = false;
-            _videoFallback.isLooping         = false;
-            _videoFallback.source            = VideoSource.VideoClip;
-            _videoFallback.clip              = vc;
-            _videoFallback.audioOutputMode   = VideoAudioOutputMode.AudioSource;
-            _videoFallback.renderMode        = VideoRenderMode.APIOnly; // headless
-            _videoFallback.skipOnDrop        = true;
-            _videoFallback.EnableAudioTrack(0, true);
-            _videoFallback.SetTargetAudioSource(0, _audioSource);
-            return;
-        }
+        // Legacy detection — the old system shipped ClickButtonSound.mov
+        // and routed it via VideoPlayer. The code path is removed; warn if
+        // the asset is still in Resources so it can be deleted manually.
+        WarnIfLegacyClickAssetPresent();
 
-        // Priority 3 — synthesise a snappy procedural click. Guaranteed to
-        //   exist on every platform.
+        // Priority 2 — synthesise a snappy procedural click. Guaranteed to
+        //   exist on every platform. PlayerSfx.SetClickClip overrides this
+        //   later in the same Awake frame when its uiClickOverride is set.
         _clickClip = SynthesiseClick();
+    }
+
+    private static bool _legacyAssetWarned;
+
+    /// <summary>
+    /// Detect the obsolete ClickButtonSound.mov asset that the old
+    /// VideoPlayer-based system relied on. Loaded via Resources to avoid
+    /// referencing UnityEditor at runtime.
+    /// </summary>
+    private static void WarnIfLegacyClickAssetPresent()
+    {
+        if (_legacyAssetWarned) return;
+        Object legacy = Resources.Load(ResourcePath);
+        if (legacy == null) return;
+        // The new path expects an AudioClip; anything else here is legacy.
+        if (legacy is AudioClip) return;
+        _legacyAssetWarned = true;
+        Debug.LogWarning(
+            "[UIClickAudio] Legacy UI click asset detected at Resources/Audio/ClickButtonSound " +
+            "(type: " + legacy.GetType().Name + "). The VideoPlayer-based playback path has been removed. " +
+            "Delete Assets/MohamedAman/Resources/Audio/ClickButtonSound.mov to silence this warning. " +
+            "UI clicks are now driven by PlayerSfx.uiClickOverride → UIClickAudio.SetClickClip.");
     }
 
     /// <summary>

@@ -21,6 +21,7 @@ public static class PlayModeCapture
     private const string GameSceneName = "GameScene";
 
     private static bool  _armed;
+    private static bool  _captureRequested; // true only after sentinel or Diagnostics menu
     private static float _captureAt;   // Time.realtimeSinceStartup target
 
     static PlayModeCapture()
@@ -35,16 +36,18 @@ public static class PlayModeCapture
     {
         if (state == PlayModeStateChange.EnteredPlayMode)
         {
-            // Arm the capture regardless of sentinel — we'll check it in
-            // OnEditorUpdate so the sentinel can be written at any time.
-            _armed      = true;
-            _captureAt  = Time.realtimeSinceStartup + 6f;  // wait 6s for LevelBuilder
-            Debug.Log("[PlayModeCapture] Play Mode entered — will capture in ~6s if GameScene is loaded.");
+            if (_captureRequested)
+            {
+                _armed     = true;
+                _captureAt = Time.realtimeSinceStartup + 6f;  // wait 6s for LevelBuilder
+                Debug.Log("[PlayModeCapture] Play Mode entered — will capture in ~6s if GameScene is loaded.");
+            }
         }
 
         if (state == PlayModeStateChange.ExitingPlayMode)
         {
             _armed = false;
+            _captureRequested = false;
             EditorSceneManager.playModeStartScene = null;   // restore default start scene
         }
     }
@@ -68,8 +71,9 @@ public static class PlayModeCapture
                 {
                     Debug.LogWarning("[PlayModeCapture] GameScene.unity not found; using default start scene.");
                 }
-                _armed    = true;
-                _captureAt = 0f;   // will be reset in EnteredPlayMode
+                _captureRequested = true;
+                _armed            = true;
+                _captureAt        = 0f;   // will be reset in EnteredPlayMode
                 EditorApplication.isPlaying = true;
             }
             return;
@@ -82,8 +86,9 @@ public static class PlayModeCapture
         if (File.Exists(SentinelFile))
         {
             File.Delete(SentinelFile);
-            _armed = true;
-            _captureAt = 0f;
+            _captureRequested = true;
+            _armed            = true;
+            _captureAt        = 0f;
         }
 
         if (!_armed) return;
@@ -92,8 +97,10 @@ public static class PlayModeCapture
         string scene = SceneManager.GetActiveScene().name;
         if (scene != GameSceneName)
         {
-            Debug.Log($"[PlayModeCapture] Scene is '{scene}' (not GameScene) — disarming.");
+            if (_captureRequested)
+                Debug.Log($"[PlayModeCapture] Scene is '{scene}' (not GameScene) — disarming.");
             _armed = false;
+            _captureRequested = false;
             return;
         }
 
@@ -119,8 +126,9 @@ public static class PlayModeCapture
         else
             Debug.LogWarning("[PlayModeCapture] GameScene.unity not found — will use default start scene.");
 
-        _armed     = true;
-        _captureAt = 0f;   // will be set when EnteredPlayMode fires
+        _captureRequested = true;
+        _armed            = true;
+        _captureAt        = 0f;   // will be set when EnteredPlayMode fires
         EditorApplication.isPlaying = true;
     }
 

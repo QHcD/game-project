@@ -27,6 +27,12 @@ public class RobustThirdPersonMovement : MonoBehaviour
     [SerializeField] private float slideSpeedMultiplier = 1.25f;
     [SerializeField] private float slideCooldown = 0.35f;
 
+    [Header("Tactical Actions (Z/X/C)")]
+    [SerializeField] private bool enableTacticalActions = true;
+    [SerializeField] private float jumpOverCooldown = 0.9f;
+    [SerializeField] private float tacticalSlideCooldown = 0.9f;
+    [SerializeField] private float proneSpeedMultiplier = 0.35f;
+
     [Header("Jump / Gravity")]
     [SerializeField] private float jumpHeight = 2.5f;
     [SerializeField] private float gravity = -32f;
@@ -42,6 +48,9 @@ public class RobustThirdPersonMovement : MonoBehaviour
     private bool _isSliding;
     private float _slideTimer;
     private float _nextSlideTime;
+    private bool _isProne;
+    private float _nextJumpOverTime;
+    private float _nextTacticalSlideTime;
 
     public Vector3 MoveDirection { get; private set; }
     public bool IsGrounded => _isGrounded;
@@ -66,6 +75,7 @@ public class RobustThirdPersonMovement : MonoBehaviour
             cameraTransform = Camera.main.transform;
 
         UpdateGroundedState();
+        HandleTacticalInput();
         HandleMovement();
         HandleJumpAndGravity();
         ApplyMovement();
@@ -103,10 +113,12 @@ public class RobustThirdPersonMovement : MonoBehaviour
             {
                 _isSliding = true;
                 _slideTimer = slideDuration;
+                if (PlayerSfx.Instance != null) PlayerSfx.Instance.NotifySlideStart();
             }
         }
 
         float baseSpeed = _isSprinting ? sprintSpeed : moveSpeed;
+        if (_isProne) baseSpeed *= proneSpeedMultiplier;
         float targetSpeed = inputDirection.sqrMagnitude > 0.001f ? baseSpeed : 0f;
 
         Vector3 targetVelocity = MoveDirection * targetSpeed;
@@ -143,7 +155,10 @@ public class RobustThirdPersonMovement : MonoBehaviour
     {
         bool jumpPressed = Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
         if (_isGrounded && jumpPressed)
+        {
             _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
+            if (PlayerSfx.Instance != null) PlayerSfx.Instance.NotifyJump();
+        }
 
         _verticalVelocity += gravity * Time.deltaTime;
     }
@@ -184,6 +199,41 @@ public class RobustThirdPersonMovement : MonoBehaviour
         animator.SetFloat("Speed", normalizedSpeed, 0.1f, Time.deltaTime);
         animator.SetBool("IsGrounded", _isGrounded);
         animator.SetBool("IsSprinting", _isSprinting && horizontalSpeed > 0.1f);
+        animator.SetBool("IsProne", _isProne);
+
+        // Footstep cadence — driven from real horizontal speed so sprint
+        // ticks faster than walk and stops while airborne / standing still.
+        if (PlayerSfx.Instance != null)
+            PlayerSfx.Instance.TickFootsteps(_isGrounded, _isSprinting, horizontalSpeed);
+    }
+
+    private void HandleTacticalInput()
+    {
+        if (!enableTacticalActions) return;
+        Keyboard k = Keyboard.current;
+        if (k == null) return;
+
+        // Z = JumpOver / vault
+        if (k.zKey.wasPressedThisFrame && Time.time >= _nextJumpOverTime && _isGrounded && !_isProne)
+        {
+            _nextJumpOverTime = Time.time + jumpOverCooldown;
+            if (animator != null) animator.SetTrigger("JumpOver");
+        }
+
+        // X = Slide (tactical)
+        if (k.xKey.wasPressedThisFrame && Time.time >= _nextTacticalSlideTime && _isGrounded && !_isProne)
+        {
+            _nextTacticalSlideTime = Time.time + tacticalSlideCooldown;
+            if (animator != null) animator.SetTrigger("Slide");
+            if (PlayerSfx.Instance != null) PlayerSfx.Instance.NotifySlideStart();
+        }
+
+        // C = toggle Prone
+        if (k.cKey.wasPressedThisFrame)
+        {
+            _isProne = !_isProne;
+            if (animator != null) animator.SetBool("IsProne", _isProne);
+        }
     }
 
     private static Vector2 ReadMoveInput()

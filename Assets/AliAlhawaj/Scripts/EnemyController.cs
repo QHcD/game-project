@@ -171,6 +171,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Cap on combined flock steering magnitude (world units per second scale).")]
     public float maxFlockSteering = 1.2f;
 
+    [Header("Spawn Protection")]
+    [Tooltip("Seconds after spawn during which the enemy ignores incoming damage. " +
+             "Prevents enemies dying instantly to AoE / spawn-overlap stomps. " +
+             "0 = disabled. Keep small (1.0–2.0s).")]
+    public float spawnProtectionDuration = 1.25f;
+    private float _spawnTime = -1f;
+
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
     public Color hitFlashColor = new Color(1f, 0.3f, 0.3f, 1f);
@@ -216,6 +223,23 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     /// <summary>Read-only health for UI / combat diagnostics.</summary>
     public int CurrentHealth => _currentHealth;
+
+    // ── Public hooks for the tactical brain (EnemyTacticalBrain) ────────────
+    // Surgical surface only — the brain *reads* these to make decisions and
+    // calls SuggestTarget(...) to nudge target selection. It never reaches
+    // into the state machine. OnDamaged fires from ReceiveDamage so the brain
+    // can react to incoming hits without polling every frame.
+    public UnityEngine.AI.NavMeshAgent Agent => _agent;
+    public Transform CurrentTarget => _target;
+    public event System.Action<GameObject> OnDamaged;
+    public void SuggestTarget(Transform t)
+    {
+        if (t == null || t == transform) return;
+        IDamageable d = t.GetComponentInParent<IDamageable>();
+        if (d == null || !d.IsAlive) return;
+        _target = t;
+        _targetLockTimer = Time.time + targetLockDuration;
+    }
 
     // CharacterController is intentionally disabled at runtime — kept as a
     // reference only so the jump system can toggle it during the arc.
@@ -434,6 +458,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             maxHealth = Mathf.Max(1, Mathf.RoundToInt(maxHealth * healthMul));
         }
         _currentHealth = maxHealth;
+        _spawnTime = Time.time;
         ConfigureAgent();
 
         // Minimal runtime safety: ensure agent is enabled and actually sits on the NavMesh.
@@ -1436,6 +1461,16 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        // Brief spawn-protection grace window: avoids enemies being killed in
+        // the first frames before the AI has a chance to react / spread out.
+        // Not invincibility — duration is short and tunable in Inspector.
+        if (spawnProtectionDuration > 0f
+            && _spawnTime >= 0f
+            && Time.time - _spawnTime < spawnProtectionDuration)
+        {
+            return;
+        }
+
         bool blocked = DamageOcclusion.IsBlocked(attackerRoot, gameObject);
         if (CombatDebug.Enabled)
             CombatDebug.Log($"blockedByWall={blocked}");
@@ -1491,6 +1526,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (CombatDebug.Enabled)
             CombatDebug.Log($"healthBefore={healthBefore} healthAfter={_currentHealth}");
+
+        // Notify the tactical brain (subscriber-only; null-safe).
+        OnDamaged?.Invoke(attackerRoot);
     }
 
     // ════════════════════════════════════════════════════════════════════════

@@ -664,19 +664,51 @@ public class GameManager : MonoBehaviour
 
     private void ResolveTimedMatchWinner()
     {
-        int highestKillCount = killCount;
+        // Winner resolution when the match timer expires:
+        //   1. If only one fighter is still alive, that fighter wins.
+        //   2. Otherwise the highest kill count wins.
+        //   3. Tie-break is delegated to MatchStatsManager's existing stable
+        //      ordering: Kills DESC → Deaths ASC → IsPlayer DESC → Name ASC.
+        //      "IsPlayer DESC" intentionally favours the human on a perfect
+        //      tie since the registration order is otherwise opaque to the
+        //      player; lower Deaths approximates "most health remaining" for
+        //      the alive set.
         MatchStatsManager stats = MatchStatsManager.Instance;
         bool playerWon;
+
         if (stats == null)
         {
             playerWon = killCount > 0;
         }
         else
         {
-            var leaders = stats.GetTopCombatants(32);
+            var leaders = stats.GetTopCombatants(64);
+
+            // Prefer the highest-kill ALIVE combatant. If everyone shown as
+            // dead, fall back to the highest-kill row regardless of alive
+            // state (stale IsAlive flags should not deny anyone a victory).
+            MatchStatsManager.CombatantSnapshot? winner = null;
             for (int i = 0; i < leaders.Count; i++)
-                highestKillCount = Mathf.Max(highestKillCount, leaders[i].Kills);
-            playerWon = killCount >= highestKillCount;
+            {
+                if (!leaders[i].IsAlive) continue;
+                winner = leaders[i];
+                break;
+            }
+            if (winner == null && leaders.Count > 0)
+                winner = leaders[0];
+
+            if (winner.HasValue)
+            {
+                playerWon = winner.Value.IsPlayer
+                            // If the player's local killCount has somehow
+                            // outpaced the stats snapshot (e.g. last frame
+                            // before timeout), still award the win.
+                            || killCount > winner.Value.Kills;
+            }
+            else
+            {
+                playerWon = killCount > 0;
+            }
         }
 
         // Skip EndMatchCinematic (Winners Circle + VICTORY scoreboard popup).

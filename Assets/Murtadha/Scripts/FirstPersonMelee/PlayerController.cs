@@ -1677,6 +1677,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             audioSource.PlayOneShot(swordSwing, AudioSettingsRuntime.ScaledSfx(1f));
         }
 
+        // Per-category swing audio + optional swing-trail VFX. No-ops if the
+        // WeaponCombatAudio component isn't on the player or has empty slots.
+        WeaponCombatAudio.PlaySwingFor(gameObject, GetEquippedWeaponLevel());
+
         if (weaponHitboxRoutine != null)
             StopCoroutine(weaponHitboxRoutine);
 
@@ -2719,9 +2723,23 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         AnimSetBool(anim, "IsSprinting", isSprinting);
 
         // ── Trigger params (CrosbyAnimator style) ───────────────────────────
-        // Fire Attack trigger on the frame isAttacking becomes true
+        // Fire Attack trigger on the frame isAttacking becomes true.
+        // Also fire the category-specific trigger (Attack_Light, Attack_Sword,
+        // ...) when present on the controller. Falls back silently to the
+        // generic Attack trigger if no category trigger is wired yet.
         if (isAttacking && !_wasAttackingLastFrame)
-            AnimFireTrigger(anim, "Attack");
+        {
+            AnimFireTrigger(anim, WeaponAnimationCategories.GenericAttackTrigger);
+
+            int weaponLevel = GetEquippedWeaponLevel();
+            WeaponAnimationCategory category = WeaponAnimationCategories.ForLevel(weaponLevel);
+            string categoryTrigger = WeaponAnimationCategories.GetAttackTrigger(category);
+            if (!string.IsNullOrEmpty(categoryTrigger)
+                && categoryTrigger != WeaponAnimationCategories.GenericAttackTrigger)
+            {
+                AnimFireTrigger(anim, categoryTrigger);
+            }
+        }
         _wasAttackingLastFrame = isAttacking;
     }
     private bool _wasAttackingLastFrame;
