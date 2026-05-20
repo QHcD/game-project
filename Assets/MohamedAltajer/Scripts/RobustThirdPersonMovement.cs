@@ -67,6 +67,9 @@ public class RobustThirdPersonMovement : MonoBehaviour
     {
         if (cameraTransform == null && Camera.main != null)
             cameraTransform = Camera.main.transform;
+
+        if (cameraTransform == null)
+            Debug.LogWarning("[RobustThirdPersonMovement] No camera found — movement will be world-space, not camera-relative.", this);
     }
 
     private void Update()
@@ -143,11 +146,11 @@ public class RobustThirdPersonMovement : MonoBehaviour
 
         if (MoveDirection.sqrMagnitude > 0.001f && !_isSliding)
         {
-            // RotateTowards with deg/sec is frame-rate independent; Slerp was not
-            float targetYaw = Quaternion.LookRotation(MoveDirection, Vector3.up).eulerAngles.y;
-            Quaternion targetRotation = Quaternion.Euler(0f, targetYaw, 0f);
-            transform.rotation = Quaternion.RotateTowards(
-                transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+            Quaternion targetRotation = Quaternion.LookRotation(MoveDirection, Vector3.up);
+            // Slerp t = rotationSpeed * deltaTime clamped to 1 keeps it frame-rate
+            // independent while producing a smooth organic turn feel.
+            float t = Mathf.Clamp01(rotationSpeed / 720f * Time.deltaTime * 10f);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, t);
         }
     }
 
@@ -187,10 +190,20 @@ public class RobustThirdPersonMovement : MonoBehaviour
         }
     }
 
+    private void OnAnimatorMove()
+    {
+        // Block root motion from overriding our rotation/position.
+        // We apply movement manually in ApplyMovement(), so root motion
+        // would cause the character to drift or rotate incorrectly.
+    }
+
     private void UpdateAnimator()
     {
         if (animator == null)
             return;
+
+        // Prevent the Animator from overriding transform at runtime.
+        animator.applyRootMotion = false;
 
         float horizontalSpeed = new Vector3(_moveVelocity.x, 0f, _moveVelocity.z).magnitude;
         float normalizedSpeed = sprintSpeed > 0.01f ? horizontalSpeed / sprintSpeed : 0f;
