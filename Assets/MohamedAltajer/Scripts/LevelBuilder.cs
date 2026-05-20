@@ -54,6 +54,9 @@ public class LevelBuilder : MonoBehaviour
     [Header("Enemy spawn spacing")]
     [Tooltip("Preferred minimum horizontal distance between enemy spawn positions.")]
     public float minEnemySpawnSpacing = 4f;
+    [Tooltip("Minimum horizontal distance from the player at spawn time. " +
+             "Prevents enemies materialising on top of the player.")]
+    public float minEnemyToPlayerDistance = 12f;
     [Tooltip("Logs spawn spacing validation when enabled.")]
     public bool debugSpawnSpacing = false;
 
@@ -840,41 +843,86 @@ public class LevelBuilder : MonoBehaviour
     /// <summary>
     /// Arena anchors: legacy grid + rings + cardinals so spawns rotate around the map.
     /// </summary>
+    /// <summary>
+    /// Anchors interleaved by zone (N, S, E, W, Center, NE, NW, SE, SW) so the
+    /// caller can simply index by enemyIndex and get strict round-robin
+    /// distribution across the arena. Prior implementation built rings
+    /// sequentially which let pseudo-random anchor hashing cluster enemies in
+    /// one quadrant; round-robin interleaving guarantees North/South/East/West
+    /// always receive a spawn before any zone gets a second one.
+    /// </summary>
     private static System.Collections.Generic.List<Vector3> BuildDistributedArenaAnchors()
     {
-        var anchors = new System.Collections.Generic.List<Vector3>(96)
-        {
-            new Vector3(-30f, 0.01f, -30f),
-            new Vector3(  0f, 0.01f, -30f),
-            new Vector3( 30f, 0.01f, -30f),
-            new Vector3(-30f, 0.01f,   0f),
-            new Vector3( 30f, 0.01f,   0f),
-            new Vector3(-30f, 0.01f,  30f),
-            new Vector3(  0f, 0.01f,  30f),
-            new Vector3( 30f, 0.01f,  30f),
-            new Vector3(-15f, 0.01f,  20f),
-            new Vector3( 15f, 0.01f,  20f),
-            new Vector3(-15f, 0.01f, -20f),
-            new Vector3( 15f, 0.01f, -20f),
-        };
+        const float y = 0.01f;
+        // Per-zone candidate sets, each densified at multiple radii so any one
+        // zone has plenty of fallback anchors if the first NavMesh sample fails.
+        var north  = new System.Collections.Generic.List<Vector3>();
+        var south  = new System.Collections.Generic.List<Vector3>();
+        var east   = new System.Collections.Generic.List<Vector3>();
+        var west   = new System.Collections.Generic.List<Vector3>();
+        var center = new System.Collections.Generic.List<Vector3>();
+        var ne     = new System.Collections.Generic.List<Vector3>();
+        var nw     = new System.Collections.Generic.List<Vector3>();
+        var se     = new System.Collections.Generic.List<Vector3>();
+        var sw     = new System.Collections.Generic.List<Vector3>();
 
-        float[] radii = { 8f, 14f, 20f, 26f, 32f };
-        const int segments = 16;
-        for (int ri = 0; ri < radii.Length; ri++)
+        float[] cardinalRadii = { 14f, 20f, 26f, 32f };
+        for (int i = 0; i < cardinalRadii.Length; i++)
         {
-            float r = radii[ri];
-            for (int s = 0; s < segments; s++)
+            float r = cardinalRadii[i];
+            north.Add(new Vector3(  0f, y,  r));
+            south.Add(new Vector3(  0f, y, -r));
+            east .Add(new Vector3(  r, y,  0f));
+            west .Add(new Vector3( -r, y,  0f));
+            // Slight lateral spread per radius so we don't stack on the axis line.
+            north.Add(new Vector3( -r * 0.35f, y, r));
+            north.Add(new Vector3(  r * 0.35f, y, r));
+            south.Add(new Vector3( -r * 0.35f, y, -r));
+            south.Add(new Vector3(  r * 0.35f, y, -r));
+            east .Add(new Vector3(  r, y, -r * 0.35f));
+            east .Add(new Vector3(  r, y,  r * 0.35f));
+            west .Add(new Vector3( -r, y, -r * 0.35f));
+            west .Add(new Vector3( -r, y,  r * 0.35f));
+        }
+
+        float[] cornerRadii = { 18f, 26f, 32f };
+        for (int i = 0; i < cornerRadii.Length; i++)
+        {
+            float r = cornerRadii[i] * 0.7071f; // diagonal projection
+            ne.Add(new Vector3(  r, y,  r));
+            nw.Add(new Vector3( -r, y,  r));
+            se.Add(new Vector3(  r, y, -r));
+            sw.Add(new Vector3( -r, y, -r));
+        }
+
+        float[] centerRadii = { 6f, 10f };
+        const int centerSegments = 8;
+        for (int i = 0; i < centerRadii.Length; i++)
+        {
+            float r = centerRadii[i];
+            for (int s = 0; s < centerSegments; s++)
             {
-                float ang = (s / (float)segments) * Mathf.PI * 2f;
-                anchors.Add(new Vector3(Mathf.Cos(ang) * r, 0.01f, Mathf.Sin(ang) * r));
+                float ang = (s / (float)centerSegments) * Mathf.PI * 2f;
+                center.Add(new Vector3(Mathf.Cos(ang) * r, y, Mathf.Sin(ang) * r));
             }
         }
 
-        anchors.Add(new Vector3(0f, 0.01f, -28f));
-        anchors.Add(new Vector3(0f, 0.01f, 28f));
-        anchors.Add(new Vector3(-28f, 0.01f, 0f));
-        anchors.Add(new Vector3(28f, 0.01f, 0f));
-
+        // Strict round-robin merge: cardinal zones first (highest priority for
+        // distribution), then corners, then center.
+        var zones = new System.Collections.Generic.List<System.Collections.Generic.List<Vector3>>
+        {
+            north, south, east, west, ne, nw, se, sw, center
+        };
+        var anchors = new System.Collections.Generic.List<Vector3>(160);
+        int maxLen = 0;
+        for (int i = 0; i < zones.Count; i++) maxLen = Mathf.Max(maxLen, zones[i].Count);
+        for (int row = 0; row < maxLen; row++)
+        {
+            for (int z = 0; z < zones.Count; z++)
+            {
+                if (row < zones[z].Count) anchors.Add(zones[z][row]);
+            }
+        }
         return anchors;
     }
 
@@ -926,17 +974,23 @@ public class LevelBuilder : MonoBehaviour
 
         float primary = Mathf.Max(MinEnemySpawnHardFloor, minEnemySpawnSpacing);
         float primarySq = primary * primary;
+        float playerMinSq = Mathf.Max(0f, minEnemyToPlayerDistance) * Mathf.Max(0f, minEnemyToPlayerDistance);
         const int attemptsTierA = 48;
 
         for (int a = 0; a < attemptsTierA; a++)
         {
-            Vector3 anchor = anchors[(enemyIndex * 13 + a * 7) % anchors.Count];
+            // Tier A: walk the round-robin anchor list starting at this
+            // enemy's slot, so consecutive enemies always start in different
+            // zones (N → S → E → W → corners → center → ...).
+            Vector3 anchor = anchors[(enemyIndex + a) % anchors.Count];
             Vector3 open = FindOpenEnemySpawn(anchor, enemyIndex + a, rawPlayerPos);
             Vector3 cand = ResolveAgentSpawnPosition(open);
             if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 3f, NavMesh.AllAreas))
                 continue;
             cand = hit.position;
 
+            if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
+                continue;
             if (!PassesEnemySeparationSq(cand, placedSoFar, primarySq))
                 continue;
             if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
@@ -1075,7 +1129,9 @@ public class LevelBuilder : MonoBehaviour
 
         for (int i = 0; i < enemyCount; i++)
         {
-            Vector3 spawnPos = arenaAnchors[(i * 5) % arenaAnchors.Count];
+            // Round-robin: enemy i starts in zone (i mod zoneCount). The full
+            // candidate validation happens in TryPickEnemySpawnPosition below.
+            Vector3 spawnPos = arenaAnchors[i % arenaAnchors.Count];
             GameObject enemyObject;
 
             if (enemyPrefab != null)
@@ -1192,6 +1248,14 @@ public class LevelBuilder : MonoBehaviour
 
             // Attach the same melee weapon the player is using
             AttachWeaponToEnemy(enemyObject, currentLvl);
+
+            // ── AI upgrade stack (order matters; later components read earlier) ──
+            //   1) EnemyPersonality — derives traits from weapon category + jitter.
+            //   2) EnemyTacticalBrain — target scoring, stance, group claims.
+            //   3) EnemyTacticalActions — Z/X/C driven by personality + brain.
+            EnsureComponent<EnemyPersonality>(enemyObject);
+            EnsureComponent<EnemyTacticalBrain>(enemyObject);
+            EnsureComponent<EnemyTacticalActions>(enemyObject);
 
             spawnedEnemies.Add(enemyObject);
         }
