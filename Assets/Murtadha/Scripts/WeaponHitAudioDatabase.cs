@@ -28,6 +28,12 @@ public class WeaponHitAudioDatabase : ScriptableObject
              "PlayerSfx.PlayVictory falls back to this when its own clip slot is empty.")]
     public AudioClip victoryClip;
 
+    [Tooltip("Auto-discovered UI click sound clip (filename contains 'tapclick').")]
+    public AudioClip uiClickClip;
+
+    [Tooltip("Auto-discovered UI hover sound clip (filename contains 'ui_clicksound').")]
+    public AudioClip uiHoverClip;
+
     // ── Runtime accessor ────────────────────────────────────────────────────
     private static WeaponHitAudioDatabase _cached;
     private static bool _loadAttempted;

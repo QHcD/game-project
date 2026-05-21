@@ -38,6 +38,8 @@ public class UIClickAudio : MonoBehaviour
 
     private AudioSource _audioSource;
     private AudioClip   _clickClip;
+    private AudioClip   _hoverClip;
+    private float       _lastClickTime = -100f;
 
     // Track the buttons we've already wired so we don't stack listeners on
     // the same Button across multiple scene loads.
@@ -108,6 +110,12 @@ public class UIClickAudio : MonoBehaviour
         _clickClip = clip;
     }
 
+    public void SetHoverClip(AudioClip clip)
+    {
+        if (clip == null) return;
+        _hoverClip = clip;
+    }
+
     /// <summary>
     /// Plays the click sound. Safe to call from any UnityEvent listener.
     /// </summary>
@@ -116,6 +124,7 @@ public class UIClickAudio : MonoBehaviour
         if (_audioSource == null) return;
 
         LastPlayTime = Time.unscaledTime;
+        _lastClickTime = Time.unscaledTime;
 
         // Subtle pitch jitter so spamming buttons doesn't sound robotic.
         _audioSource.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
@@ -123,6 +132,23 @@ public class UIClickAudio : MonoBehaviour
         float vol = Mathf.Clamp01(volume) * AudioSettingsRuntime.ScaledUi(1f);
         if (_clickClip != null && vol > 0f)
             _audioSource.PlayOneShot(_clickClip, vol);
+    }
+
+    /// <summary>
+    /// Plays the hover/navigation sound. Safe to call from any listener.
+    /// </summary>
+    public void PlayHover()
+    {
+        if (_audioSource == null) return;
+
+        // Do not play hover/select sound on the exact click frame
+        if (Time.unscaledTime - _lastClickTime < 0.05f) return;
+
+        _audioSource.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
+
+        float vol = Mathf.Clamp01(volume * 0.7f) * AudioSettingsRuntime.ScaledUi(1f);
+        if (_hoverClip != null && vol > 0f)
+            _audioSource.PlayOneShot(_hoverClip, vol);
     }
 
     /// <summary>
@@ -153,6 +179,7 @@ public class UIClickAudio : MonoBehaviour
         int id = button.GetInstanceID();
         if (_attachedInstanceIds.Contains(id)) return;
         _attachedInstanceIds.Add(id);
+
         button.onClick.RemoveListener(PlayClick);
         button.onClick.AddListener(PlayClick);
     }
@@ -163,27 +190,44 @@ public class UIClickAudio : MonoBehaviour
 
     private void ResolveClickClip()
     {
-        // Priority 1 — AudioClip override at Resources/Audio/ClickButtonSound.
-        //   The recommended path is to assign Assets/MohamedAman/Materials/
-        //   UI_clickSound.mp3 via PlayerSfx.uiClickOverride (forwarded into
-        //   SetClickClip at Awake). This Resources lookup is a secondary
-        //   "drop-in override" mechanism.
-        AudioClip ac = Resources.Load<AudioClip>(ResourcePath);
-        if (ac != null)
+        if (_clickClip == null && WeaponHitAudioDatabase.Instance != null)
         {
-            _clickClip = ac;
-            return;
+            _clickClip = WeaponHitAudioDatabase.Instance.uiClickClip;
+        }
+        if (_hoverClip == null && WeaponHitAudioDatabase.Instance != null)
+        {
+            _hoverClip = WeaponHitAudioDatabase.Instance.uiHoverClip;
         }
 
-        // Legacy detection — the old system shipped ClickButtonSound.mov
-        // and routed it via VideoPlayer. The code path is removed; warn if
-        // the asset is still in Resources so it can be deleted manually.
-        WarnIfLegacyClickAssetPresent();
+        // Support loading from Assets/MohamedAman/Materials/ in editor as secondary fallback
+#if UNITY_EDITOR
+        if (_clickClip == null)
+            _clickClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/TapClick.mp3");
+        if (_hoverClip == null)
+            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UI_clickSound.mp3");
+#endif
 
-        // Priority 2 — synthesise a snappy procedural click. Guaranteed to
-        //   exist on every platform. PlayerSfx.SetClickClip overrides this
-        //   later in the same Awake frame when its uiClickOverride is set.
-        _clickClip = SynthesiseClick();
+        if (_clickClip == null)
+        {
+            _clickClip = Resources.Load<AudioClip>("Audio/TapClick");
+        }
+        if (_clickClip == null)
+        {
+            AudioClip ac = Resources.Load<AudioClip>(ResourcePath);
+            if (ac != null)
+            {
+                _clickClip = ac;
+            }
+        }
+        if (_clickClip == null)
+        {
+            _clickClip = SynthesiseClick();
+        }
+
+        if (_hoverClip == null)
+        {
+            _hoverClip = Resources.Load<AudioClip>("Audio/UI_clickSound");
+        }
     }
 
     private static bool _legacyAssetWarned;
@@ -238,5 +282,33 @@ public class UIClickAudio : MonoBehaviour
         AudioClip clip = AudioClip.Create("ProceduralUIClick", samples, 1, sampleRate, false);
         clip.SetData(data, 0);
         return clip;
+    }
+}
+
+public class UIHoverClickAudioHelper : MonoBehaviour, UnityEngine.EventSystems.IPointerEnterHandler, UnityEngine.EventSystems.ISelectHandler
+{
+    private Button _button;
+
+    public void Init(Button button)
+    {
+        _button = button;
+    }
+
+    public void OnPointerEnter(UnityEngine.EventSystems.PointerEventData eventData)
+    {
+        if (_button != null && _button.interactable)
+        {
+            if (UIClickAudio.Instance != null)
+                UIClickAudio.Instance.PlayHover();
+        }
+    }
+
+    public void OnSelect(UnityEngine.EventSystems.BaseEventData eventData)
+    {
+        if (_button != null && _button.interactable)
+        {
+            if (UIClickAudio.Instance != null)
+                UIClickAudio.Instance.PlayHover();
+        }
     }
 }

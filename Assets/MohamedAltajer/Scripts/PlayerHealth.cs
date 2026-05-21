@@ -15,6 +15,9 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     public float maxHealth = 100f;
     public float currentHealth = 100f;
 
+    [Header("Corpse Setup")]
+    public GameObject deadPlayerCorpsePrefab;
+
     [Header("Auto-Regeneration (CoD Style)")]
     [Tooltip("Seconds after last damage before regen begins.")]
     public float regenDelay = 5f;
@@ -129,6 +132,8 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         if (_deathHandled) return;
         _deathHandled = true;
 
+        SpawnCorpse();
+
         CombatVoiceSfx.GetOrAdd(gameObject).PlayDeath();
 
         // Stop all locomotion so the corpse can't slide around or take more hits.
@@ -165,6 +170,146 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         {
             GameManager.Instance.playerTookDamage = true;
             GameManager.Instance.GameOver();
+        }
+    }
+
+    private void SpawnCorpse()
+    {
+        if (deadPlayerCorpsePrefab != null)
+        {
+            Instantiate(deadPlayerCorpsePrefab, transform.position, transform.rotation);
+            Debug.Log("[PlayerHealth] Corpse spawned from deadPlayerCorpsePrefab.");
+        }
+        else
+        {
+            // Fallback corpse creation
+            Transform visualSource = transform.Find("ThirdPersonBody");
+            if (visualSource == null)
+            {
+                SkinnedMeshRenderer smr = GetComponentInChildren<SkinnedMeshRenderer>(true);
+                if (smr != null)
+                {
+                    visualSource = smr.transform;
+                    while (visualSource.parent != null && visualSource.parent != transform)
+                    {
+                        visualSource = visualSource.parent;
+                    }
+                }
+            }
+
+            if (visualSource != null)
+            {
+                // Duplicate only the visual child/model
+                GameObject corpse = Instantiate(visualSource.gameObject, transform.position, transform.rotation);
+                corpse.name = "PlayerCorpse_Fallback";
+                corpse.transform.parent = null;
+                corpse.SetActive(true);
+
+                // Disable animator so it doesn't fight physics or loop animations
+                Animator animator = corpse.GetComponentInChildren<Animator>();
+                if (animator != null)
+                {
+                    animator.enabled = false;
+                }
+
+                // If there are bone rigidbodies, enable them to ragdoll
+                Rigidbody[] boneRbs = corpse.GetComponentsInChildren<Rigidbody>(true);
+                bool hasBonePhysics = false;
+                foreach (Rigidbody boneRb in boneRbs)
+                {
+                    if (boneRb == null) continue;
+                    boneRb.isKinematic = false;
+                    boneRb.useGravity = true;
+                    boneRb.constraints = RigidbodyConstraints.None;
+                    hasBonePhysics = true;
+                }
+
+                // If there are bone colliders, make sure they are enabled
+                Collider[] boneCols = corpse.GetComponentsInChildren<Collider>(true);
+                foreach (Collider boneCol in boneCols)
+                {
+                    if (boneCol == null) continue;
+                    boneCol.enabled = true;
+                    boneCol.isTrigger = false;
+                }
+
+                // If no bone physics was found, add simple collider/Rigidbody setup to the root of the corpse
+                if (!hasBonePhysics)
+                {
+                    Collider col = corpse.GetComponent<Collider>();
+                    if (col == null)
+                    {
+                        CapsuleCollider cap = corpse.AddComponent<CapsuleCollider>();
+                        cap.center = new Vector3(0f, 0.9f, 0f);
+                        cap.radius = 0.3f;
+                        cap.height = 1.8f;
+                    }
+                    else
+                    {
+                        col.enabled = true;
+                        col.isTrigger = false;
+                    }
+
+                    Rigidbody rb = corpse.GetComponent<Rigidbody>();
+                    if (rb == null)
+                    {
+                        rb = corpse.AddComponent<Rigidbody>();
+                    }
+                    rb.isKinematic = false;
+                    rb.useGravity = true;
+                    rb.mass = 70f;
+                    rb.linearDamping = 0.5f;
+                    rb.angularDamping = 0.5f;
+                    rb.constraints = RigidbodyConstraints.None;
+                }
+
+                // Strip gameplay/logic/network components
+                MonoBehaviour[] scripts = corpse.GetComponentsInChildren<MonoBehaviour>(true);
+                for (int i = 0; i < scripts.Length; i++)
+                {
+                    if (scripts[i] != null && !(scripts[i] is UnityEngine.EventSystems.UIBehaviour))
+                    {
+                        Destroy(scripts[i]);
+                    }
+                }
+
+                Camera[] cameras = corpse.GetComponentsInChildren<Camera>(true);
+                for (int i = 0; i < cameras.Length; i++)
+                {
+                    if (cameras[i] != null) Destroy(cameras[i]);
+                }
+
+                UnityEngine.Rendering.Universal.UniversalAdditionalCameraData[] camData = corpse.GetComponentsInChildren<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>(true);
+                for (int i = 0; i < camData.Length; i++)
+                {
+                    if (camData[i] != null) Destroy(camData[i]);
+                }
+
+                AudioListener[] listeners = corpse.GetComponentsInChildren<AudioListener>(true);
+                for (int i = 0; i < listeners.Length; i++)
+                {
+                    if (listeners[i] != null) Destroy(listeners[i]);
+                }
+
+                // Remove NavMeshAgent if present
+                var agent = corpse.GetComponentInChildren<UnityEngine.AI.NavMeshAgent>(true);
+                if (agent != null) Destroy(agent);
+
+                // Remove CharacterController if present
+                var cc = corpse.GetComponentInChildren<CharacterController>(true);
+                if (cc != null) Destroy(cc);
+
+                #if PUN_2_OR_NEWER
+                var pv = corpse.GetComponentInChildren<PhotonView>(true);
+                if (pv != null) Destroy(pv);
+                #endif
+
+                Debug.Log("[PlayerHealth] Corpse fallback instantiated and configured successfully.");
+            }
+            else
+            {
+                Debug.LogWarning("[PlayerHealth] Could not find any visual model child to instantiate as fallback corpse.");
+            }
         }
     }
 

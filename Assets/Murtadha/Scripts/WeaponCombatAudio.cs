@@ -33,6 +33,10 @@ public class WeaponCombatAudio : MonoBehaviour
              "Missing rows / clips fall back to the generic clips below.")]
     public CategoryAudio[] categories = new CategoryAudio[0];
 
+    [Header("Weapon Hit Audio Fallbacks")]
+    [Tooltip("Serialized backup array for weapon levels 1-16. Automatically populated in editor.")]
+    public AudioClip[] fallbackLevelClips = new AudioClip[16];
+
     [Header("Generic fallbacks")]
     [Tooltip("Used for any category whose 'swing' slot is empty.")]
     public AudioClip genericSwing;
@@ -58,6 +62,8 @@ public class WeaponCombatAudio : MonoBehaviour
     [Header("Debug")]
     [Tooltip("If enabled, logs which clip was resolved per hit and which fallback (if any) was used.")]
     public bool debugLog = false;
+    [Tooltip("If enabled, prints detailed weapon hit audio logging.")]
+    public bool debugWeaponHitAudio = false;
 
     // Per-(attacker,target,level) cooldown so repeated OverlapSphere ticks
     // within the same swing window don't retrigger the same clip every frame.
@@ -84,8 +90,12 @@ public class WeaponCombatAudio : MonoBehaviour
             _source = gameObject.AddComponent<AudioSource>();
             _source.playOnAwake = false;
             _source.loop = false;
-            _source.spatialBlend = 0.6f;
         }
+        // Force spatial 3D audio blend between 0.8 and 1.0 (default to 0.9f)
+        _source.spatialBlend = 0.9f;
+        _source.minDistance = 1.0f;
+        _source.maxDistance = 50.0f;
+        _source.rolloffMode = AudioRolloffMode.Linear;
     }
 
     private void OnEnable()
@@ -165,28 +175,60 @@ public class WeaponCombatAudio : MonoBehaviour
 
     private void PlayHitInternal(int weaponLevel, WeaponAnimationCategory category, Vector3 worldPos)
     {
-        // Resolution order:
-        //   1. Per-level clip from the auto-generated WeaponHitAudioDatabase.
-        //   2. Per-category clip serialised on this component.
-        //   3. Generic hit clip.
-        string source = "generic";
+        string source = "none";
         AudioClip clip = null;
+
+        // 1. Try loading from WeaponHitAudioDatabase (ScriptableObject in Resources)
         var db = WeaponHitAudioDatabase.Instance;
         if (db != null)
         {
             clip = db.GetClip(weaponLevel);
-            if (clip != null) source = "level";
+            if (clip != null) source = "resources_database";
         }
+
+        // 2. Try loading from serialized Inspector fallback list
+        if (clip == null && fallbackLevelClips != null && weaponLevel >= 1 && weaponLevel <= fallbackLevelClips.Length)
+        {
+            clip = fallbackLevelClips[weaponLevel - 1];
+            if (clip != null) source = "serialized_fallback_list";
+        }
+
+        // 3. Support editor-time AssetDatabase loading inside #if UNITY_EDITOR
+#if UNITY_EDITOR
+        if (clip == null)
+        {
+            string[] guids = UnityEditor.AssetDatabase.FindAssets("t:AudioClip", new[] { "Assets/MohamedAman/Materials" });
+            foreach (string guid in guids)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                string fileName = System.IO.Path.GetFileNameWithoutExtension(path);
+                int parsedLevel = ExtractLevelFromFilename(fileName);
+                if (parsedLevel == weaponLevel)
+                {
+                    clip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                    if (clip != null)
+                    {
+                        source = "editor_assetdatabase_scan";
+                        break;
+                    }
+                }
+            }
+        }
+#endif
+
+        // 4. Try loading from category overrides
         bool found = TryGetRow(category, out CategoryAudio row);
         if (clip == null && found && row.hit != null)
         {
             clip = row.hit;
-            source = "category";
+            source = "category_override";
         }
+
+        // 5. Try loading generic fallback
         if (clip == null)
         {
             clip = genericHit;
-            source = "generic";
+            source = "generic_fallback";
         }
 
         // Volume jitter on top of base for organic variation.
@@ -195,8 +237,11 @@ public class WeaponCombatAudio : MonoBehaviour
             Mathf.Max(hitVolumeJitter.x, hitVolumeJitter.y));
         PlayOneShotScaled(clip, hitVolume * volMul, worldPos);
 
-        if (debugLog)
-            Debug.Log($"[WeaponCombatAudio] hit level={weaponLevel} cat={category} clip={(clip != null ? clip.name : "<null>")} source={source}");
+        // Debug logging under debugWeaponHitAudio or debugLog
+        if (debugWeaponHitAudio || debugLog)
+        {
+            Debug.Log($"[WeaponHitAudio] Clip Loaded: {(clip != null ? clip.name : "<null>")}, Level/Weapon Sound Selected: Level {weaponLevel}, Source Type: {source}, Hit Audio Played at: {worldPos}");
+        }
 
         GameObject spark = found && row.hitSparkPrefab != null ? row.hitSparkPrefab : genericHitSparkPrefab;
         if (spark != null)
@@ -230,7 +275,20 @@ public class WeaponCombatAudio : MonoBehaviour
     private void PlayOneShotScaled(AudioClip clip, float baseVol, Vector3 worldPos)
     {
         if (clip == null) return;
-        AudioSource.PlayClipAtPoint(clip, worldPos, AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol)));
+        
+        if (_source != null)
+        {
+            _source.spatialBlend = 0.9f;
+            float scaledVol = AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol));
+            float finalVolume = Mathf.Clamp(scaledVol, 0.7f, 1.0f);
+            
+            _source.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
+            _source.PlayOneShot(clip, finalVolume);
+        }
+        else
+        {
+            AudioSource.PlayClipAtPoint(clip, worldPos, AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol)));
+        }
     }
 
     private void SpawnTimed(GameObject prefab, Vector3 pos, Quaternion rot, Transform parent)
@@ -240,4 +298,55 @@ public class WeaponCombatAudio : MonoBehaviour
         if (spawnedEffectLifetime > 0f)
             Destroy(go, spawnedEffectLifetime);
     }
+
+    private static int ExtractLevelFromFilename(string fileName)
+    {
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(fileName.Length);
+        foreach (char c in fileName)
+        {
+            if (char.IsLetterOrDigit(c))
+                sb.Append(char.ToLowerInvariant(c));
+        }
+        System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(sb.ToString(), @"^level(\d{1,2})");
+        if (!m.Success) return 0;
+        return int.TryParse(m.Groups[1].Value, out int lvl) ? lvl : 0;
+    }
+
+#if UNITY_EDITOR
+    private void OnValidate()
+    {
+        if (fallbackLevelClips == null || fallbackLevelClips.Length != 16)
+        {
+            System.Array.Resize(ref fallbackLevelClips, 16);
+        }
+
+        bool hasEmptySlot = false;
+        for (int i = 0; i < fallbackLevelClips.Length; i++)
+        {
+            if (fallbackLevelClips[i] == null)
+            {
+                hasEmptySlot = true;
+                break;
+            }
+        }
+
+        if (hasEmptySlot && UnityEditor.AssetDatabase.IsValidFolder("Assets/MohamedAman/Materials"))
+        {
+            string[] guids = UnityEditor.AssetDatabase.FindAssets("t:AudioClip", new[] { "Assets/MohamedAman/Materials" });
+            foreach (string guid in guids)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                string fileName = System.IO.Path.GetFileNameWithoutExtension(path);
+                int level = ExtractLevelFromFilename(fileName);
+                if (level >= 1 && level <= 16)
+                {
+                    if (fallbackLevelClips[level - 1] == null)
+                    {
+                        fallbackLevelClips[level - 1] = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                    }
+                }
+            }
+        }
+    }
+#endif
 }

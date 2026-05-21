@@ -31,6 +31,8 @@ public class PlayerSfx : MonoBehaviour
     public AudioClip victoryClip;
     [Tooltip("Optional override pushed into UIClickAudio on Awake. Leave empty to keep the existing click sound.")]
     public AudioClip uiClickOverride;
+    [Tooltip("Optional hover override pushed into UIClickAudio on Awake. Leave empty to keep the existing hover sound.")]
+    public AudioClip uiHoverOverride;
 
     [Header("Mixing")]
     [Range(0f, 2f)] public float jumpVolume      = 0.9f;
@@ -68,6 +70,8 @@ public class PlayerSfx : MonoBehaviour
 
         if (uiClickOverride != null && UIClickAudio.Instance != null)
             UIClickAudio.Instance.SetClickClip(uiClickOverride);
+        if (uiHoverOverride != null && UIClickAudio.Instance != null)
+            UIClickAudio.Instance.SetHoverClip(uiHoverOverride);
     }
 
     private void OnDestroy()

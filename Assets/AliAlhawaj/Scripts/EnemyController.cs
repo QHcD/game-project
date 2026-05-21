@@ -191,6 +191,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Max degrees off-forward allowed before swinging at the target.")]
     public float attackFacingAngle = 50f;
     public bool debugAI = false;
+    public bool debugAICombat = false;
 
     [Header("Flocking (group steering on NavMesh)")]
     [Tooltip("Steer away from other enemies / player when closer than this (horizontal).")]
@@ -293,6 +294,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// <summary>Read-only health for UI / combat diagnostics.</summary>
     public int CurrentHealth => _currentHealth;
 
+    /// <summary>Returns the level of the currently equipped weapon, falling back to current game level.</summary>
+    public int GetEquippedWeaponLevel() => _equippedWeaponLevel > 0 ? _equippedWeaponLevel : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
+
     // ── Public hooks for the tactical brain (EnemyTacticalBrain) ────────────
     // Surgical surface only — the brain *reads* these to make decisions and
     // calls SuggestTarget(...) to nudge target selection. It never reaches
@@ -316,6 +320,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float        _attackTimer;
     private Transform    _target;
     private bool         _playerDamagedThisLife;
+    private float        _noTargetTimer;
 
     // Multiplayer Co-op: when set, bots prioritise these human players over other bots.
     private System.Collections.Generic.List<Transform> _mpHumanTargets;
@@ -643,13 +648,21 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Rooftop / stuck watchdog — surgical, runs once per frame, no allocations.
         TickWatchdog();
 
-        // Minimal runtime safety: keep forcing retarget when we have none.
-        if (_target == null && Time.time >= _nextForceRetargetTime)
+        // Fail-Safe Timer:
+        if (_target == null)
         {
-            _nextForceRetargetTime = Time.time + 0.5f;
-            EvaluateTargets();
-            if (_target != null && (_state == State.Idle || _state == State.Patrol) && CanEngageChase(_target))
-                TransitionTo(State.Chase);
+            _noTargetTimer += Time.deltaTime;
+            if (_noTargetTimer >= 3.0f)
+            {
+                _noTargetTimer = 0f;
+                EvaluateTargets();
+                if (_target != null && (_state == State.Idle || _state == State.Patrol) && CanEngageChase(_target))
+                    TransitionTo(State.Chase);
+            }
+        }
+        else
+        {
+            _noTargetTimer = 0f;
         }
 
         TryGlobalAiTransitions();
@@ -1067,7 +1080,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
 
-            if (_pathScratch.status == NavMeshPathStatus.PathComplete)
+            if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
                 _agent.SetDestination(_target.position);
             else
             {
@@ -1080,7 +1093,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
-        if (_pathScratch.status != NavMeshPathStatus.PathComplete)
+        if (_pathScratch.status == NavMeshPathStatus.PathInvalid)
         {
             RepositionOnInvalidPath();
             if (debugAI)
@@ -2428,14 +2441,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (d > detectionRadius * 1.05f)
             return false;
 
-        if (!IsInCombatFieldOfView(t))
-            return false;
-
-        if (!HasCombatVisionTo(t))
-            return false;
-
+        // Strict FOV and LoS checks removed for aggressive FFA combat so enemies actually chase each other
         NavMesh.CalculatePath(transform.position, t.position, NavMesh.AllAreas, _pathScratch);
-        return _pathScratch.status == NavMeshPathStatus.PathComplete;
+        return _pathScratch.status != NavMeshPathStatus.PathInvalid;
     }
 
     private void TrySetChaseDestinationValidated()
@@ -2445,7 +2453,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
 
-        if (_pathScratch.status == NavMeshPathStatus.PathComplete)
+        if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
         {
             _agent.SetDestination(_target.position);
             return;
@@ -2505,6 +2513,11 @@ public class EnemyController : MonoBehaviour, IDamageable
             _resumeAfterStuck = MapResumeAfterStuck(prevState);
 
         _state = newState;
+
+        if (debugAICombat)
+        {
+            Debug.Log($"[EnemyAI] {name} transitioned from {prevState} to {newState}. Target={(_target != null ? _target.name : "null")}");
+        }
 
         if (!IsAgentReady()) return;
 
@@ -3699,6 +3712,27 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             _lowProgressSinceTime = -1f;
             _watchdogLastPosition = transform.position;
+        }
+
+        // ── 3. Dynamic Boundary Watchdog ─────────────────────────────────────
+        if (LevelBuilder.Instance != null)
+        {
+            float halfSize = LevelBuilder.Instance.arenaHalfSize;
+            float horizontalDist = Mathf.Sqrt(transform.position.x * transform.position.x + transform.position.z * transform.position.z);
+            if (horizontalDist > halfSize)
+            {
+                Vector3 warpDir = new Vector3(transform.position.x, 0f, transform.position.z).normalized;
+                Vector3 warpTarget = warpDir * (halfSize * 0.9f);
+                warpTarget.y = transform.position.y;
+                if (NavMesh.SamplePosition(warpTarget, out NavMeshHit hit, 15f, NavMesh.AllAreas))
+                {
+                    _agent.Warp(hit.position);
+                    if (debugAICombat)
+                    {
+                        Debug.Log($"[EnemyWatchdog] {name} out of bounds horizontalDist={horizontalDist:F2} > arenaHalfSize={halfSize:F2}. Warped to {hit.position}");
+                    }
+                }
+            }
         }
     }
 }
