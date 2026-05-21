@@ -8,7 +8,16 @@
       "Bash(Get-ChildItem -Directory)",
       "Bash(Select-Object Name)",
       "Bash(find /Users/mohammad/Desktop/PRISM-7 -type d -name \"Murtadha\" -o -type d -name \"MohamedAltajer\" | head -20)",
-      "Bash(ls -la /Users/mohamed/Desktop/ | grep -i prism)"
+      "Bash(ls -la /Users/mohamed/Desktop/ | grep -i prism)",
+      "Bash(xargs grep -l \"TakeDamage\\\\|ApplyDamage\\\\|HealthComponent\")",
+      "Bash(xargs grep -l \"blackPlayer\\\\|LayerMask.*combat\\\\|LayerMask.*Enemy\\\\|LayerMask.*Player\")",
+      "Bash(xargs grep -l \"Attack\\\\|Swing\\\\|Hitbox\\\\|IDamageable\")",
+      "Bash(xargs grep -l \"Level\")",
+      "Bash(python -c ' *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\murta\\\\Desktop\\\\PRISM-7\\\\Assets\" -Recurse -Filter \"*.meta\")",
+      "Bash(Select-String \"99fdce567ba49aa4cb099d09ecea163b\")",
+      "Bash(Select-Object -First 5 Path)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\murta\\\\Desktop\\\\PRISM-7\\\\Assets\" -Directory)"
     ]
   }
 }

@@ -1,3 +1,4 @@
+// test comment
 using UnityEngine;
 
 /// <summary>
@@ -17,6 +18,12 @@ public class WeaponHitbox : MonoBehaviour
     [Tooltip("Max distance from the weapon owner to a valid target. " +
              "Set from EnemyController.attackRadius + buffer. 0 = no limit (player weapons).")]
     public float maxAttackRange = 0f;
+
+    [Tooltip("Enemy hitbox only. Forward distance (metres) from the enemy root to the overlap sphere centre.\n" +
+             "0 = auto-derive from the owner EnemyController.attackRadius so the sphere always reaches\n" +
+             "the enemy's full engage distance without needing a manual value per weapon.\n" +
+             "Set > 0 to override for a specific weapon/level (e.g. 0.4 to restore legacy behaviour).")]
+    public float enemyTipForwardOverride = 0f;
 
     [Tooltip("Layers that can receive melee damage. Default = Player + Hittable + Character.")]
     public LayerMask meleeVictimMask;
@@ -138,8 +145,38 @@ public class WeaponHitbox : MonoBehaviour
 
         IDamageable target = other.GetComponentInParent<IDamageable>();
         GameObject resolvedOwner = ownerRoot != null ? ownerRoot : ResolveOwnerRoot();
-        if (target == null || target.gameObject == resolvedOwner) return false;
-        if (!target.IsAlive) return false;
+
+        bool isEnemyAttacker = resolvedOwner != null && resolvedOwner.GetComponent<EnemyController>() != null;
+
+        if (target == null)
+        {
+            if (isEnemyAttacker)
+                Debug.Log($"[WeaponHitbox][L9] attacker={resolvedOwner.name} collider={other.name} → no IDamageable found, skipping.");
+            return false;
+        }
+
+        // Self-hit guard: check the whole hierarchy, not just the root GO.
+        // Covers cases where IDamageable (PlayerHealth) lives on a different
+        // child object than PlayerController (resolvedOwner), which would make
+        // a simple == comparison miss the self-hit and deal self-damage.
+        bool isSelf = resolvedOwner != null && (
+            target.gameObject == resolvedOwner ||
+            target.gameObject.transform.IsChildOf(resolvedOwner.transform) ||
+            resolvedOwner.transform.IsChildOf(target.gameObject.transform));
+
+        if (isSelf)
+        {
+            if (isEnemyAttacker)
+                Debug.Log($"[WeaponHitbox][L9] attacker={resolvedOwner.name} → self-hit ignored.");
+            return false;
+        }
+
+        if (!target.IsAlive)
+        {
+            if (isEnemyAttacker)
+                Debug.Log($"[WeaponHitbox][L9] attacker={resolvedOwner.name} target={target.gameObject.name} → target already dead, skipping.");
+            return false;
+        }
 
         // Phantom-range guard: reject hits where the attacker is physically too
         // far away for the weapon to reach. Prevents mis-computed weapon-tip
@@ -150,11 +187,20 @@ public class WeaponHitbox : MonoBehaviour
                 resolvedOwner.transform.position,
                 target.gameObject.transform.position);
             if (dist > maxAttackRange)
+            {
+                if (isEnemyAttacker)
+                    Debug.Log($"[WeaponHitbox][L9] attacker={resolvedOwner.name} target={target.gameObject.name} → out of range (dist={dist:F2} max={maxAttackRange:F2}), skipping.");
                 return false;
+            }
         }
 
         int id = target.gameObject.GetInstanceID();
-        if (hitThisSwing.Contains(id)) return false;
+        if (hitThisSwing.Contains(id))
+        {
+            if (isEnemyAttacker)
+                Debug.Log($"[WeaponHitbox][L9] attacker={resolvedOwner.name} target={target.gameObject.name} → already hit this swing, skipping.");
+            return false;
+        }
 
         // Melee weapons deal flat body damage only — no headshot multipliers.
         int dmg = damage > 0 ? damage : 25;
@@ -173,11 +219,29 @@ public class WeaponHitbox : MonoBehaviour
                 $"hit target={target.gameObject.name} blockedByWall={blockedWorld}");
         }
 
+        if (isEnemyAttacker)
+            Debug.Log($"[WeaponHitbox][L9] attacker={resolvedOwner.name} target={target.gameObject.name} blockedByWall={blockedWorld} dmg={dmg}");
+
         if (blockedWorld)
             return false;
 
+        // Log health before damage for diagnostics (covers both PlayerHealth and EnemyController).
+        float healthBefore = -1f;
+        PlayerHealth ph = target.gameObject.GetComponent<PlayerHealth>();
+        EnemyController targetEc = target.gameObject.GetComponent<EnemyController>();
+        if (ph != null) healthBefore = ph.currentHealth;
+        else if (targetEc != null) healthBefore = targetEc.CurrentHealth;
+
         target.ReceiveDamage(dmg, resolvedOwner);
         hitThisSwing.Add(id);
+
+        if (isEnemyAttacker)
+        {
+            float healthAfter = ph != null ? ph.currentHealth
+                              : targetEc != null ? (float)targetEc.CurrentHealth
+                              : -1f;
+            Debug.Log($"[WeaponHitbox][L9] DAMAGE APPLIED → attacker={resolvedOwner.name} target={target.gameObject.name} dmg={dmg} healthBefore={healthBefore:F1} healthAfter={healthAfter:F1}");
+        }
 
         // Per-category hit audio + optional hit-spark VFX. No-ops if the
         // attacker has no WeaponCombatAudio component. Weapon level resolved
@@ -195,6 +259,49 @@ public class WeaponHitbox : MonoBehaviour
     {
         if (hitboxCollider == null)
             return transform.position;
+
+        // Enemy weapons: Crosby's bip_hand_R has a different local basis than
+        // the player's j_wrist_ri. The axe euler (0,180,90) maps weapon local+Z
+        // to handBone -Z on Crosby, so the OverlapSphere ends up BEHIND the
+        // enemy. Fix: use the enemy's world-forward as the strike direction so
+        // the sphere is always placed in front of whoever is swinging.
+        //
+        // The forward offset is auto-derived from EnemyController.attackRadius so the
+        // sphere always covers the enemy's full engage distance. It can be overridden
+        // per-weapon via enemyTipForwardOverride in the Inspector.
+        GameObject resolvedOwner = ownerRoot != null ? ownerRoot : ResolveOwnerRoot();
+        if (resolvedOwner != null && resolvedOwner.GetComponent<EnemyController>() != null)
+        {
+            float tipDist;
+            if (enemyTipForwardOverride > 0f)
+            {
+                // Inspector override: use the explicit per-weapon value.
+                tipDist = enemyTipForwardOverride;
+            }
+            else
+            {
+                // Auto-derive: place the sphere centre at 55 % of the enemy's
+                // actual engage distance (attackRadius + attackRangePadding) so
+                // the overlapRadius reaches the full edge.  This is read directly
+                // from EnemyController so it stays consistent if tuning changes.
+                EnemyController ec = resolvedOwner.GetComponent<EnemyController>();
+                if (ec != null)
+                {
+                    float engageDist = ec.attackRadius + ec.attackRangePadding;
+                    tipDist = Mathf.Clamp(engageDist * 0.55f, 0.6f, 2.5f);
+                }
+                else
+                {
+                    // Fallback if EnemyController reference is lost — use old logic.
+                    tipDist = Mathf.Max(0.35f, hitboxCollider.size.z * 0.5f);
+                }
+            }
+
+            Vector3 tip = resolvedOwner.transform.position
+                          + Vector3.up * 1.2f
+                          + resolvedOwner.transform.forward * tipDist;
+            return tip;
+        }
 
         Vector3 localTip = hitboxCollider.center + Vector3.forward * (hitboxCollider.size.z * 0.5f);
         return hitboxCollider.transform.TransformPoint(localTip);
