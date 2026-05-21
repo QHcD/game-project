@@ -115,10 +115,33 @@ public class PlayerSfx : MonoBehaviour
     /// <summary>Plays the victory clip once per PlayerSfx lifetime.</summary>
     public static void PlayVictory()
     {
-        if (Instance == null) return;
+        if (Instance == null)
+        {
+            // Fallback: build a one-shot AudioSource on the camera so the
+            // victory sound still plays even when the player PlayerSfx
+            // instance has been destroyed by the end-match cinematic.
+            AudioClip fallbackClip = WeaponHitAudioDatabase.Instance != null
+                ? WeaponHitAudioDatabase.Instance.victoryClip
+                : null;
+            if (fallbackClip == null) return;
+            Camera cam = Camera.main;
+            Vector3 pos = cam != null ? cam.transform.position : Vector3.zero;
+            AudioSource.PlayClipAtPoint(fallbackClip,
+                pos,
+                AudioSettingsRuntime.ScaledSfx(1f));
+            return;
+        }
         if (Instance._victoryPlayed) return;
         Instance._victoryPlayed = true;
-        Instance.PlayOneShot(Instance.victoryClip, Instance.victoryVolume);
+
+        // Auto-fallback: if the designer never wired up victoryClip in the
+        // Inspector, pull it from the auto-generated WeaponHitAudioDatabase,
+        // which the editor builder populates from Assets/MohamedAman/Materials.
+        AudioClip clip = Instance.victoryClip;
+        if (clip == null && WeaponHitAudioDatabase.Instance != null)
+            clip = WeaponHitAudioDatabase.Instance.victoryClip;
+
+        Instance.PlayOneShot(clip, Instance.victoryVolume);
     }
 
     // ── Internals ────────────────────────────────────────────────────────────

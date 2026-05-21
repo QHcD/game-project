@@ -92,7 +92,11 @@ public class CameraController : MonoBehaviour
     public bool enableCollision = true;
 
     [Tooltip("Minimum height above the resolved ground hit. Camera is lifted so the player cannot see under the map.")]
-    public float minHeightAboveGround = 0.55f;
+    public float minHeightAboveGround = 0.85f;
+
+    [Tooltip("Hard secondary floor: the camera is never allowed to drop more than this many metres below the player's look target. " +
+             "Acts as a backstop when the downward ground ray misses (thin fences, slatted containers) and the camera otherwise dips under the map.")]
+    public float maxBelowLookTarget = 2.25f;
 
     [Tooltip("How quickly the camera is lifted off the floor after a downward ray hits ground.")]
     public float groundLiftSpeed = 15f;
@@ -108,8 +112,8 @@ public class CameraController : MonoBehaviour
     public float minDistance = 0.35f;
 
     [Tooltip("Padding gap between camera and wall surface.")]
-    [Range(0.02f, 0.3f)]
-    public float wallPadding = 0.22f;
+    [Range(0.02f, 0.5f)]
+    public float wallPadding = 0.30f;
 
     [Tooltip("Layers treated as solid obstacles (walls, terrain, buildings).")]
     public LayerMask collisionMask = ~0;
@@ -387,6 +391,16 @@ public class CameraController : MonoBehaviour
                                          groundLiftSpeed * Time.deltaTime);
                 if (candidate.y < minY) candidate.y = minY;
             }
+        }
+
+        // Secondary backstop: when the downward ray misses (thin fence slats,
+        // gaps between containers, missing one-sided meshes) the camera could
+        // otherwise dip far below the player and reveal under-map void. Clamp
+        // the camera Y to no lower than `lookTarget.y - maxBelowLookTarget`.
+        if (_lookTargetInitialized && maxBelowLookTarget > 0f)
+        {
+            float hardFloor = _smoothedLookTarget.y - maxBelowLookTarget;
+            if (candidate.y < hardFloor) candidate.y = hardFloor;
         }
         return candidate;
     }
