@@ -155,8 +155,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Extended emergency scan radius so enemies stay aggressive and do not idle.")]
     public float aggressiveScanRadius = 120f;
 
-    [Tooltip("Seconds between target scans. 0.5 = FFA re-evaluate nearest combatant twice per second.")]
-    public float detectionInterval = 0.5f;
+    [Tooltip("Seconds between target scans. Lower = snappier target reacquisition.")]
+    public float detectionInterval = 0.35f;
 
     [Header("Target Locking & LoS")]
     [Tooltip("How long (seconds) the AI commits to a target before considering switching.")]
@@ -185,9 +185,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Seconds at low velocity with an active path before StuckRecovery.")]
     public float stuckTimeThreshold = 1.5f;
     [Tooltip("How often to revalidate NavMesh path and refresh chase destination.")]
-    public float repathInterval = 0.5f;
+    public float repathInterval = 0.35f;
     [Tooltip("Seconds in Idle before starting Patrol.")]
-    public float idleToPatrolDelay = 0.85f;
+    public float idleToPatrolDelay = 0.55f;
     [Tooltip("Max degrees off-forward allowed before swinging at the target.")]
     public float attackFacingAngle = 50f;
     public bool debugAI = false;
@@ -238,8 +238,21 @@ public class EnemyController : MonoBehaviour, IDamageable
     public float watchdogStuckPathSeconds = 3.5f;
     [Tooltip("Logs watchdog actions (rooftop warps, stuck recoveries). Off in shipped builds.")]
     public bool debugWatchdog = false;
+    [Header("Stability Recovery")]
+    [Tooltip("Minimum seconds between automatic recovery warps (prevents warp spam).")]
+    public float recoveryWarpCooldown = 2.5f;
+    [Tooltip("Seconds allowed on a partial NavMesh path before forcing repath/reposition.")]
+    public float partialPathMaxSeconds = 4f;
+    [Tooltip("Max vertical metres above spawn Y for chase destinations (rooftop guard).")]
+    public float maxChaseVerticalDelta = 3.5f;
+    [Tooltip("Seconds without meaningful motion before forcing target reacquisition.")]
+    public float idleMotionTimeout = 2.2f;
     private float _highSinceTime = -1f;
     private float _lowProgressSinceTime = -1f;
+    private float _partialPathSinceTime = -1f;
+    private float _idleMotionSinceTime = -1f;
+    private float _lastRecoveryWarpTime = -999f;
+    private float _navValidateTimer;
     private Vector3 _watchdogLastPosition;
 
     [Header("Hit Reaction")]
@@ -645,14 +658,16 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         // Warp logic removed per user request
 
-        // Rooftop / stuck watchdog — surgical, runs once per frame, no allocations.
+        // Rooftop / stuck / NavMesh watchdog — surgical, runs once per frame, no allocations.
         TickWatchdog();
+        RecoverOnlyIfOutOfMap();
+        TickCombatDrive();
 
         // Fail-Safe Timer:
         if (_target == null)
         {
             _noTargetTimer += Time.deltaTime;
-            if (_noTargetTimer >= 3.0f)
+            if (_noTargetTimer >= 0.85f)
             {
                 _noTargetTimer = 0f;
                 EvaluateTargets();
@@ -1081,7 +1096,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
 
             if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
-                _agent.SetDestination(_target.position);
+                _agent.SetDestination(ClampChaseDestination(_target.position));
             else
             {
                 RepositionOnInvalidPath();
@@ -1370,7 +1385,15 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_agent == null || !_agent.enabled) return;
         if (transform.position.y < -5f)
         {
+            if (WorldArenaStabilizer.Instance != null &&
+                WorldArenaStabilizer.Instance.TryRecoverTransform(transform, "fall_below_world"))
+            {
+                EvaluateTargets();
+                return;
+            }
+
             WarpToNearestNavMeshAfterFall();
+            EvaluateTargets();
             return;
         }
 
@@ -2361,7 +2384,62 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         if (t == null) return false;
         IDamageable dmg = t.GetComponentInParent<IDamageable>();
-        return dmg != null && dmg.IsAlive;
+        if (dmg == null || !dmg.IsAlive)
+            return false;
+
+        if (!IsInsidePlayableBounds(t.position))
+            return false;
+
+        if (!float.IsNaN(_spawnY))
+        {
+            float vertical = t.position.y - _spawnY;
+            if (vertical > maxChaseVerticalDelta + 1.5f || vertical < -6f)
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool IsInsidePlayableBounds(Vector3 worldPos)
+    {
+        if (WorldArenaStabilizer.Instance != null)
+            return WorldArenaStabilizer.Instance.IsInsidePlayableBounds(worldPos);
+
+        if (LevelBuilder.Instance != null)
+        {
+            float half = LevelBuilder.Instance.arenaHalfSize * 0.98f;
+            return Mathf.Abs(worldPos.x) <= half && Mathf.Abs(worldPos.z) <= half;
+        }
+
+        return true;
+    }
+
+    private bool TryRecoveryWarp(Vector3 desired, float sampleRadius, string reason)
+    {
+        if (_agent == null || !_agent.enabled)
+            return false;
+
+        float now = Time.time;
+        if (now - _lastRecoveryWarpTime < recoveryWarpCooldown)
+            return false;
+
+        if (!NavMesh.SamplePosition(desired, out NavMeshHit hit, sampleRadius, NavMesh.AllAreas))
+            return false;
+
+        if (!float.IsNaN(_spawnY) && (hit.position.y - _spawnY) > watchdogMaxYAboveSpawn + 0.5f)
+            return false;
+
+        _agent.Warp(hit.position);
+        _agent.ResetPath();
+        _lastRecoveryWarpTime = now;
+        _highSinceTime = -1f;
+        _lowProgressSinceTime = -1f;
+        _partialPathSinceTime = -1f;
+
+        if (debugWatchdog || debugAI)
+            Debug.Log($"[EnemyWatchdog] {name} recovery warp ({reason}) -> {hit.position}");
+
+        return true;
     }
 
     private static int _aiVisionBlockMask;
@@ -2438,12 +2516,66 @@ public class EnemyController : MonoBehaviour, IDamageable
             return false;
 
         float d = Vector3.Distance(transform.position, t.position);
-        if (d > detectionRadius * 1.05f)
+        bool isPlayer = t.GetComponentInParent<PlayerHealth>() != null;
+        float maxRange = isPlayer
+            ? Mathf.Max(detectionRadius, aggressiveScanRadius)
+            : detectionRadius * 1.05f;
+        if (d > maxRange)
             return false;
 
-        // Strict FOV and LoS checks removed for aggressive FFA combat so enemies actually chase each other
         NavMesh.CalculatePath(transform.position, t.position, NavMesh.AllAreas, _pathScratch);
-        return _pathScratch.status != NavMeshPathStatus.PathInvalid;
+        return _pathScratch.status == NavMeshPathStatus.PathComplete
+            || _pathScratch.status == NavMeshPathStatus.PathPartial;
+    }
+
+    /// <summary>
+    /// Keeps agents chasing: re-enable movement, refresh stale paths, transition idle→chase when a target exists.
+    /// </summary>
+    private void TickCombatDrive()
+    {
+        if (_state == State.Dead || EndMatchCinematic.GameplayLocked)
+            return;
+
+        if (_agent != null && _agent.enabled && !_agent.isOnNavMesh)
+            EnsureAgentOnNavMesh();
+
+        if (_target == null)
+            return;
+
+        if (!IsTargetValid(_target))
+        {
+            _target = null;
+            EvaluateTargets();
+            if (_target == null)
+                return;
+        }
+
+        if ((_state == State.Idle || _state == State.Patrol) && CanEngageChase(_target))
+        {
+            TransitionTo(State.Chase);
+            return;
+        }
+
+        if (_state != State.Chase && _state != State.Attack && _state != State.Evade
+            && _state != State.Jumping && _state != State.Flinch && _state != State.StuckRecovery)
+            return;
+
+        if (!IsAgentReady())
+            return;
+
+        _agent.isStopped = false;
+
+        bool needsDestination = !_agent.hasPath || _agent.pathPending
+            || (_agent.remainingDistance <= _agent.stoppingDistance + 0.15f && _agent.velocity.sqrMagnitude < 0.04f);
+        bool stalePartial = _agent.pathStatus == NavMeshPathStatus.PathPartial
+            && _agent.remainingDistance > 6f
+            && _agent.velocity.sqrMagnitude < stuckVelocityThreshold;
+
+        if (needsDestination || stalePartial || Time.time >= _nextForceRetargetTime)
+        {
+            _nextForceRetargetTime = Time.time + Mathf.Max(0.25f, repathInterval);
+            TrySetChaseDestinationValidated();
+        }
     }
 
     private void TrySetChaseDestinationValidated()
@@ -2455,7 +2587,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
         {
-            _agent.SetDestination(_target.position);
+            _agent.SetDestination(ClampChaseDestination(_target.position));
             return;
         }
 
@@ -2464,13 +2596,30 @@ public class EnemyController : MonoBehaviour, IDamageable
             Debug.Log($"[EnemyAI] {name} initial chase path {_pathScratch.status}, repositioned.", this);
     }
 
+    private Vector3 ClampChaseDestination(Vector3 raw)
+    {
+        if (float.IsNaN(_spawnY))
+            return raw;
+
+        float maxY = _spawnY + maxChaseVerticalDelta;
+        if (raw.y <= maxY)
+            return raw;
+
+        Vector3 clamped = raw;
+        clamped.y = maxY;
+        if (NavMesh.SamplePosition(clamped, out NavMeshHit hit, 6f, NavMesh.AllAreas))
+            return hit.position;
+
+        return clamped;
+    }
+
     private void RepositionOnInvalidPath()
     {
         if (!IsAgentReady())
             return;
 
         Vector3 probe = transform.position + Random.insideUnitSphere * 5f;
-        probe.y = transform.position.y;
+        probe.y = float.IsNaN(_spawnY) ? transform.position.y : _spawnY;
 
         if (NavMesh.SamplePosition(probe, out NavMeshHit hit, 10f, NavMesh.AllAreas))
         {
@@ -2479,8 +2628,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        if (NavMesh.SamplePosition(transform.position, out NavMeshHit near, 4f, NavMesh.AllAreas))
-            _agent.Warp(near.position);
+        TryRecoveryWarp(transform.position, 4f, "invalid_path");
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -2713,14 +2861,15 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private Transform FindFallbackTarget()
     {
-        // Nearest living enemy (excluding self) first.
+        Transform player = FindPlayerTarget();
+        if (player != null && IsTargetValid(player))
+            return player;
+
         Transform nearestEnemy = FindNearestLivingEnemy();
-        if (nearestEnemy != null)
+        if (nearestEnemy != null && IsTargetValid(nearestEnemy))
             return nearestEnemy;
 
-        // Then player.
-        PlayerController pc = Object.FindFirstObjectByType<PlayerController>();
-        return pc != null ? pc.transform : FindPlayerTarget();
+        return player;
     }
 
     private void SetRandomPatrolDestination()
@@ -2811,10 +2960,12 @@ public class EnemyController : MonoBehaviour, IDamageable
 
             Transform t  = dmg.transform;
             float     d2 = (t.position - transform.position).sqrMagnitude;
+            bool isPlayer = t.GetComponentInParent<PlayerHealth>() != null;
+            float score = d2 * (isPlayer ? 0.72f : 1f);
 
-            if (d2 < bestScore)
+            if (score < bestScore)
             {
-                bestScore = d2;
+                bestScore = score;
                 best      = t;
             }
         }
@@ -3656,47 +3807,61 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void TickWatchdog()
     {
         if (_state == State.Dead) return;
-        if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh) return;
-        if (float.IsNaN(_spawnY)) return;
+        if (_agent == null || !_agent.enabled) return;
 
         float now = Time.time;
-        float yDelta = transform.position.y - _spawnY;
 
-        // ── 1. Rooftop trap ──────────────────────────────────────────────────
-        if (yDelta > watchdogMaxYAboveSpawn)
+        _navValidateTimer -= Time.deltaTime;
+        if (_navValidateTimer <= 0f)
         {
-            if (_highSinceTime < 0f) _highSinceTime = now;
-            else if (now - _highSinceTime >= watchdogInvalidHighSeconds)
-            {
-                Vector3 anchor = _target != null
-                    ? new Vector3(_target.position.x, _spawnY, _target.position.z)
-                    : new Vector3(transform.position.x, _spawnY, transform.position.z);
-                if (UnityEngine.AI.NavMesh.SamplePosition(anchor, out UnityEngine.AI.NavMeshHit hit, 14f, UnityEngine.AI.NavMesh.AllAreas))
-                {
-                    _agent.Warp(hit.position);
-                    if (debugWatchdog)
-                        Debug.Log($"[EnemyWatchdog] {name} rooftop warp {transform.position.y:F1} -> {hit.position.y:F1}");
-                }
-                _highSinceTime = -1f;
-                _lowProgressSinceTime = -1f;
-            }
+            _navValidateTimer = 0.45f;
+            if (!_agent.isOnNavMesh)
+                EnsureAgentOnNavMesh();
         }
-        else
+
+        if (!_agent.isOnNavMesh)
+            return;
+
+        if (!float.IsNaN(_spawnY))
         {
-            _highSinceTime = -1f;
+            float yDelta = transform.position.y - _spawnY;
+
+            // ── 1. Rooftop trap ──────────────────────────────────────────────
+            if (yDelta > watchdogMaxYAboveSpawn)
+            {
+                if (_highSinceTime < 0f) _highSinceTime = now;
+                else if (now - _highSinceTime >= watchdogInvalidHighSeconds)
+                {
+                    Vector3 anchor = _target != null
+                        ? new Vector3(_target.position.x, _spawnY, _target.position.z)
+                        : new Vector3(transform.position.x, _spawnY, transform.position.z);
+                    TryRecoveryWarp(anchor, 14f, "rooftop");
+                    _highSinceTime = -1f;
+                    _lowProgressSinceTime = -1f;
+                }
+            }
+            else
+            {
+                _highSinceTime = -1f;
+            }
         }
 
         // ── 2. No path progress while chasing ────────────────────────────────
         if (_target != null && _agent.hasPath && !_agent.pathPending)
         {
             float moved = (transform.position - _watchdogLastPosition).sqrMagnitude;
-            if (moved < 0.04f) // < 0.2m of motion since last frame snapshot
+            if (moved < 0.04f)
             {
                 if (_lowProgressSinceTime < 0f) _lowProgressSinceTime = now;
                 else if (now - _lowProgressSinceTime >= watchdogStuckPathSeconds)
                 {
                     _agent.ResetPath();
                     EvaluateTargets();
+                    if (_target != null && IsTargetValid(_target))
+                        TrySetChaseDestinationValidated();
+                    else
+                        RepositionOnInvalidPath();
+
                     if (debugWatchdog)
                         Debug.Log($"[EnemyWatchdog] {name} stuck path reset; reacquiring target.");
                     _lowProgressSinceTime = -1f;
@@ -3707,32 +3872,62 @@ public class EnemyController : MonoBehaviour, IDamageable
                 _lowProgressSinceTime = -1f;
                 _watchdogLastPosition = transform.position;
             }
+
+            if (_agent.pathStatus == NavMeshPathStatus.PathPartial)
+            {
+                if (_partialPathSinceTime < 0f) _partialPathSinceTime = now;
+                else if (now - _partialPathSinceTime >= partialPathMaxSeconds)
+                {
+                    RepositionOnInvalidPath();
+                    _partialPathSinceTime = -1f;
+                }
+            }
+            else
+            {
+                _partialPathSinceTime = -1f;
+            }
         }
         else
         {
             _lowProgressSinceTime = -1f;
+            _partialPathSinceTime = -1f;
             _watchdogLastPosition = transform.position;
         }
 
-        // ── 3. Dynamic Boundary Watchdog ─────────────────────────────────────
-        if (LevelBuilder.Instance != null)
+        // ── 3. Out-of-bounds horizontal recovery ─────────────────────────────
+        if (!IsInsidePlayableBounds(transform.position))
         {
-            float halfSize = LevelBuilder.Instance.arenaHalfSize;
-            float horizontalDist = Mathf.Sqrt(transform.position.x * transform.position.x + transform.position.z * transform.position.z);
-            if (horizontalDist > halfSize)
+            float halfSize = LevelBuilder.Instance != null
+                ? LevelBuilder.Instance.arenaHalfSize
+                : 80f;
+            Vector3 flat = new Vector3(transform.position.x, 0f, transform.position.z);
+            if (flat.sqrMagnitude > 0.01f)
             {
-                Vector3 warpDir = new Vector3(transform.position.x, 0f, transform.position.z).normalized;
-                Vector3 warpTarget = warpDir * (halfSize * 0.9f);
-                warpTarget.y = transform.position.y;
-                if (NavMesh.SamplePosition(warpTarget, out NavMeshHit hit, 15f, NavMesh.AllAreas))
-                {
-                    _agent.Warp(hit.position);
-                    if (debugAICombat)
-                    {
-                        Debug.Log($"[EnemyWatchdog] {name} out of bounds horizontalDist={horizontalDist:F2} > arenaHalfSize={halfSize:F2}. Warped to {hit.position}");
-                    }
-                }
+                Vector3 warpTarget = flat.normalized * (halfSize * 0.9f);
+                warpTarget.y = float.IsNaN(_spawnY) ? transform.position.y : _spawnY;
+                TryRecoveryWarp(warpTarget, 15f, "out_of_bounds");
             }
+        }
+
+        // ── 4. Invalid / unreachable target ────────────────────────────────
+        if (_target != null && !IsTargetValid(_target))
+        {
+            _target = null;
+            EvaluateTargets();
+        }
+        else if (_target != null && _state == State.Chase && !CanEngageChase(_target))
+        {
+            if (_idleMotionSinceTime < 0f) _idleMotionSinceTime = now;
+            else if (now - _idleMotionSinceTime >= idleMotionTimeout)
+            {
+                _target = null;
+                EvaluateTargets();
+                _idleMotionSinceTime = -1f;
+            }
+        }
+        else
+        {
+            _idleMotionSinceTime = -1f;
         }
     }
 }

@@ -237,6 +237,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     public float arenaFloorHeight = 0.1f;
     public float floorSnapSpeed = 14f;
     public float maxFloorSnapDistance = 0.45f;
+    [Tooltip("Raises the third-person body mesh so boot soles align with the capsule floor contact.")]
+    public float standingVisualFootLift = 0.045f;
 
     [Header("Wall / Static collision (movement)")]
     [Tooltip("Walls, props, containers — used to pre-clamp horizontal motion before CharacterController.Move. Exclude Character/Hittable/Player.")]
@@ -856,6 +858,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         SnapCharacterToGroundNavMesh();
         SnapToArenaFloor();
         EnforceGroundYLock();
+        AlignStandingVisualToCapsule();
 
         if (_tacticalActions != null)
         {
@@ -954,8 +957,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (controller == null || !controller.enabled) return;
         if (EndMatchCinematic.GameplayLocked) return;
-        if (!isGrounded && !IsGroundedForJump() && !isProne && !isSliding
-            && !(_tacticalActions != null && _tacticalActions.IsTacticalAnimActive))
+        bool lowProfile = isProne || isSliding
+            || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
+        if (!isGrounded && !IsGroundedForJump() && !lowProfile)
             return;
 
         Vector3 sampleOrigin = transform.position + Vector3.up * 0.25f;
@@ -964,14 +968,35 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         float capsuleBottomY = transform.position.y + controller.center.y - controller.height * 0.5f;
         float groundY = hit.position.y;
-        const float sinkAllowance = 0.08f;
+        const float sinkAllowance = 0.02f;
         if (capsuleBottomY >= groundY - sinkAllowance)
             return;
 
         float lift = (groundY - sinkAllowance) - capsuleBottomY;
-        lift = Mathf.Clamp(lift, 0f, 0.4f);
+        lift = Mathf.Clamp(lift, 0f, lowProfile ? 0.25f : 0.4f);
         if (lift > 1e-4f)
             controller.Move(Vector3.up * lift);
+    }
+
+    /// <summary>
+    /// Keeps the visible mesh from sinking below the capsule floor while standing/crouch.
+    /// </summary>
+    private void AlignStandingVisualToCapsule()
+    {
+        if (thirdPersonBody == null || controller == null)
+            return;
+
+        if (isProne || isSliding || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive))
+            return;
+
+        float yOff = standingVisualFootLift;
+        if (isCrouching)
+            yOff = Mathf.Max(yOff, crouchBodyYOffset);
+
+        Vector3 desired = thirdPersonBodyBaseLocalPosition + new Vector3(0f, yOff, 0f);
+        Vector3 lp = thirdPersonBody.transform.localPosition;
+        if (lp.y < desired.y)
+            thirdPersonBody.transform.localPosition = new Vector3(lp.x, desired.y, lp.z);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1391,14 +1416,22 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         Vector3 frameStartPosition = transform.position;
 
-        // CoD/BO3-style sprint resolution:
-        //   • Hold LeftShift → sprint (legacy behaviour).
-        //   • Tap C         → latch sprint until W is released or C is tapped again.
-        // Either way you must be moving forward (y > 0.1) for sprint to apply.
-        bool shiftHeld   = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
-        bool wantSprint  = (shiftHeld || sprintToggled) && moveInputSmoothed.y > 0.1f;
-        if (sprintToggled && moveInputSmoothed.y <= 0.05f)
-            sprintToggled = false; // Auto-cancel toggle when you stop moving forward.
+        // Sprint: LeftShift only (Settings → Sprint Mode: HOLD vs TOGGLE).
+        // C = prone (tactical). Gamepad: left shoulder / left trigger while moving.
+        bool shiftHeld = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
+        if (Keyboard.current != null && Keyboard.current.leftShiftKey.wasPressedThisFrame && SprintModeRuntime.IsToggleMode)
+            sprintToggled = !sprintToggled;
+        if (Keyboard.current != null && Keyboard.current.leftShiftKey.wasReleasedThisFrame && SprintModeRuntime.IsHoldMode)
+            sprintToggled = false;
+
+        bool kbSprint = SprintModeRuntime.IsToggleMode ? sprintToggled : shiftHeld;
+        bool padSprint = Gamepad.current != null
+            && (Gamepad.current.leftShoulder.isPressed || Gamepad.current.leftTrigger.ReadValue() > 0.45f)
+            && moveInputSmoothed.sqrMagnitude > 0.05f;
+
+        bool wantSprint = (kbSprint || padSprint) && moveInputSmoothed.y > 0.1f;
+        if (SprintModeRuntime.IsToggleMode && sprintToggled && moveInputSmoothed.y <= 0.05f)
+            sprintToggled = false;
 
         // Sliding / prone / crouch all force sprint off so you can't sprint
         // through a slide or while lying flat.
