@@ -38,6 +38,8 @@ public class MpBotDirector : MonoBehaviour
 
     public static void EnsureExists(MpGameMode mode, int botCount)
     {
+        if (mode == MpGameMode.PurePvP) return;
+
         if (Instance != null)
         {
             Instance.Reconfigure(mode, botCount);
@@ -66,6 +68,11 @@ public class MpBotDirector : MonoBehaviour
             return;
         }
 #endif
+        if (_mode == MpGameMode.PurePvP)
+        {
+            Destroy(gameObject);
+            return;
+        }
         RefreshHumanTargets();
         SpawnBots();
     }
@@ -76,6 +83,15 @@ public class MpBotDirector : MonoBehaviour
     {
         _mode           = mode;
         _targetBotCount = botCount;
+        if (_mode == MpGameMode.PurePvP)
+        {
+            foreach (var bot in _activeBots)
+            {
+                if (bot != null) bot.gameObject.SetActive(false);
+            }
+            _activeBots.Clear();
+            return;
+        }
         RefreshHumanTargets();
         ApplyTargetsToAllBots();
     }
@@ -132,21 +148,27 @@ public class MpBotDirector : MonoBehaviour
         EnemyController[] sceneEnemies = FindObjectsByType<EnemyController>(
             FindObjectsInactive.Include, FindObjectsSortMode.None);
 
+        _activeBots.Clear();
         int spawned = 0;
         foreach (EnemyController enemy in sceneEnemies)
         {
             if (spawned >= _targetBotCount) break;
 
-            enemy.gameObject.SetActive(true);
+            if (enemy == null) continue;
 
-            // Warp NavMeshAgent to a valid NavMesh position after re-enable.
-            NavMeshAgent agent = enemy.GetComponent<NavMeshAgent>();
-            if (agent != null)
+            if (!enemy.gameObject.activeSelf)
             {
-                agent.enabled = false;
-                if (NavMesh.SamplePosition(enemy.transform.position, out NavMeshHit hit, 8f, NavMesh.AllAreas))
-                    enemy.transform.position = hit.position;
-                agent.enabled = true;
+                enemy.gameObject.SetActive(true);
+
+                // Warp NavMeshAgent to a valid NavMesh position after re-enable.
+                NavMeshAgent agent = enemy.GetComponent<NavMeshAgent>();
+                if (agent != null)
+                {
+                    agent.enabled = false;
+                    if (NavMesh.SamplePosition(enemy.transform.position, out NavMeshHit hit, 8f, NavMesh.AllAreas))
+                        enemy.transform.position = hit.position;
+                    agent.enabled = true;
+                }
             }
 
             _activeBots.Add(enemy);

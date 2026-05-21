@@ -65,6 +65,21 @@ public class NetworkPlayerSync : MonoBehaviour
         if (photonView == null)
             return;
 
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            bool isFriendly = attackerRoot != null && attackerRoot.GetComponentInParent<PlayerHealth>() != null && attackerRoot.GetComponentInParent<PlayerHealth>().gameObject != gameObject;
+            if (isFriendly)
+            {
+                bool ff = true;
+                if (PhotonNetwork.InRoom && PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(MpRoomConfig.KeyFriendlyFire, out object ffRaw))
+                    ff = (bool)ffRaw;
+                if (MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival)
+                    ff = false;
+
+                if (!ff) return; // Block friendly fire damage RPC
+            }
+        }
+
         PhotonView attackerView = attackerRoot != null ? attackerRoot.GetComponentInParent<PhotonView>() : null;
         int attackerActorNumber = attackerView != null && attackerView.Owner != null ? attackerView.Owner.ActorNumber : -1;
         string attackerName = attackerView != null && attackerView.Owner != null ? attackerView.Owner.NickName : "PLAYER";

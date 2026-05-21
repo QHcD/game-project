@@ -61,7 +61,20 @@ public static class MenuMusicSceneGuard
     {
         if (string.IsNullOrEmpty(sceneName)) return false;
         string n = sceneName.ToLowerInvariant();
-        return n.Contains("mainmenu") || n.Contains("lobby");
+
+        // Gameplay scene names (explicitly NOT menu context)
+        if (n.Contains("gamescene") || n.Contains("multiplayergamescene") || n.Contains("gameplay"))
+            return false;
+
+        // Treat all menu-related screens and pages as menu context
+        return n.Contains("mainmenu") 
+            || n.Contains("lobby") 
+            || n.Contains("settings") 
+            || n.Contains("options") 
+            || n.Contains("credits")
+            || n.Contains("selectlevel")
+            || n.Contains("challenges")
+            || n.Contains("prismstore");
     }
 
     private static IEnumerator FadeAndStop(AudioSource src, float duration)

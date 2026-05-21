@@ -27,6 +27,8 @@ public class UIClickAudio : MonoBehaviour
     public  static UIClickAudio Instance { get; private set; }
     private const string ResourcePath = "Audio/ClickButtonSound";
 
+    public float LastPlayTime { get; private set; } = -100f;
+
     [Header("Mixing")]
     [Tooltip("Master volume scalar applied to PlayOneShot.")]
     public float volume = 0.55f;
@@ -81,6 +83,8 @@ public class UIClickAudio : MonoBehaviour
 
     private void OnSceneLoaded(Scene s, LoadSceneMode mode)
     {
+        // Clear to release references to destroyed buttons (prevents slow leak)
+        _attachedInstanceIds.Clear();
         // Defer one frame so dynamically-built canvases (RuntimeMenuBuilder
         // creates buttons in Awake/Start) finish spawning their children.
         StartCoroutine(AttachAfterFrame());
@@ -111,11 +115,14 @@ public class UIClickAudio : MonoBehaviour
     {
         if (_audioSource == null) return;
 
+        LastPlayTime = Time.unscaledTime;
+
         // Subtle pitch jitter so spamming buttons doesn't sound robotic.
         _audioSource.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
 
-        if (_clickClip != null)
-            _audioSource.PlayOneShot(_clickClip, Mathf.Clamp01(volume));
+        float vol = Mathf.Clamp01(volume) * AudioSettingsRuntime.ScaledUi(1f);
+        if (_clickClip != null && vol > 0f)
+            _audioSource.PlayOneShot(_clickClip, vol);
     }
 
     /// <summary>
@@ -146,6 +153,7 @@ public class UIClickAudio : MonoBehaviour
         int id = button.GetInstanceID();
         if (_attachedInstanceIds.Contains(id)) return;
         _attachedInstanceIds.Add(id);
+        button.onClick.RemoveListener(PlayClick);
         button.onClick.AddListener(PlayClick);
     }
 
