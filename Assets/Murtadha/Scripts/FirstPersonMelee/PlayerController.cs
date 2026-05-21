@@ -302,8 +302,16 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private float slideCooldownTimer;
     private float thrusterCooldownTimer;
     private float flipCooldownTimer;
+    private float jumpOverCooldownTimer;
+    private PlayerTacticalActions _tacticalActions;
     private float targetControllerHeight = 1.8f;
     private Vector3 targetControllerCenter = new Vector3(0f, 0.92f, 0f);
+    // Standing capsule bottom in local space — held constant during slide/prone
+    // so resizing the CharacterController never buries the player (enemy-style pin).
+    private float _standingHeight = 1.8f;
+    private float _standingCenterY = 0.92f;
+    private float _capsuleBottomY;
+    private bool _wasInLowProfileStance;
     private Coroutine mantleCoroutine;
     private Coroutine flipCoroutine;
     private Vector3 thirdPersonBodyBaseLocalPosition;
@@ -440,7 +448,22 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             controller.minMoveDistance  = 0f;
             targetControllerHeight = controller.height;
             targetControllerCenter = controller.center;
+            _standingHeight  = controller.height;
+            _standingCenterY = controller.center.y;
+            _capsuleBottomY  = _standingCenterY - _standingHeight * 0.5f;
         }
+
+        RobustThirdPersonMovement legacyMovement = GetComponent<RobustThirdPersonMovement>();
+        if (legacyMovement != null)
+        {
+            legacyMovement.enabled = false;
+            Debug.Log("[PlayerController] Disabled RobustThirdPersonMovement — PlayerController owns locomotion.", this);
+        }
+
+        _tacticalActions = GetComponent<PlayerTacticalActions>();
+        if (_tacticalActions == null)
+            _tacticalActions = gameObject.AddComponent<PlayerTacticalActions>();
+        _tacticalActions.CacheStandingCollider();
 
         // Cache first-person camera transform for restoring when toggling.
         if (firstPersonCam == null)
@@ -591,7 +614,22 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             EnsureThirdPersonCamera();
             if (runtimeThirdPersonCamera == null)
                 Debug.LogError("[PlayerController] No gameplay camera could be created. Movement is still enabled.");
+            EnsureLocalLowProfileTools();
         }
+    }
+
+    private void EnsureLocalLowProfileTools()
+    {
+        if (IsRemoteNetworkPlayer())
+            return;
+
+        if (GetComponent<StanceTestController>() == null)
+            gameObject.AddComponent<StanceTestController>();
+
+        LowProfileGroundDebugger dbg = GetComponent<LowProfileGroundDebugger>();
+        if (dbg == null)
+            dbg = gameObject.AddComponent<LowProfileGroundDebugger>();
+        dbg.enabled = true;
     }
 
     private void ResetLevelOneWeaponOffsets()
@@ -812,9 +850,23 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             NormalizeThirdPersonBodyLocalRotation();
         }
 
+        if (isProne || isSliding || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive))
+            ClampLowProfileVisualMesh();
+
         SnapCharacterToGroundNavMesh();
         SnapToArenaFloor();
         EnforceGroundYLock();
+
+        if (_tacticalActions != null)
+        {
+            _tacticalActions.DisableRootMotionOnAnimators();
+            if (isProne)
+                _tacticalActions.EnforceProneGround();
+            else if (isSliding || _tacticalActions.IsTacticalAnimActive)
+                _tacticalActions.EnforceGroundContact();
+        }
+        else if (isProne || isSliding)
+            FlushLowProfileGroundSnap(forceZeroMove: false);
     }
 
     private void NormalizeThirdPersonBodyLocalRotation()
@@ -902,6 +954,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (controller == null || !controller.enabled) return;
         if (EndMatchCinematic.GameplayLocked) return;
+        if (!isGrounded && !IsGroundedForJump() && !isProne && !isSliding
+            && !(_tacticalActions != null && _tacticalActions.IsTacticalAnimActive))
+            return;
 
         Vector3 sampleOrigin = transform.position + Vector3.up * 0.25f;
         if (!NavMesh.SamplePosition(sampleOrigin, out NavMeshHit hit, 2.5f, NavMesh.AllAreas))
@@ -996,9 +1051,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
                 TryThrusterJumpOrQueueNormalJump();
 
-            // Current tactical layout: C = prone, X = slide, Z = grounded dodge roll, V = tactical placeholder.
+            // Tactical layout (matches enemy / RobustThirdPersonMovement): Z = JumpOver, X = Slide, C = Prone.
             if (Keyboard.current.zKey.wasPressedThisFrame)
-                TryStartDodgeRoll();
+                TryStartJumpOver();
 
             if (Keyboard.current.xKey.wasPressedThisFrame)
                 TryStartSlide();
@@ -1397,11 +1452,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             horizontalDelta = ClampHorizontalMoveAgainstStatics(horizontalDelta);
 
         bool jumpFeetGrounded = IsGroundedForJump();
+        bool tacticalAnim = _tacticalActions != null && _tacticalActions.IsTacticalAnimActive;
         if (isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f))
         {
             verticalVelocity.y = -2f;
+            if (tacticalAnim && jumpFeetGrounded)
+                verticalVelocity.y = Mathf.Max(verticalVelocity.y, -2f);
 
-            if (jumpRequested && !isProne && !isSliding && !isFlipping && jumpFeetGrounded)
+            if (jumpRequested && !isProne && !isSliding && !isFlipping && !tacticalAnim && jumpFeetGrounded)
             {
                 verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
                 isGrounded = false;
@@ -1419,6 +1477,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         UpdateTacticalManeuverState();
         UpdateStanceCollider();
+
+        if (_tacticalActions != null)
+            _tacticalActions.Tick(Time.deltaTime);
 
         ClampInsideArena();
 
@@ -1756,9 +1817,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     }
 
     /// <summary>
-    /// Black Ops 3 style "Crawl" (prone). Toggles the lying-flat stance.
-    /// Visually the body is rotated 90° forward so the legs no longer punch
-    /// through the ground, and the controller height shrinks to <see cref="proneHeight"/>.
+    /// Prone (C). Animator plays Prone Idle; capsule bottom stays pinned; mesh offset on body child only.
     /// </summary>
     private void ToggleCrawl()
     {
@@ -1768,7 +1827,25 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         {
             isCrouching   = false;
             isSliding     = false;
-            sprintToggled = false; // Can't sprint while crawling.
+            sprintToggled = false;
+            if (_tacticalActions != null)
+                _tacticalActions.SetProne(true);
+            else
+                EnterLowProfileStance();
+            Animator anim = GetActiveAnimator();
+            if (anim != null) AnimSetBool(anim, "IsProne", true);
+        }
+        else
+        {
+            if (_tacticalActions != null)
+                _tacticalActions.SetProne(false);
+            else
+                FlushLowProfileGroundSnap(forceZeroMove: true);
+
+            RestoreProneVisualPose();
+
+            Animator anim = GetActiveAnimator();
+            if (anim != null) AnimSetBool(anim, "IsProne", false);
         }
     }
 
@@ -1913,11 +1990,39 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (slideDirection.sqrMagnitude < 0.001f)
             slideDirection = transform.forward;
         horizontalVelocity = slideDirection.normalized * powerSlideBoost;
+
+        Animator slideAnim = GetActiveAnimator();
+        if (slideAnim != null) AnimFireTrigger(slideAnim, "Slide");
+
+        if (_tacticalActions != null)
+            _tacticalActions.BeginSlide();
+        else
+            EnterLowProfileStance();
+    }
+
+    private void TryStartJumpOver()
+    {
+        if (isMantling || isProne || isSliding || isFlipping) return;
+        if (_tacticalActions != null && _tacticalActions.IsActionLocked) return;
+        if (!IsGroundedForJump()) return;
+        if (jumpOverCooldownTimer > 0f) return;
+
+        jumpOverCooldownTimer = 0.9f;
+        verticalVelocity.y = -2f;
+
+        Animator anim = GetActiveAnimator();
+        if (anim != null) AnimFireTrigger(anim, "JumpOver");
+
+        if (_tacticalActions != null)
+            _tacticalActions.BeginJumpOver();
+        else
+            EnterLowProfileStance();
     }
 
     private void TryThrusterJumpOrQueueNormalJump()
     {
-        if (isProne || isSliding || isMantling || isFlipping)
+        if (isProne || isSliding || isMantling || isFlipping
+            || (_tacticalActions != null && _tacticalActions.IsActionLocked))
             return;
 
         // Thruster = Shift + movement (keyboard) or shoulder/trigger + stick (gamepad).
@@ -2019,13 +2124,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (flipCooldownTimer > 0f)
             flipCooldownTimer -= Time.deltaTime;
 
+        if (jumpOverCooldownTimer > 0f)
+            jumpOverCooldownTimer -= Time.deltaTime;
+
         if (isSliding)
         {
             slideTimer -= Time.deltaTime;
-            if (slideTimer <= 0f || !isGrounded)
+            if (slideTimer <= 0f)
             {
                 isSliding = false;
                 isCrouching = false;
+                if (_tacticalActions != null)
+                    _tacticalActions.EndSlide();
             }
         }
     }
@@ -2034,48 +2144,190 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (controller == null) return;
 
-        float standHeight = 1.8f;
-        float desiredHeight = standHeight;
-        if (isProne) desiredHeight = proneHeight;
-        else if (isCrouching || isSliding) desiredHeight = crouchHeight;
+        bool tacticalAnim = _tacticalActions != null && _tacticalActions.IsTacticalAnimActive;
+        bool lowProfile = isProne || isSliding || tacticalAnim;
+        bool enteredLowProfile = lowProfile && !_wasInLowProfileStance;
+        _wasInLowProfileStance = lowProfile;
 
-        targetControllerHeight = Mathf.Clamp(desiredHeight, 0.6f, standHeight);
-        targetControllerCenter = new Vector3(0f, targetControllerHeight * 0.5f + 0.02f, 0f);
+        if (_tacticalActions != null)
+        {
+            _tacticalActions.ApplyColliderState(isProne, isSliding, isCrouching, tacticalAnim);
+            targetControllerHeight = controller.height;
+            targetControllerCenter = controller.center;
+            if (enteredLowProfile)
+                _tacticalActions.FlushGroundSnap(zeroMove: true);
+        }
+        else
+        {
+            float standHeight = _standingHeight > 0.01f ? _standingHeight : 1.8f;
+            float desiredHeight = standHeight;
+            if (isProne) desiredHeight = proneHeight;
+            else if (isCrouching || isSliding) desiredHeight = crouchHeight;
 
-        controller.height = Mathf.Lerp(controller.height, targetControllerHeight, stanceTransitionSpeed * Time.deltaTime);
-        controller.center = Vector3.Lerp(controller.center, targetControllerCenter, stanceTransitionSpeed * Time.deltaTime);
-        controller.stepOffset = controller.height > 1.6f ? 0.5f : 0.05f;
+            targetControllerHeight = Mathf.Clamp(desiredHeight, 0.6f, standHeight);
+            targetControllerCenter = new Vector3(0f, _capsuleBottomY + targetControllerHeight * 0.5f, 0f);
 
-        // While the dodge roll routine is animating the body, leave its rotation alone
-        // so we don't fight it for the local rotation slot.
+            if (lowProfile || enteredLowProfile)
+            {
+                SnapStanceColliderImmediate();
+                if (enteredLowProfile)
+                    FlushLowProfileGroundSnap(forceZeroMove: true);
+            }
+            else
+            {
+                controller.height = Mathf.Lerp(controller.height, targetControllerHeight, stanceTransitionSpeed * Time.deltaTime);
+                controller.center = Vector3.Lerp(controller.center, targetControllerCenter, stanceTransitionSpeed * Time.deltaTime);
+            }
+
+            controller.stepOffset = controller.height > 1.6f ? 0.5f : 0.05f;
+        }
+
+        if (_tacticalActions != null)
+            _tacticalActions.DisableRootMotionOnAnimators();
+        else
+            DisableAnimatorRootMotion();
+
         if (isFlipping) return;
+        UpdateLowProfileBodyPose();
+    }
+
+    /// <summary>
+    /// Called when entering slide or prone — pins capsule to ground like enemy AI.
+    /// </summary>
+    private void EnterLowProfileStance()
+    {
+        SnapStanceColliderImmediate();
+        FlushLowProfileGroundSnap(forceZeroMove: true);
+        DisableAnimatorRootMotion();
+    }
+
+    private void SnapStanceColliderImmediate()
+    {
+        if (controller == null) return;
+
+        controller.height = targetControllerHeight;
+        controller.center = targetControllerCenter;
+    }
+
+    /// <summary>
+    /// Physics flush: zero-move then lift capsule bottom to floor (CharacterController.Move).
+    /// </summary>
+    private void FlushLowProfileGroundSnap(bool forceZeroMove)
+    {
+        if (controller == null || !controller.enabled || isMantling) return;
+
+        if (forceZeroMove)
+            controller.Move(Vector3.zero);
+
+        int groundMask = BuildGroundCheckMask();
+        Vector3 rayOrigin = transform.position + Vector3.up * 0.35f;
+        if (!Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, 10f, groundMask, QueryTriggerInteraction.Ignore))
+            return;
+
+        if (hit.collider != null && hit.collider.transform.IsChildOf(transform))
+            return;
+
+        float targetRootY = hit.point.y - controller.center.y + controller.height * 0.5f + controller.skinWidth;
+        float deltaY = targetRootY - transform.position.y;
+        if (deltaY > 0.001f)
+            controller.Move(Vector3.up * deltaY);
+
+        if (verticalVelocity.y < 0f)
+            verticalVelocity.y = -2f;
+    }
+
+    private void DisableAnimatorRootMotion()
+    {
+        if (!isProne && !isSliding && !isCrouching) return;
+
+        Animator active = GetActiveAnimator();
+        if (active != null)
+            active.applyRootMotion = false;
 
         if (thirdPersonBody != null)
         {
-            // Crawl uses a tiny lift (the legs no longer need to be buried in
-            // the floor — we rotate the model 90° forward instead). Crouch /
-            // slide keep their existing offset.
-            float desiredOffsetY = 0f;
-            if (isProne) desiredOffsetY = proneCrawlBodyYOffset;
-            else if (isCrouching || isSliding) desiredOffsetY = crouchBodyYOffset;
+            foreach (Animator a in thirdPersonBody.GetComponentsInChildren<Animator>(true))
+            {
+                if (a != null)
+                    a.applyRootMotion = false;
+            }
+        }
+    }
 
-            Vector3 desiredPos = thirdPersonBodyBaseLocalPosition + new Vector3(0f, desiredOffsetY, 0f);
+    private void UpdateLowProfileBodyPose()
+    {
+        if (thirdPersonBody == null) return;
+
+        if (isProne)
+        {
+            ApplyProneVisualPose();
+            return;
+        }
+
+        float desiredOffsetY = 0f;
+        if (isCrouching || isSliding) desiredOffsetY = crouchBodyYOffset;
+
+        Vector3 desiredPos = thirdPersonBodyBaseLocalPosition + new Vector3(0f, desiredOffsetY, 0f);
+        if (isSliding)
+            thirdPersonBody.transform.localPosition = desiredPos;
+        else
+        {
             thirdPersonBody.transform.localPosition = Vector3.Lerp(
                 thirdPersonBody.transform.localPosition,
                 desiredPos,
                 stanceTransitionSpeed * Time.deltaTime);
-
-            // Rotate the model 90° forward when crawling so it actually lies
-            // flat instead of standing inside a half-height capsule. All other
-            // stances reset to the cached base rotation (set at body spawn).
-            Quaternion desiredRot = isProne
-                ? thirdPersonBodyBaseLocalRotation * Quaternion.Euler(-90f, 0f, 0f)
-                : thirdPersonBodyBaseLocalRotation;
-            thirdPersonBody.transform.localRotation = Quaternion.Slerp(
-                thirdPersonBody.transform.localRotation,
-                desiredRot,
-                stanceTransitionSpeed * Time.deltaTime);
         }
+
+        thirdPersonBody.transform.localRotation = isSliding
+            ? thirdPersonBodyBaseLocalRotation
+            : Quaternion.Slerp(
+                thirdPersonBody.transform.localRotation,
+                thirdPersonBodyBaseLocalRotation,
+                stanceTransitionSpeed * Time.deltaTime);
+    }
+
+    /// <summary>
+    /// Prone uses the Prone Idle animator pose only — no manual -90° pitch (that buried the mesh).
+    /// Visual Y offset is applied on the body child, not the CharacterController root.
+    /// </summary>
+    private void ApplyProneVisualPose()
+    {
+        float yOff = _tacticalActions != null
+            ? _tacticalActions.ProneVisualYOffset
+            : Mathf.Max(0f, proneCrawlBodyYOffset);
+
+        Vector3 desiredPos = thirdPersonBodyBaseLocalPosition + new Vector3(0f, yOff, 0f);
+        thirdPersonBody.transform.localPosition = desiredPos;
+        thirdPersonBody.transform.localRotation = thirdPersonBodyBaseLocalRotation;
+    }
+
+    private void RestoreProneVisualPose()
+    {
+        if (thirdPersonBody == null) return;
+        thirdPersonBody.transform.localPosition = thirdPersonBodyBaseLocalPosition;
+        thirdPersonBody.transform.localRotation = thirdPersonBodyBaseLocalRotation;
+    }
+
+    private void ClampLowProfileVisualMesh()
+    {
+        if (thirdPersonBody == null) return;
+
+        if (isProne)
+        {
+            float floorLocalY = thirdPersonBodyBaseLocalPosition.y
+                + (_tacticalActions != null ? _tacticalActions.ProneVisualYOffset : Mathf.Max(0f, proneCrawlBodyYOffset));
+            Vector3 lp = thirdPersonBody.transform.localPosition;
+            if (lp.y < floorLocalY)
+                thirdPersonBody.transform.localPosition = new Vector3(lp.x, floorLocalY, lp.z);
+            return;
+        }
+
+        float floorY = thirdPersonBodyBaseLocalPosition.y;
+        if (isSliding || isCrouching) floorY += crouchBodyYOffset;
+
+        Vector3 pos = thirdPersonBody.transform.localPosition;
+        if (pos.y < floorY)
+            thirdPersonBody.transform.localPosition = new Vector3(pos.x, floorY, pos.z);
     }
 
     private void ResetAttackState()
@@ -2545,6 +2797,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (!IsRemoteNetworkPlayer())
             return;
 
+        StanceTestController stanceTest = GetComponent<StanceTestController>();
+        if (stanceTest != null)
+            stanceTest.enabled = false;
+
+        LowProfileGroundDebugger groundDbg = GetComponent<LowProfileGroundDebugger>();
+        if (groundDbg != null)
+            groundDbg.enabled = false;
+
         if (firstPersonCam != null)
             firstPersonCam.gameObject.SetActive(false);
         if (runtimeThirdPersonCamera != null)
@@ -2719,8 +2979,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         // ── Bool params (Player Controller.controller style) ────────────────
         AnimSetBool(anim, "IsAttacking", isAttacking);
-        AnimSetBool(anim, "IsGrounded",  isGrounded);
+        AnimSetBool(anim, "IsGrounded",  isGrounded || IsGroundedForJump());
         AnimSetBool(anim, "IsSprinting", isSprinting);
+        AnimSetBool(anim, "IsProne", isProne);
+        AnimSetBool(anim, "IsSliding", isSliding);
 
         // ── Trigger params (CrosbyAnimator style) ───────────────────────────
         // Fire Attack trigger on the frame isAttacking becomes true.
@@ -2881,11 +3143,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private void SnapToArenaFloor()
     {
         if (controller == null) return;
-        // Only fix the case where the capsule bottom has sunk BELOW the physics
-        // surface. Normal falling is handled entirely by gravity in ApplyMovement.
-        if (!isGrounded) return;
-        // Also skip while the player has upward momentum from a normal jump.
-        if (verticalVelocity.y > 0.1f) return;
+        bool lowProfileGrounded = isProne || isSliding
+            || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
+        if (!isGrounded && !(lowProfileGrounded && IsGroundedForJump())) return;
+        if (verticalVelocity.y > 0.1f && !lowProfileGrounded) return;
 
         int groundMask = BuildGroundCheckMask();
         Vector3 origin = transform.position + Vector3.up * 0.3f;
@@ -2922,8 +3183,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (controller == null || !controller.enabled) return;
         if (isMantling) return;
-        if (!controller.isGrounded) return;
-        if (verticalVelocity.y > 0.05f) return; // jumping — don't clamp
+
+        bool lowProfile = isProne || isSliding
+            || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
+        if (!controller.isGrounded && !(lowProfile && IsGroundedForJump())) return;
+        if (verticalVelocity.y > 0.05f && !lowProfile) return;
 
         int groundMask = BuildGroundCheckMask();
         Vector3 probeOrigin = transform.position + Vector3.up * 0.3f;

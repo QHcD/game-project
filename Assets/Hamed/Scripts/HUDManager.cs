@@ -424,6 +424,7 @@ public class HUDManager : MonoBehaviour
                 EnsureFullMapOverlay(canvasObject.transform);
                 EnsureScoreboardOverlay(canvasObject.transform);
                 EnsurePlayerIdentityChip(canvasObject.transform);
+                EnsureScoreLabelPresentation(canvasObject.transform);
             }
             return;
         }
@@ -503,9 +504,10 @@ public class HUDManager : MonoBehaviour
             healthBar.targetGraphic = healthFillImage;
         }
 
-        scoreText ??= CreateText(topBar.transform, "ScoreText",
-            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(205f, -2f), new Vector2(380f, 44f),
+        scoreText ??= CreateText(canvasObject.transform, "ScoreText",
+            new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(218f, -36f), new Vector2(380f, 44f),
             34f, FontStyles.Bold, TextAlignmentOptions.Left);
+        EnsureScoreLabelPresentation(canvasObject.transform);
 
         levelText ??= CreateText(topBar.transform, "LevelText",
             new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 22f), new Vector2(320f, 40f),
@@ -595,6 +597,60 @@ public class HUDManager : MonoBehaviour
                 healthText.font = prismFont;
             if (healthText.color.a < 0.05f)
                 healthText.color = Color.white;
+        }
+    }
+
+    /// <summary>
+    /// SCORE label only: no panel/Image behind the text (TopBar bg must not sit under it).
+    /// </summary>
+    private void EnsureScoreLabelPresentation(Transform hudCanvas)
+    {
+        if (scoreText == null || hudCanvas == null)
+            return;
+
+        Image labelBg = scoreText.GetComponent<Image>();
+        if (labelBg != null)
+            labelBg.enabled = false;
+
+        for (int i = 0; i < scoreText.transform.childCount; i++)
+        {
+            Image childImg = scoreText.transform.GetChild(i).GetComponent<Image>();
+            if (childImg != null)
+                childImg.enabled = false;
+        }
+
+        string[] legacyBgNames = { "ScoreTextBackground", "ScoreBackground", "Background" };
+        for (int n = 0; n < legacyBgNames.Length; n++)
+        {
+            Transform legacy = hudCanvas.Find("TopBar/" + legacyBgNames[n]);
+            if (legacy == null)
+                legacy = hudCanvas.Find(legacyBgNames[n]);
+            if (legacy == null)
+                continue;
+
+            Image legacyImg = legacy.GetComponent<Image>();
+            if (legacyImg != null)
+            {
+                legacyImg.enabled = false;
+                legacyImg.raycastTarget = false;
+            }
+        }
+
+        Transform parent = scoreText.transform.parent;
+        if (parent != null && parent.name == "TopBar")
+        {
+            RectTransform rect = scoreText.rectTransform;
+            Vector2 size = rect.sizeDelta;
+            int sibling = scoreText.transform.GetSiblingIndex();
+
+            scoreText.transform.SetParent(hudCanvas, false);
+
+            rect.anchorMin = new Vector2(0f, 1f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = new Vector2(218f, -36f);
+            rect.sizeDelta = size.sqrMagnitude > 1f ? size : new Vector2(380f, 44f);
+            scoreText.transform.SetSiblingIndex(Mathf.Min(sibling, hudCanvas.childCount - 1));
         }
     }
 

@@ -59,8 +59,29 @@ public class LevelBuilder : MonoBehaviour
     public float minEnemyToPlayerDistance = 12f;
     [Tooltip("Logs spawn spacing validation when enabled.")]
     public bool debugSpawnSpacing = false;
+    [Tooltip("Logs zone/tier per enemy spawn and draws zone gizmos when enabled.")]
+    public bool debugEnemySpawnDistribution = false;
 
     private const float MinEnemySpawnHardFloor = 2f;
+    private const float MaxNavSnapHorizontalDrift = 14f;
+    private const int MaxEnemiesPerSpawnZone = 2;
+    private const int SpawnZoneCount = 9;
+
+    private sealed class EnemySpawnZone
+    {
+        public readonly string Name;
+        public readonly System.Collections.Generic.List<Vector3> Anchors;
+
+        public EnemySpawnZone(string name)
+        {
+            Name = name;
+            Anchors = new System.Collections.Generic.List<Vector3>(24);
+        }
+    }
+
+#if UNITY_EDITOR
+    private static EnemySpawnZone[] _gizmoSpawnZones;
+#endif
 
     // Public accessor so scene-local fallback can reach us.
     public static LevelBuilder Instance => instance;
@@ -841,61 +862,58 @@ public class LevelBuilder : MonoBehaviour
     // ════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// Arena anchors: legacy grid + rings + cardinals so spawns rotate around the map.
+    /// Nine arena zones (N/S/E/W, corners, center) with anchors spread across
+    /// most of the 160×160 industrial arena — not clustered near origin.
     /// </summary>
-    /// <summary>
-    /// Anchors interleaved by zone (N, S, E, W, Center, NE, NW, SE, SW) so the
-    /// caller can simply index by enemyIndex and get strict round-robin
-    /// distribution across the arena. Prior implementation built rings
-    /// sequentially which let pseudo-random anchor hashing cluster enemies in
-    /// one quadrant; round-robin interleaving guarantees North/South/East/West
-    /// always receive a spawn before any zone gets a second one.
-    /// </summary>
-    private static System.Collections.Generic.List<Vector3> BuildDistributedArenaAnchors()
+    private static EnemySpawnZone[] BuildEnemySpawnZones(out System.Collections.Generic.List<Vector3> flatAnchors)
     {
         const float y = 0.01f;
-        // Per-zone candidate sets, each densified at multiple radii so any one
-        // zone has plenty of fallback anchors if the first NavMesh sample fails.
-        var north  = new System.Collections.Generic.List<Vector3>();
-        var south  = new System.Collections.Generic.List<Vector3>();
-        var east   = new System.Collections.Generic.List<Vector3>();
-        var west   = new System.Collections.Generic.List<Vector3>();
-        var center = new System.Collections.Generic.List<Vector3>();
-        var ne     = new System.Collections.Generic.List<Vector3>();
-        var nw     = new System.Collections.Generic.List<Vector3>();
-        var se     = new System.Collections.Generic.List<Vector3>();
-        var sw     = new System.Collections.Generic.List<Vector3>();
+        float arenaR = ArenaHalfSize * 0.82f;
 
-        float[] cardinalRadii = { 14f, 20f, 26f, 32f };
+        var north  = new EnemySpawnZone("North");
+        var south  = new EnemySpawnZone("South");
+        var east   = new EnemySpawnZone("East");
+        var west   = new EnemySpawnZone("West");
+        var ne     = new EnemySpawnZone("NE");
+        var nw     = new EnemySpawnZone("NW");
+        var se     = new EnemySpawnZone("SE");
+        var sw     = new EnemySpawnZone("SW");
+        var center = new EnemySpawnZone("Center");
+
+        float[] cardinalRadii =
+        {
+            arenaR * 0.42f,
+            arenaR * 0.62f,
+            arenaR * 0.82f,
+        };
         for (int i = 0; i < cardinalRadii.Length; i++)
         {
             float r = cardinalRadii[i];
-            north.Add(new Vector3(  0f, y,  r));
-            south.Add(new Vector3(  0f, y, -r));
-            east .Add(new Vector3(  r, y,  0f));
-            west .Add(new Vector3( -r, y,  0f));
-            // Slight lateral spread per radius so we don't stack on the axis line.
-            north.Add(new Vector3( -r * 0.35f, y, r));
-            north.Add(new Vector3(  r * 0.35f, y, r));
-            south.Add(new Vector3( -r * 0.35f, y, -r));
-            south.Add(new Vector3(  r * 0.35f, y, -r));
-            east .Add(new Vector3(  r, y, -r * 0.35f));
-            east .Add(new Vector3(  r, y,  r * 0.35f));
-            west .Add(new Vector3( -r, y, -r * 0.35f));
-            west .Add(new Vector3( -r, y,  r * 0.35f));
+            north.Anchors.Add(new Vector3(  0f, y,  r));
+            south.Anchors.Add(new Vector3(  0f, y, -r));
+            east .Anchors.Add(new Vector3(  r, y,  0f));
+            west .Anchors.Add(new Vector3( -r, y,  0f));
+            north.Anchors.Add(new Vector3( -r * 0.35f, y, r));
+            north.Anchors.Add(new Vector3(  r * 0.35f, y, r));
+            south.Anchors.Add(new Vector3( -r * 0.35f, y, -r));
+            south.Anchors.Add(new Vector3(  r * 0.35f, y, -r));
+            east .Anchors.Add(new Vector3(  r, y, -r * 0.35f));
+            east .Anchors.Add(new Vector3(  r, y,  r * 0.35f));
+            west .Anchors.Add(new Vector3( -r, y, -r * 0.35f));
+            west .Anchors.Add(new Vector3( -r, y,  r * 0.35f));
         }
 
-        float[] cornerRadii = { 18f, 26f, 32f };
+        float[] cornerRadii = { arenaR * 0.48f, arenaR * 0.68f, arenaR * 0.82f };
         for (int i = 0; i < cornerRadii.Length; i++)
         {
-            float r = cornerRadii[i] * 0.7071f; // diagonal projection
-            ne.Add(new Vector3(  r, y,  r));
-            nw.Add(new Vector3( -r, y,  r));
-            se.Add(new Vector3(  r, y, -r));
-            sw.Add(new Vector3( -r, y, -r));
+            float r = cornerRadii[i] * 0.7071f;
+            ne.Anchors.Add(new Vector3(  r, y,  r));
+            nw.Anchors.Add(new Vector3( -r, y,  r));
+            se.Anchors.Add(new Vector3(  r, y, -r));
+            sw.Anchors.Add(new Vector3( -r, y, -r));
         }
 
-        float[] centerRadii = { 6f, 10f };
+        float[] centerRadii = { arenaR * 0.18f, arenaR * 0.30f };
         const int centerSegments = 8;
         for (int i = 0; i < centerRadii.Length; i++)
         {
@@ -903,27 +921,81 @@ public class LevelBuilder : MonoBehaviour
             for (int s = 0; s < centerSegments; s++)
             {
                 float ang = (s / (float)centerSegments) * Mathf.PI * 2f;
-                center.Add(new Vector3(Mathf.Cos(ang) * r, y, Mathf.Sin(ang) * r));
+                center.Anchors.Add(new Vector3(Mathf.Cos(ang) * r, y, Mathf.Sin(ang) * r));
             }
         }
 
-        // Strict round-robin merge: cardinal zones first (highest priority for
-        // distribution), then corners, then center.
-        var zones = new System.Collections.Generic.List<System.Collections.Generic.List<Vector3>>
+        EnemySpawnZone[] zoneArray =
         {
             north, south, east, west, ne, nw, se, sw, center
         };
-        var anchors = new System.Collections.Generic.List<Vector3>(160);
+
+        flatAnchors = new System.Collections.Generic.List<Vector3>(160);
         int maxLen = 0;
-        for (int i = 0; i < zones.Count; i++) maxLen = Mathf.Max(maxLen, zones[i].Count);
+        for (int i = 0; i < zoneArray.Length; i++)
+            maxLen = Mathf.Max(maxLen, zoneArray[i].Anchors.Count);
         for (int row = 0; row < maxLen; row++)
         {
-            for (int z = 0; z < zones.Count; z++)
+            for (int z = 0; z < zoneArray.Length; z++)
             {
-                if (row < zones[z].Count) anchors.Add(zones[z][row]);
+                if (row < zoneArray[z].Anchors.Count)
+                    flatAnchors.Add(zoneArray[z].Anchors[row]);
             }
         }
-        return anchors;
+
+#if UNITY_EDITOR
+        _gizmoSpawnZones = zoneArray;
+#endif
+        return zoneArray;
+    }
+
+    private static System.Collections.Generic.List<Vector3> BuildDistributedArenaAnchors()
+    {
+        BuildEnemySpawnZones(out System.Collections.Generic.List<Vector3> flat);
+        return flat;
+    }
+
+    private static bool AllSpawnZonesAtCapacity(int[] zoneCounts)
+    {
+        if (zoneCounts == null || zoneCounts.Length < SpawnZoneCount)
+            return false;
+        for (int i = 0; i < SpawnZoneCount; i++)
+        {
+            if (zoneCounts[i] < MaxEnemiesPerSpawnZone)
+                return false;
+        }
+        return true;
+    }
+
+    private static bool TrySampleNavMeshPreservingAnchor(Vector3 anchor, float maxHorizontalDrift, out Vector3 result)
+    {
+        result = default;
+        float maxDriftSq = maxHorizontalDrift * maxHorizontalDrift;
+        Vector2 anchorXZ = new Vector2(anchor.x, anchor.z);
+        float[] sampleRadii = { 1.5f, 4f, 8f, 14f, 22f };
+
+        for (int i = 0; i < sampleRadii.Length; i++)
+        {
+            Vector3 probe = anchor + Vector3.up * 0.5f;
+            if (!NavMesh.SamplePosition(probe, out NavMeshHit hit, sampleRadii[i], NavMesh.AllAreas))
+                continue;
+
+            Vector2 hitXZ = new Vector2(hit.position.x, hit.position.z);
+            if ((hitXZ - anchorXZ).sqrMagnitude <= maxDriftSq)
+            {
+                result = hit.position;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static float HorizontalDistance(Vector3 a, Vector3 b)
+    {
+        a.y = 0f;
+        b.y = 0f;
+        return Vector3.Distance(a, b);
     }
 
     private static bool PassesEnemySeparationSq(Vector3 candidate, System.Collections.Generic.List<Vector3> placed, float minSepSqr)
@@ -958,67 +1030,116 @@ public class LevelBuilder : MonoBehaviour
         return path.status == NavMeshPathStatus.PathComplete;
     }
 
+    private bool TryEvaluateEnemySpawnCandidate(
+        Vector3 playerNavPos,
+        Vector3 cand,
+        System.Collections.Generic.List<Vector3> placedSoFar,
+        float minSepSqr,
+        float playerMinSq,
+        NavMeshPath path,
+        bool requirePathFromPlayer,
+        bool requirePlayerMinDistance)
+    {
+        if (requirePlayerMinDistance && playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
+            return false;
+        if (!PassesEnemySeparationSq(cand, placedSoFar, minSepSqr))
+            return false;
+        if (requirePathFromPlayer && !HasPathCompleteFromPlayer(playerNavPos, cand, path))
+            return false;
+        return true;
+    }
+
+    private bool TryPickEnemySpawnInZone(
+        EnemySpawnZone zone,
+        int zoneIndex,
+        int[] zoneCounts,
+        Vector3 playerNavPos,
+        System.Collections.Generic.List<Vector3> placedSoFar,
+        NavMeshPath path,
+        int enemyIndex,
+        float minSepSqr,
+        float playerMinSq,
+        bool tierA,
+        out Vector3 spawnWorld)
+    {
+        spawnWorld = default;
+        bool allZonesFull = AllSpawnZonesAtCapacity(zoneCounts);
+        if (!allZonesFull && zoneCounts[zoneIndex] >= MaxEnemiesPerSpawnZone)
+            return false;
+
+        bool requirePath = tierA;
+        bool requirePlayerDist = true;
+
+        for (int a = 0; a < zone.Anchors.Count; a++)
+        {
+            Vector3 anchor = zone.Anchors[(enemyIndex + a) % zone.Anchors.Count];
+            Vector3 open = FindOpenEnemySpawnAtPreferred(anchor, enemyIndex + a);
+            if (!TrySampleNavMeshPreservingAnchor(open, MaxNavSnapHorizontalDrift, out Vector3 cand))
+                continue;
+
+            if (!TryEvaluateEnemySpawnCandidate(playerNavPos, cand, placedSoFar, minSepSqr, playerMinSq,
+                    path, requirePath, requirePlayerDist))
+                continue;
+
+            spawnWorld = cand;
+            zoneCounts[zoneIndex]++;
+            return true;
+        }
+
+        return false;
+    }
+
     /// <summary>
-    /// Picks an open spawn with spacing + NavMesh PathComplete from player. Tier 1: minEnemySpawnSpacing; tier 2: 2 m floor.
+    /// Zone-first spawn: each enemy tries a different arena zone before any zone
+    /// gets a third occupant. Tier A enforces spacing + player distance + path.
+    /// Tier B relaxes spacing to the hard floor but keeps zone caps.
     /// </summary>
     private bool TryPickEnemySpawnPosition(
         Vector3 playerNavPos,
         Vector3 rawPlayerPos,
         System.Collections.Generic.List<Vector3> placedSoFar,
-        System.Collections.Generic.List<Vector3> anchors,
+        EnemySpawnZone[] zones,
+        int[] zoneCounts,
         NavMeshPath path,
         int enemyIndex,
-        out Vector3 spawnWorld)
+        out Vector3 spawnWorld,
+        out string usedZone,
+        out string spawnTier)
     {
         spawnWorld = default;
+        usedZone = "Unknown";
+        spawnTier = "None";
+
+        if (zones == null || zones.Length == 0)
+            return false;
 
         float primary = Mathf.Max(MinEnemySpawnHardFloor, minEnemySpawnSpacing);
         float primarySq = primary * primary;
         float playerMinSq = Mathf.Max(0f, minEnemyToPlayerDistance) * Mathf.Max(0f, minEnemyToPlayerDistance);
-        const int attemptsTierA = 48;
+        float fallbackSq = MinEnemySpawnHardFloor * MinEnemySpawnHardFloor;
 
-        for (int a = 0; a < attemptsTierA; a++)
+        for (int z = 0; z < zones.Length; z++)
         {
-            // Tier A: walk the round-robin anchor list starting at this
-            // enemy's slot, so consecutive enemies always start in different
-            // zones (N → S → E → W → corners → center → ...).
-            Vector3 anchor = anchors[(enemyIndex + a) % anchors.Count];
-            Vector3 open = FindOpenEnemySpawn(anchor, enemyIndex + a, rawPlayerPos);
-            Vector3 cand = ResolveAgentSpawnPosition(open);
-            if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 3f, NavMesh.AllAreas))
-                continue;
-            cand = hit.position;
-
-            if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
-                continue;
-            if (!PassesEnemySeparationSq(cand, placedSoFar, primarySq))
-                continue;
-            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
-                continue;
-
-            spawnWorld = cand;
-            return true;
+            int zoneIndex = (enemyIndex + z) % zones.Length;
+            if (TryPickEnemySpawnInZone(zones[zoneIndex], zoneIndex, zoneCounts, playerNavPos, placedSoFar,
+                    path, enemyIndex, primarySq, playerMinSq, tierA: true, out spawnWorld))
+            {
+                usedZone = zones[zoneIndex].Name;
+                spawnTier = "TierA";
+                return true;
+            }
         }
 
-        float fallbackSq = MinEnemySpawnHardFloor * MinEnemySpawnHardFloor;
-        const int attemptsTierB = 40;
-
-        for (int a = 0; a < attemptsTierB; a++)
+        for (int z = 0; z < zones.Length; z++)
         {
-            Vector3 anchor = anchors[(enemyIndex * 19 + a * 11) % anchors.Count];
-            Vector3 open = FindOpenEnemySpawn(anchor, enemyIndex * 3 + a, rawPlayerPos);
-            Vector3 cand = ResolveAgentSpawnPosition(open);
-            if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 3f, NavMesh.AllAreas))
-                continue;
-            cand = hit.position;
-
-            if (!PassesEnemySeparationSq(cand, placedSoFar, fallbackSq))
-                continue;
-            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
-                continue;
-
-            spawnWorld = cand;
-            return true;
+            int zoneIndex = (enemyIndex * 3 + z) % zones.Length;
+            if (TryPickEnemySpawnInZone(zones[zoneIndex], zoneIndex, zoneCounts, playerNavPos, placedSoFar,
+                    path, enemyIndex, fallbackSq, playerMinSq, tierA: false, out spawnWorld))
+            {
+                usedZone = zones[zoneIndex].Name;
+                spawnTier = "TierB";
+                return true;
+            }
         }
 
         return false;
@@ -1028,79 +1149,91 @@ public class LevelBuilder : MonoBehaviour
         Vector3 playerNavPos,
         Vector3 rawPlayerPos,
         System.Collections.Generic.List<Vector3> placed,
-        System.Collections.Generic.List<Vector3> anchors,
+        EnemySpawnZone[] zones,
+        System.Collections.Generic.List<Vector3> flatAnchors,
         NavMeshPath path,
-        int enemyIndex)
+        int enemyIndex,
+        out string usedZone)
     {
+        usedZone = "Emergency";
         float fallbackSq = MinEnemySpawnHardFloor * MinEnemySpawnHardFloor;
+        float playerMinSq = Mathf.Max(0f, minEnemyToPlayerDistance) * Mathf.Max(0f, minEnemyToPlayerDistance);
+        float arenaR = ArenaHalfSize * 0.82f;
 
-        for (int attempt = 0; attempt < 90; attempt++)
+        if (zones != null)
         {
-            Vector3 jitter = Random.insideUnitSphere * (3f + attempt * 0.2f);
-            jitter.y = 0f;
-            Vector3 seed = anchors[(enemyIndex + attempt * 5) % anchors.Count] + jitter;
-            Vector3 open = FindOpenEnemySpawn(seed, enemyIndex + attempt, rawPlayerPos);
-            Vector3 cand = ResolveAgentSpawnPosition(open);
-            if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 14f, NavMesh.AllAreas))
-                continue;
-            cand = hit.position;
-
-            if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
-                continue;
-            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
-                continue;
-
-            return cand;
-        }
-
-        for (int attempt = 0; attempt < 100; attempt++)
-        {
-            float ang = Random.Range(0f, Mathf.PI * 2f);
-            float rad = Random.Range(8f, 36f);
-            Vector3 probe = new Vector3(Mathf.Cos(ang) * rad, 0.01f, Mathf.Sin(ang) * rad);
-            if (!NavMesh.SamplePosition(probe, out NavMeshHit hit, 20f, NavMesh.AllAreas))
-                continue;
-            Vector3 cand = hit.position;
-
-            if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
-                continue;
-            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
-                continue;
-
-            return cand;
-        }
-
-        // Exhaust anchors with small jitter — still requires PathComplete + ≥ 2 m separation.
-        for (int ai = 0; ai < anchors.Count; ai++)
-        {
-            for (int jitterPass = 0; jitterPass < 6; jitterPass++)
+            for (int attempt = 0; attempt < 120; attempt++)
             {
-                Vector3 jitter = Random.insideUnitSphere * (1.5f + jitterPass * 0.8f);
+                int zoneIndex = (enemyIndex + attempt) % zones.Length;
+                EnemySpawnZone zone = zones[zoneIndex];
+                if (zone.Anchors.Count == 0) continue;
+
+                Vector3 jitter = Random.insideUnitSphere * (4f + attempt * 0.15f);
                 jitter.y = 0f;
-                Vector3 seed = anchors[ai] + jitter;
-                Vector3 open = FindOpenEnemySpawn(seed, enemyIndex + ai + jitterPass, rawPlayerPos);
-                Vector3 cand = ResolveAgentSpawnPosition(open);
-                if (!NavMesh.SamplePosition(cand, out NavMeshHit hit, 18f, NavMesh.AllAreas))
+                Vector3 seed = zone.Anchors[(enemyIndex + attempt * 3) % zone.Anchors.Count] + jitter;
+                Vector3 open = FindOpenEnemySpawnAtPreferred(seed, enemyIndex + attempt);
+                float drift = Mathf.Min(24f, MaxNavSnapHorizontalDrift + attempt * 0.12f);
+                if (!TrySampleNavMeshPreservingAnchor(open, drift, out Vector3 cand))
                     continue;
-                cand = hit.position;
 
                 if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
+                    continue;
+                if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
                     continue;
                 if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
                     continue;
 
+                usedZone = zone.Name + "_Emergency";
                 return cand;
             }
         }
 
-        Vector3 last = ResolveAgentSpawnPosition(FindOpenEnemySpawn(anchors[0], enemyIndex, rawPlayerPos));
-        if (NavMesh.SamplePosition(last, out NavMeshHit fh, 25f, NavMesh.AllAreas))
-            last = fh.position;
+        for (int attempt = 0; attempt < 80; attempt++)
+        {
+            float ang = Random.Range(0f, Mathf.PI * 2f);
+            float rad = Random.Range(arenaR * 0.35f, arenaR * 0.95f);
+            Vector3 probe = new Vector3(Mathf.Cos(ang) * rad, 0.01f, Mathf.Sin(ang) * rad);
+            if (!TrySampleNavMeshPreservingAnchor(probe, MaxNavSnapHorizontalDrift, out Vector3 cand))
+                continue;
+
+            if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
+                continue;
+            if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
+                continue;
+            if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
+                continue;
+
+            usedZone = "ArenaRing_Emergency";
+            return cand;
+        }
+
+        if (flatAnchors != null && flatAnchors.Count > 0)
+        {
+            for (int ai = 0; ai < flatAnchors.Count; ai++)
+            {
+                Vector3 seed = flatAnchors[(enemyIndex + ai) % flatAnchors.Count];
+                if (!TrySampleNavMeshPreservingAnchor(seed, MaxNavSnapHorizontalDrift * 1.5f, out Vector3 cand))
+                    continue;
+                if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
+                    continue;
+
+                usedZone = "AnchorSnap_Emergency";
+                Debug.LogWarning(
+                    $"[LevelBuilder] Enemy spawn emergency fallback (spacing only) index={enemyIndex} pos={cand}",
+                    this);
+                return cand;
+            }
+        }
+
+        Vector3 last = SafeFallbackSpawn;
+        if (flatAnchors != null && flatAnchors.Count > 0 &&
+            TrySampleNavMeshPreservingAnchor(flatAnchors[enemyIndex % flatAnchors.Count],
+                MaxNavSnapHorizontalDrift * 2f, out Vector3 snapped))
+            last = snapped;
 
         Debug.LogWarning(
-            $"[LevelBuilder] Enemy spawn emergency fallback (spacing/path not guaranteed) index={enemyIndex}",
+            $"[LevelBuilder] Enemy spawn LAST-RESORT fallback index={enemyIndex} pos={last}",
             this);
-
         return last;
     }
 
@@ -1123,15 +1256,17 @@ public class LevelBuilder : MonoBehaviour
         // Try loading the Crosby enemy model
         GameObject enemyPrefab = Resources.Load<GameObject>("Enemy/Crosby");
 
-        var arenaAnchors = BuildDistributedArenaAnchors();
+        EnemySpawnZone[] spawnZones = BuildEnemySpawnZones(out System.Collections.Generic.List<Vector3> arenaAnchors);
+        int[] zoneCounts = new int[SpawnZoneCount];
         NavMeshPath spawnPath = new NavMeshPath();
         var placedPositions = new System.Collections.Generic.List<Vector3>(enemyCount);
 
         for (int i = 0; i < enemyCount; i++)
         {
-            // Round-robin: enemy i starts in zone (i mod zoneCount). The full
-            // candidate validation happens in TryPickEnemySpawnPosition below.
-            Vector3 spawnPos = arenaAnchors[i % arenaAnchors.Count];
+            int startZone = i % SpawnZoneCount;
+            Vector3 spawnPos = spawnZones[startZone].Anchors.Count > 0
+                ? spawnZones[startZone].Anchors[0]
+                : arenaAnchors[i % arenaAnchors.Count];
             GameObject enemyObject;
 
             if (enemyPrefab != null)
@@ -1171,11 +1306,20 @@ public class LevelBuilder : MonoBehaviour
             enemyObject.tag = "Enemy";
             SetLayerRecursive(enemyObject, ResolveHittableLayer());
 
+            string spawnZoneName = "Unknown";
+            string spawnTier = "Emergency";
             Vector3 agentSpawn;
-            if (!TryPickEnemySpawnPosition(playerNavPos, playerPos, placedPositions, arenaAnchors,
-                    spawnPath, i, out agentSpawn))
-                agentSpawn = EmergencyEnemySpawn(playerNavPos, playerPos, placedPositions, arenaAnchors,
-                    spawnPath, i);
+            if (TryPickEnemySpawnPosition(playerNavPos, playerPos, placedPositions, spawnZones, zoneCounts,
+                    spawnPath, i, out agentSpawn, out spawnZoneName, out spawnTier))
+            {
+                // picked
+            }
+            else
+            {
+                agentSpawn = EmergencyEnemySpawn(playerNavPos, playerPos, placedPositions, spawnZones,
+                    arenaAnchors, spawnPath, i, out spawnZoneName);
+                spawnTier = "Emergency";
+            }
 
             enemyObject.transform.position = agentSpawn;
 
@@ -1234,7 +1378,7 @@ public class LevelBuilder : MonoBehaviour
             // Snap the agent onto the nearest NavMesh position before it begins moving.
             enemyObject.transform.position = agentSpawn;
             agent.enabled = true;
-            PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn);
+            PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn, agentSpawn);
 
             Vector3 finalPos = enemyObject.transform.position;
             float distanceToNearest = DistanceToNearestPlaced(finalPos, placedPositions);
@@ -1244,6 +1388,15 @@ public class LevelBuilder : MonoBehaviour
             {
                 Debug.Log(
                     $"[SpawnSpacing] enemy={enemyObject.name} pos={finalPos} distanceToNearest={distanceToNearest}");
+            }
+
+            if (debugEnemySpawnDistribution)
+            {
+                float distPlayer = HorizontalDistance(finalPos, playerPos);
+                Debug.Log(
+                    $"[EnemySpawn] enemy={enemyObject.name} zone={spawnZoneName} tier={spawnTier} " +
+                    $"pos={finalPos} distPlayer={distPlayer:F1} distNearestEnemy=" +
+                    $"{(distanceToNearest < 0f ? -1f : distanceToNearest):F1}");
             }
 
             // Attach the same melee weapon the player is using
@@ -1266,7 +1419,7 @@ public class LevelBuilder : MonoBehaviour
         // NavMesh island (sealed room baked separately, locked building) the
         // player can never reach it; relocate it to a candidate point that is
         // reachable, on the NavMesh, and clear of other enemies.
-        ValidateEnemyReachability(spawnedEnemies, playerPos, arenaAnchors);
+        ValidateEnemyReachability(spawnedEnemies, playerPos, arenaAnchors, spawnZones);
 
         // ── Issue #5: register the authoritative count with GameManager ──────
         // InitializeEnemyCount() sets BOTH enemiesRemaining AND totalEnemiesSpawned
@@ -1280,22 +1433,23 @@ public class LevelBuilder : MonoBehaviour
     /// pathing. Enemies stuck on a disconnected NavMesh island are relocated
     /// to a reachable candidate ≥ 2 m from the player and other enemies.
     /// </summary>
-    private static void ValidateEnemyReachability(
+    private void ValidateEnemyReachability(
         System.Collections.Generic.List<GameObject> enemies,
         Vector3 playerPos,
-        System.Collections.Generic.List<Vector3> candidatePool)
+        System.Collections.Generic.List<Vector3> candidatePool,
+        EnemySpawnZone[] zones)
     {
         if (enemies == null || enemies.Count == 0) return;
 
-        // Sanity-check the player's position is on the NavMesh — otherwise
-        // CalculatePath always fails and we'd relocate everything pointlessly.
         if (!NavMesh.SamplePosition(playerPos, out NavMeshHit playerHit, 6f, NavMesh.AllAreas))
             return;
         Vector3 fromPos = playerHit.position;
 
         NavMeshPath path = new NavMeshPath();
-        const float minSeparation = 2f;
-        const float minSepSqr     = minSeparation * minSeparation;
+        float minSeparation = Mathf.Max(MinEnemySpawnHardFloor, minEnemySpawnSpacing);
+        float minSepSqr = minSeparation * minSeparation;
+
+        var sortedCandidates = BuildReachabilityCandidatesFarthestFirst(candidatePool, zones, fromPos);
 
         for (int i = 0; i < enemies.Count; i++)
         {
@@ -1306,14 +1460,52 @@ public class LevelBuilder : MonoBehaviour
             if (IsReachable(fromPos, enemyPos, path)) continue;
 
             Vector3 newPos;
-            if (!FindReachableRelocation(fromPos, enemy, enemies, candidatePool,
-                                         minSepSqr, path, out newPos))
-                continue; // No safe spot found — leave enemy where it is.
+            if (!FindReachableRelocation(fromPos, enemy, enemies, sortedCandidates,
+                    minSepSqr, path, out newPos))
+            {
+                if (debugEnemySpawnDistribution)
+                {
+                    Debug.LogWarning(
+                        $"[SpawnValidation] enemy={enemy.name} unreachable — kept at {enemyPos} (no player-ring relocation)",
+                        this);
+                }
+                continue;
+            }
 
             NavMeshAgent agent = enemy.GetComponent<NavMeshAgent>();
-            PlaceAgentOnNavMesh(agent, enemy.transform, newPos);
-            Debug.Log($"[SpawnValidation] enemy={enemy.name} reachable=false action=moved newPos={enemy.transform.position}");
+            PlaceAgentOnNavMesh(agent, enemy.transform, newPos, enemyPos);
+            if (debugEnemySpawnDistribution)
+            {
+                Debug.Log(
+                    $"[SpawnValidation] enemy={enemy.name} reachable=false action=moved newPos={enemy.transform.position}");
+            }
         }
+    }
+
+    private static System.Collections.Generic.List<Vector3> BuildReachabilityCandidatesFarthestFirst(
+        System.Collections.Generic.List<Vector3> candidatePool,
+        EnemySpawnZone[] zones,
+        Vector3 playerNavPos)
+    {
+        var candidates = new System.Collections.Generic.List<Vector3>();
+        if (zones != null)
+        {
+            for (int z = 0; z < zones.Length; z++)
+                candidates.AddRange(zones[z].Anchors);
+        }
+        if (candidatePool != null)
+        {
+            for (int i = 0; i < candidatePool.Count; i++)
+                candidates.Add(candidatePool[i]);
+        }
+
+        candidates.Sort((a, b) =>
+        {
+            float da = HorizontalDistance(a, playerNavPos);
+            float db = HorizontalDistance(b, playerNavPos);
+            return db.CompareTo(da);
+        });
+        return candidates;
     }
 
     private static bool IsReachable(Vector3 from, Vector3 to, NavMeshPath path)
@@ -1334,34 +1526,22 @@ public class LevelBuilder : MonoBehaviour
         Vector3 fromPos,
         GameObject enemy,
         System.Collections.Generic.List<GameObject> allEnemies,
-        System.Collections.Generic.List<Vector3> candidatePool,
+        System.Collections.Generic.List<Vector3> candidates,
         float minSepSqr,
         NavMeshPath path,
         out Vector3 result)
     {
-        // Build the candidate set: original spawn pool first (open arena), then
-        // a ring around the player so we always have something to fall back to.
-        var candidates = new System.Collections.Generic.List<Vector3>();
-        if (candidatePool != null) candidates.AddRange(candidatePool);
-        const int ringSamples = 12;
-        for (int s = 0; s < ringSamples; s++)
+        if (candidates == null || candidates.Count == 0)
         {
-            float ang = (s / (float)ringSamples) * Mathf.PI * 2f;
-            for (float r = 6f; r <= 18f; r += 4f)
-            {
-                candidates.Add(new Vector3(
-                    fromPos.x + Mathf.Cos(ang) * r,
-                    fromPos.y,
-                    fromPos.z + Mathf.Sin(ang) * r));
-            }
+            result = Vector3.zero;
+            return false;
         }
 
         for (int c = 0; c < candidates.Count; c++)
         {
-            if (!NavMesh.SamplePosition(candidates[c], out NavMeshHit hit, 4f, NavMesh.AllAreas))
+            if (!TrySampleNavMeshPreservingAnchor(candidates[c], MaxNavSnapHorizontalDrift * 1.25f, out Vector3 p))
                 continue;
 
-            Vector3 p = hit.position;
             if ((p - fromPos).sqrMagnitude < minSepSqr) continue;
 
             bool tooCloseToOther = false;
@@ -1369,7 +1549,9 @@ public class LevelBuilder : MonoBehaviour
             {
                 GameObject other = allEnemies[j];
                 if (other == null || other == enemy) continue;
-                if ((other.transform.position - p).sqrMagnitude < minSepSqr)
+                Vector3 d = other.transform.position - p;
+                d.y = 0f;
+                if (d.sqrMagnitude < minSepSqr)
                 { tooCloseToOther = true; break; }
             }
             if (tooCloseToOther) continue;
@@ -2254,29 +2436,12 @@ public class LevelBuilder : MonoBehaviour
     /// Finds an open spawn point for enemies. Same logic but with a wider set
     /// of candidates around the given position.
     /// </summary>
-    private static Vector3 FindOpenEnemySpawn(Vector3 preferred, int index, Vector3 playerPosition)
+    /// <summary>
+    /// Finds an outdoor spawn near the arena anchor. Does not filter by player
+    /// distance (that is enforced later in TryPickEnemySpawnPosition).
+    /// </summary>
+    private static Vector3 FindOpenEnemySpawnAtPreferred(Vector3 preferred, int index)
     {
-        float[] minClearMeters = { 15f, 11f, 7f, 4f, 0f };
-
-        for (int tier = 0; tier < minClearMeters.Length; tier++)
-        {
-            if (TryFindEnemySpawnWithHorizontalClearance(preferred, playerPosition, minClearMeters[tier], out Vector3 found))
-                return found;
-        }
-
-        NavMeshHit fallbackHit;
-        if (NavMesh.SamplePosition(preferred + Vector3.up * 0.5f, out fallbackHit, 5f, NavMesh.AllAreas))
-            return fallbackHit.position + Vector3.up * 0.1f;
-
-        return new Vector3(preferred.x, 0.1f, preferred.z);
-    }
-
-    private static bool TryFindEnemySpawnWithHorizontalClearance(
-        Vector3 preferred, Vector3 playerPosition, float minHorizontal, out Vector3 result)
-    {
-        result = default;
-        float minSq = minHorizontal * minHorizontal;
-
         Vector3[] offsets =
         {
             Vector3.zero,
@@ -2288,28 +2453,21 @@ public class LevelBuilder : MonoBehaviour
             new Vector3( 0f, 0f,  6f), new Vector3( 0f, 0f, -6f),
             new Vector3( 3f, 0f,  3f), new Vector3(-3f, 0f, -3f),
             new Vector3( 3f, 0f, -3f), new Vector3(-3f, 0f,  3f),
-            new Vector3( 5f, 0f,  5f), new Vector3(-5f, 0f, -5f),
             new Vector3( 8f, 0f,  0f), new Vector3(-8f, 0f,  0f),
             new Vector3( 0f, 0f,  8f), new Vector3( 0f, 0f, -8f),
         };
         Shuffle(offsets);
 
-        Vector2 pXZ = new Vector2(playerPosition.x, playerPosition.z);
-
-        foreach (Vector3 offset in offsets)
+        for (int i = 0; i < offsets.Length; i++)
         {
-            if (!IsOpenSpawnPoint(preferred + offset, out Vector3 offsetPos))
-                continue;
-
-            Vector2 eXZ = new Vector2(offsetPos.x, offsetPos.z);
-            if ((eXZ - pXZ).sqrMagnitude >= minSq)
-            {
-                result = offsetPos;
-                return true;
-            }
+            if (IsOpenSpawnPoint(preferred + offsets[i], out Vector3 offsetPos))
+                return offsetPos;
         }
 
-        return false;
+        if (TrySampleNavMeshPreservingAnchor(preferred, MaxNavSnapHorizontalDrift, out Vector3 snapped))
+            return snapped;
+
+        return preferred;
     }
 
     // Progressive search radii — each step doubles the previous.
@@ -2331,7 +2489,8 @@ public class LevelBuilder : MonoBehaviour
         return new Vector3(preferred.x, preferred.y + 0.2f, preferred.z);
     }
 
-    private static void PlaceAgentOnNavMesh(NavMeshAgent agent, Transform target, Vector3 spawnPosition)
+    private static void PlaceAgentOnNavMesh(NavMeshAgent agent, Transform target, Vector3 spawnPosition,
+        Vector3 snapAnchor = default)
     {
         if (target == null) return;
 
@@ -2341,28 +2500,46 @@ public class LevelBuilder : MonoBehaviour
             return;
         }
 
-        // 1. Disable agent before moving — avoids "Stop can only be called
-        //    on an active agent".
         agent.enabled = false;
         target.position = spawnPosition;
 
-        // 2. Re-enable only if the position is on the NavMesh.
-        foreach (float r in NavSnapRadii)
+        Vector3 anchor = snapAnchor == default ? spawnPosition : snapAnchor;
+        if (TrySampleNavMeshPreservingAnchor(anchor, MaxNavSnapHorizontalDrift, out Vector3 snapped))
         {
-            if (NavMesh.SamplePosition(spawnPosition, out NavMeshHit hit, r, NavMesh.AllAreas))
-            {
-                target.position = hit.position;
-                agent.enabled   = true;
-                return;
-            }
+            target.position = snapped;
+            agent.enabled = true;
+            return;
         }
 
-        // 3. Position is genuinely off every baked NavMesh surface.
-        //    Leave agent disabled; runtime recovery only teleports enemies that
-        //    actually fall out of the world.
         Debug.LogWarning($"[LevelBuilder] Could not snap enemy to NavMesh near {spawnPosition}. " +
                          "Agent left disabled; EnemyController will retry at runtime.");
     }
+
+#if UNITY_EDITOR
+    private void OnDrawGizmosSelected()
+    {
+        if (!debugEnemySpawnDistribution || _gizmoSpawnZones == null)
+            return;
+
+        Color[] colors =
+        {
+            Color.cyan, Color.green, Color.yellow, Color.magenta,
+            new Color(1f, 0.5f, 0f), Color.blue, Color.red, new Color(0.5f, 1f, 0.5f),
+            Color.white
+        };
+
+        for (int z = 0; z < _gizmoSpawnZones.Length; z++)
+        {
+            Gizmos.color = colors[z % colors.Length];
+            EnemySpawnZone zone = _gizmoSpawnZones[z];
+            for (int a = 0; a < zone.Anchors.Count; a++)
+            {
+                Vector3 p = zone.Anchors[a];
+                Gizmos.DrawWireSphere(p + Vector3.up * 0.5f, 1.2f);
+            }
+        }
+    }
+#endif
 
     private static void Shuffle<T>(T[] values)
     {

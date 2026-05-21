@@ -52,6 +52,10 @@ public class Health : MonoBehaviour, IDamageable
 
         Debug.Log($"[Health] {gameObject.name} took {damageAmount} damage → {_currentHealth}/{maxHealth} HP");
 
+        CombatVoiceSfx sfx = CombatVoiceSfx.GetOrAdd(gameObject);
+        if (_currentHealth > 0f)
+            sfx.PlayHurt();
+
         if (_currentHealth <= 0f)
             Die();
     }
@@ -77,6 +81,8 @@ public class Health : MonoBehaviour, IDamageable
 
         Debug.Log($"[Health] {gameObject.name} died.");
         OnDeath?.Invoke();
+
+        CombatVoiceSfx.GetOrAdd(gameObject).PlayDeath();
 
         // Trigger animator "Die" if one exists.
         Animator anim = GetComponentInChildren<Animator>();

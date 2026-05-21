@@ -52,6 +52,10 @@ public class ActorHealth : MonoBehaviour, IDamageable
         currentHealth = Mathf.Max(0f, currentHealth - Mathf.Abs(damage));
         FlashDamage();
 
+        CombatVoiceSfx sfx = CombatVoiceSfx.GetOrAdd(gameObject);
+        if (currentHealth > 0f)
+            sfx.PlayHurt();
+
         if (currentHealth <= 0f)
             Die();
     }
@@ -68,6 +72,8 @@ public class ActorHealth : MonoBehaviour, IDamageable
 
         _isDead = true;
         currentHealth = 0f;
+
+        CombatVoiceSfx.GetOrAdd(gameObject).PlayDeath();
 
         if (animator != null && !string.IsNullOrWhiteSpace(deathTrigger))
             animator.SetTrigger(deathTrigger);
