@@ -93,34 +93,35 @@ public class NetworkPlayerSync : MonoBehaviour
     {
         if (playerHealth == null)
             playerHealth = GetComponent<PlayerHealth>();
-        if (playerHealth == null || playerHealth.currentHealth <= 0f)
+        if (playerHealth == null || !playerHealth.IsAlive)
             return;
 
-        playerHealth.currentHealth = Mathf.Max(0f, playerHealth.currentHealth - Mathf.Max(1, damage));
+        GameObject attackerRoot = ResolveAttackerRoot(attackerActorNumber);
+        playerHealth.ReceiveDamage(damage, attackerRoot);
 
-        if (photonView.IsMine && HUDManager.Instance != null)
-        {
-            HUDManager.Instance.UpdateHealth(playerHealth.currentHealth, playerHealth.maxHealth, playerHealth);
-            HUDManager.Instance.ShowDamageFlash(damage);
-        }
-
-        if (playerHealth.currentHealth <= 0f && !deathRecorded)
+        if (!playerHealth.IsAlive && !deathRecorded)
         {
             deathRecorded = true;
-            if (MatchStatsManager.Instance != null)
-            {
-                MatchStatsManager.Instance.MarkEliminated(CombatantId);
-                if (attackerActorNumber > 0)
-                {
-                    string killerId = $"photon:{attackerActorNumber}";
-                    MatchStatsManager.Instance.RegisterCombatant(killerId, attackerName, isPlayer: true);
-                    MatchStatsManager.Instance.RecordKill(killerId);
-                }
-            }
-
             if (playerController != null)
                 playerController.enabled = false;
         }
+    }
+
+    private static GameObject ResolveAttackerRoot(int attackerActorNumber)
+    {
+        if (attackerActorNumber <= 0)
+            return null;
+
+        PhotonView[] views = Object.FindObjectsByType<PhotonView>(FindObjectsSortMode.None);
+        for (int i = 0; i < views.Length; i++)
+        {
+            PhotonView view = views[i];
+            if (view == null || view.Owner == null || view.Owner.ActorNumber != attackerActorNumber)
+                continue;
+            return view.gameObject;
+        }
+
+        return null;
     }
 
     public void OnPhotonSerializeView(PhotonStream stream, PhotonMessageInfo info)

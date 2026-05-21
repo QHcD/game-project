@@ -482,6 +482,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        CombatVoiceSfx voice = CombatVoiceSfx.GetOrAdd(gameObject);
+        voice.ApplyInspectorClips(hurtSounds, deathSounds, hitSound, deathSound);
+
         detectionInterval = Mathf.Clamp(detectionInterval, 0.1f, 2.0f);
         detectionRadius = Mathf.Clamp(detectionRadius, 4f, 500f);
         aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, Mathf.Max(detectionRadius * 2f, 24f));
@@ -1632,7 +1635,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         ApplyHitFlash();
         SetAnimatorTrigger(HashHit);
-        PlayHitSound();
+        CombatVoiceSfx.GetOrAdd(gameObject).PlayHurt();
 
         if (_currentHealth <= 0)
         {
@@ -1810,29 +1813,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         Collider mainCol = GetComponent<Collider>();
         if (mainCol != null) mainCol.enabled = false;
 
-        // Play death sound
-        if (_audio != null)
-        {
-            AudioClip clip = null;
-            if (deathSounds != null && deathSounds.Length > 0)
-            {
-                clip = deathSounds[Random.Range(0, deathSounds.Length)];
-            }
-            else if (deathSound != null)
-            {
-                clip = deathSound;
-            }
-
-            if (clip != null)
-            {
-                _audio.pitch = Random.Range(0.95f, 1.05f);
-                _audio.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(1.0f));
-            }
-            else
-            {
-                PlayProceduralSound(200f, 0.4f);
-            }
-        }
+        CombatVoiceSfx.GetOrAdd(gameObject).PlayDeath();
 
         EnableRagdoll();
 
@@ -2302,35 +2283,6 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (_renderers[i] == null || _renderers[i].material == null) continue;
             if (i < _originalColors.Length)
                 SetMaterialBaseColor(_renderers[i].material, _originalColors[i]);
-        }
-    }
-
-    private void PlayHitSound()
-    {
-        if (_audio == null) return;
-
-        // Prevent voice spam/overlapping within a short duration (0.25s)
-        if (Time.time - _lastVoiceTime < 0.25f) return;
-
-        AudioClip clip = null;
-        if (hurtSounds != null && hurtSounds.Length > 0)
-        {
-            clip = hurtSounds[Random.Range(0, hurtSounds.Length)];
-        }
-        else if (hitSound != null)
-        {
-            clip = hitSound;
-        }
-
-        if (clip != null)
-        {
-            _lastVoiceTime = Time.time;
-            _audio.pitch = Random.Range(0.95f, 1.05f);
-            _audio.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(0.7f));
-        }
-        else
-        {
-            PlayProceduralSound(800f, 0.08f);
         }
     }
 

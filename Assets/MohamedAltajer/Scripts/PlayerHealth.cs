@@ -29,55 +29,11 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     public AudioClip[] hurtSounds;
     public AudioClip[] deathSounds;
 
-    private AudioSource _audioSource;
-    private float _lastVoiceTime = -100f;
-
     // ── Internal state ──
     private float timeSinceLastDamage;
     private bool isRegenerating;
     private string _lastAttackerStatsId;
     private bool _loggedRemoteHudIgnored;
-
-    private void SetupVoiceAudioSource()
-    {
-        _audioSource = gameObject.AddComponent<AudioSource>();
-        _audioSource.spatialBlend = 1f; // 3D sound
-        _audioSource.playOnAwake = false;
-        _audioSource.loop = false;
-        _audioSource.minDistance = 2f;
-        _audioSource.maxDistance = 40f;
-        _audioSource.rolloffMode = AudioRolloffMode.Logarithmic;
-    }
-
-    private void PlayHurtVoice()
-    {
-        if (_audioSource == null) SetupVoiceAudioSource();
-        if (_audioSource == null) return;
-        if (hurtSounds == null || hurtSounds.Length == 0) return;
-        if (Time.unscaledTime - _lastVoiceTime < 0.25f) return; // avoid spam
-        _lastVoiceTime = Time.unscaledTime;
-
-        AudioClip clip = hurtSounds[Random.Range(0, hurtSounds.Length)];
-        if (clip != null)
-        {
-            _audioSource.pitch = Random.Range(0.95f, 1.05f);
-            _audioSource.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(0.7f));
-        }
-    }
-
-    private void PlayDeathVoice()
-    {
-        if (_audioSource == null) SetupVoiceAudioSource();
-        if (_audioSource == null) return;
-        if (deathSounds == null || deathSounds.Length == 0) return;
-
-        AudioClip clip = deathSounds[Random.Range(0, deathSounds.Length)];
-        if (clip != null)
-        {
-            _audioSource.pitch = Random.Range(0.95f, 1.05f);
-            _audioSource.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(1.0f));
-        }
-    }
 
     private void Awake()
     {
@@ -138,8 +94,7 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         timeSinceLastDamage = 0f;
         isRegenerating = false;
 
-        // Play hurt voice sound
-        PlayHurtVoice();
+        CombatVoiceSfx.GetOrAdd(gameObject).PlayHurt();
 
         // Notify the persistent profile so the "Win without dying" challenge
         // disqualifies the current match the moment we take any damage.
@@ -174,8 +129,7 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         if (_deathHandled) return;
         _deathHandled = true;
 
-        // Play death voice sound
-        PlayDeathVoice();
+        CombatVoiceSfx.GetOrAdd(gameObject).PlayDeath();
 
         // Stop all locomotion so the corpse can't slide around or take more hits.
         CharacterController cc = GetComponent<CharacterController>();
@@ -216,6 +170,9 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        CombatVoiceSfx voice = CombatVoiceSfx.GetOrAdd(gameObject);
+        voice.ApplyInspectorClips(hurtSounds, deathSounds);
+
         if (MultiplayerMode.IsMultiplayer && MatchStatsManager.Instance != null)
         {
 #if PUN_2_OR_NEWER
