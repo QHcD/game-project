@@ -171,13 +171,16 @@ public static class WeaponLoadoutCatalog
     // then seat the socket on the handle bounds instead of on the model pivot.
     public static readonly Vector3 ChainsawPlayerLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
     public static readonly Vector3 ChainsawPlayerLocalEuler = new Vector3(-177.177f, -175.886f, 88.481f);
+    // Enemy saw: bip_hand_R direct (no stabilization). The player also resolves
+    // to bip_hand_R as socket parent (PlayerController line 4044), so both use the
+    // same bone — identical euler and position must produce the same visual grip.
     public static readonly Vector3 ChainsawEnemyLocalPosition = ChainsawPlayerLocalPosition;
     public static readonly Vector3 ChainsawEnemyLocalEuler = ChainsawPlayerLocalEuler;
     public const float ChainsawTargetSize = 0.78f;
     private static readonly Vector3 SawPlayerLocalPosition = ChainsawPlayerLocalPosition;
-    private static readonly Vector3 SawPlayerLocalEuler = ChainsawPlayerLocalEuler;
-    private static readonly Vector3 SawEnemyLocalPosition = ChainsawEnemyLocalPosition;
-    private static readonly Vector3 SawEnemyLocalEuler = ChainsawEnemyLocalEuler;
+    private static readonly Vector3 SawPlayerLocalEuler    = ChainsawPlayerLocalEuler;
+    private static readonly Vector3 SawEnemyLocalPosition  = ChainsawEnemyLocalPosition;
+    private static readonly Vector3 SawEnemyLocalEuler     = ChainsawEnemyLocalEuler;
     private static readonly Vector3 SawRuntimeMeshLocalEuler = ChainsawEnemyLocalEuler;
     // Kept only so older scene objects named with these anchors do not break
     // during editor preview. New level 12 attachment uses explicit offsets.

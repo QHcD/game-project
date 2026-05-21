@@ -1,3 +1,4 @@
+// test
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.Serialization;
@@ -106,6 +107,33 @@ public class EnemyController : MonoBehaviour, IDamageable
              "X negative = raise blade tip up.  Tweak in Play Mode to match the player's guard stance.\n" +
              "Has no effect during the attack animation.")]
     public Vector3 katanaCarryExtraEuler = new Vector3(-20f, 0f, 0f);
+    [Header("Level 12 Saw — Carry Pose")]
+    [Tooltip("Offset FROM bip_hand_R TO the saw handle grip point, in the hand bone's local space.\n" +
+             "Positions the saw so the handle sits in the palm (not the blade tip).\n" +
+             "Tune in Play Mode if the grip point drifts.")]
+    public Vector3 sawHandGripOffset = new Vector3(-0.066f, -0.39f, 0.044f);
+
+    [Tooltip("Extra euler offset applied on top of the player-matched rotation during idle/carry.\n" +
+             "Has no effect during the attack animation.")]
+    public Vector3 sawCarryExtraEuler = new Vector3(0f, 0f, 0f);
+
+    [Header("Level 9 Axe — Attack Swing Correction")]
+    [Tooltip("Extra euler rotation applied to the axe ONLY during the Attack state.\n" +
+             "Compensates for the bip_hand_R vs j_wrist_ri axis difference that makes\n" +
+             "the swing appear reversed compared to the black player.\n" +
+             "Default (0,180,0) flips the swing around Y to match the player's direction.\n" +
+             "Tune in Play Mode (Inspector) if the result still looks wrong.\n" +
+             "Has NO effect on idle grip — only active while State == Attack.")]
+    public Vector3 axeAttackSwingCorrection = new Vector3(0f, 180f, 0f);
+
+    [Header("Level 12 Saw — Attack Swing Correction")]
+    [Tooltip("Extra euler rotation applied to the saw ONLY during the Attack state.\n" +
+             "Same bone-axis mismatch as the Level 9 axe (bip_hand_R vs j_wrist_ri).\n" +
+             "Default (0,180,0) flips the swing around Y to match the player's direction.\n" +
+             "Tune in Play Mode (Inspector) if the result still looks wrong.\n" +
+             "Has NO effect on idle grip — only active while State == Attack.")]
+    public Vector3 sawAttackSwingCorrection = new Vector3(0f, 180f, 0f);
+
     [Header("Runtime Grip Persistence")]
     [Tooltip("When enabled, enemy sickle/saw grip uses the latest saved runtime tune values.")]
     public bool useSavedRuntimeGripValues = true;
@@ -285,6 +313,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private Transform _activeWeaponHandBone;
     private GameObject _equippedWeaponPrefab;
     private int _equippedWeaponLevel = -1;
+    private Quaternion _weaponBaseLocalRot = Quaternion.identity;
     private PlayerController _cachedPlayer;
     private bool _weaponAttachInProgress;
     private float      _combatReadyBlend;
@@ -713,6 +742,119 @@ public class EnemyController : MonoBehaviour, IDamageable
                 equippedWeaponObject.transform.rotation =
                     _activeWeaponHandBone.rotation * Quaternion.Euler(0f, 0f, 160f);
             }
+        }
+
+        // ── Level 12 saw — carry pose (idle/walk/chase, NOT during attack) ──────
+        //
+        // Goal: same orientation as the black player's saw, handle in the palm.
+        //
+        // Problem: player socket is under j_wrist_ri (Ronin); enemy socket is under
+        // bip_hand_R (Crosby). Different skeletons → different hand bone positions
+        // in character space, so a plain character-space position copy puts the saw
+        // at the correct body-relative position for the PLAYER but not for Crosby's
+        // proportions (hand ends up in the wrong place relative to bip_hand_R).
+        //
+        // Fix (two steps):
+        //   1. ROTATION — character-space copy from the player (bone-axis-agnostic).
+        //   2. POSITION — anchor the SAW'S HANDLE point to bip_hand_R in world space.
+        //
+        // The handle's position in the saw's own local space is derived from the
+        // player's grip setup (localPosition / localRotation on j_wrist_ri):
+        //
+        //   Parent-child relation: saw.world = parent.world + parent.rot * localPos
+        //   → parent.world = saw.world - parent.rot * localPos
+        //   → handleInSawLocal = -(Inverse(localRot) * localPos)
+        //
+        // This is purely the saw's local geometry — independent of which skeleton
+        // holds it — so the same value works for both Ronin and Crosby.
+        if (_equippedWeaponLevel == 12 &&
+            equippedWeaponObject  != null &&
+            _activeWeaponHandBone != null &&
+            _state                != State.Attack)
+        {
+            if (_cachedPlayer == null)
+                _cachedPlayer = Object.FindObjectOfType<PlayerController>(false);
+
+            if (_cachedPlayer != null && _cachedPlayer.equippedWeaponObject != null)
+            {
+                // Step 1 — rotation: character-space copy from player (bone-independent).
+                Quaternion playerCharSpaceRot =
+                    Quaternion.Inverse(_cachedPlayer.transform.rotation)
+                    * _cachedPlayer.equippedWeaponObject.transform.rotation;
+
+                Quaternion sawWorldRot =
+                    transform.rotation * playerCharSpaceRot * Quaternion.Euler(sawCarryExtraEuler);
+
+                equippedWeaponObject.transform.rotation = sawWorldRot;
+
+                // Step 2 — position: anchor handle to bip_hand_R.
+                // Player setup: localPos=(-0.066,-0.39,0.044), localRot=Euler(-177.177,-175.886,88.481)
+                // handleInSawLocal = -(Inverse(localRot) * localPos)
+                Vector3 handleInSawLocal =
+                    -(Quaternion.Inverse(Quaternion.Euler(-177.177f, -175.886f, 88.481f))
+                      * new Vector3(-0.066f, -0.39f, 0.044f));
+
+                equippedWeaponObject.transform.position =
+                    _activeWeaponHandBone.position - sawWorldRot * handleInSawLocal;
+            }
+            else
+            {
+                // Fallback: no player in scene — anchor to hand bone with catalogue euler.
+                equippedWeaponObject.transform.rotation =
+                    _activeWeaponHandBone.rotation * Quaternion.Euler(-177.177f, -175.886f, 88.481f);
+            }
+        }
+
+        // ── Level 9 axe — attack swing direction correction ──────────────────
+        //
+        // Crosby's bip_hand_R has different local axes than the player's j_wrist_ri.
+        // The attack animation rotates the hand bone; on the player this produces a
+        // correct forward swing, but on Crosby the same rotation produces a reversed
+        // swing because the bone's local forward is mirrored.
+        //
+        // Fix: after the animator updates the hand bone each frame, multiply the
+        // weapon's current localRotation by axeAttackSwingCorrection (default 180° Y)
+        // to flip the swing back to the correct direction.
+        //
+        // This block only runs during the Attack state — idle grip is untouched.
+        // Tune axeAttackSwingCorrection in the Inspector during Play Mode if needed.
+        if (_equippedWeaponLevel == 9 &&
+            equippedWeaponObject  != null &&
+            _state                == State.Attack)
+        {
+            // SET to a fixed value each frame — never compound/multiply current
+            // localRotation or it oscillates every frame (base → corrected → base...).
+            // _weaponBaseLocalRot is the idle grip (0,180,90); axeAttackSwingCorrection
+            // is applied on top once per frame so the result is always stable.
+            equippedWeaponObject.transform.localRotation =
+                _weaponBaseLocalRot * Quaternion.Euler(axeAttackSwingCorrection);
+        }
+
+        // ── Level 12 saw — attack swing direction correction ─────────────────
+        //
+        // Same bone-axis mismatch as Level 9 (bip_hand_R vs j_wrist_ri). The attack
+        // animation rotates bip_hand_R so the swing appears reversed on Crosby.
+        // Apply a stable fixed correction each frame during Attack only.
+        //
+        // We also correct localPosition so the handle stays in bip_hand_R's palm
+        // (the position set at attach-time is tuned for j_wrist_ri and causes the
+        // saw to "fly" during the swing if left uncorrected).
+        //
+        // Derivation — we want: saw.world.pos + saw.world.rot * handleInSawLocal = bip_hand_R
+        //   → localPos = attackLocalRot * Inverse(playerLocalRot) * playerLocalPos
+        //   where handleInSawLocal = -(Inverse(playerLocalRot) * playerLocalPos)
+        if (_equippedWeaponLevel == 12 &&
+            equippedWeaponObject  != null &&
+            _state                == State.Attack)
+        {
+            Quaternion attackLocalRot = _weaponBaseLocalRot * Quaternion.Euler(sawAttackSwingCorrection);
+            equippedWeaponObject.transform.localRotation = attackLocalRot;
+
+            // Anchor the handle to bip_hand_R in local space.
+            equippedWeaponObject.transform.localPosition =
+                attackLocalRot
+                * Quaternion.Inverse(Quaternion.Euler(-177.177f, -175.886f, 88.481f))
+                * new Vector3(-0.066f, -0.39f, 0.044f);
         }
     }
 
@@ -1354,6 +1496,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ── Combat ────────────────────────────────────────────────────────────────
     private void ExecuteAttack()
     {
+        float distToTarget = _target != null ? Vector3.Distance(transform.position, _target.position) : -1f;
+        Debug.Log($"[L9Combat] ATTACK_STARTED attacker={name} target={(_target != null ? _target.name : "null")} dist={distToTarget:F2} attackRadius={attackRadius:F2}");
+
         if (CombatDebug.Enabled)
             CombatDebug.Log($"EnemyAttack started enemy={name}");
 
@@ -1378,9 +1523,72 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_equippedWeaponHitbox != null)
             _equippedWeaponHitbox.DisableHitbox();
 
-        // Weapon-tip OverlapSphere during the timed window (see AttackHitboxWindowRoutine).
-        // Body-centered spheres missed slim player capsules; the coroutine was never started before.
+        // Mirrors PlayerController.TryImmediateMeleeStrike():
+        // Cast directly from the enemy's chest toward the target so hit direction
+        // is always forward-toward-target — identical to the black player's method.
+        // If this lands, the hitbox coroutine is skipped to prevent a double-hit.
+        bool immediateHit = TryImmediateDirectionalStrike();
+        if (immediateHit)
+        {
+            Debug.Log($"[L9Combat] IMMEDIATE_HIT landed — hitbox coroutine skipped for attacker={name}");
+            return;
+        }
+
+        // Fallback: timed hitbox window catches targets that were at the edge of
+        // range or partially blocked when the immediate cast fired.
         _attackHitboxRoutine = StartCoroutine(AttackHitboxWindowRoutine());
+    }
+
+    /// <summary>
+    /// Forward directional melee check — mirrors PlayerController.TryImmediateMeleeStrike().
+    /// Fires a sphere from the enemy's chest straight toward the current target.
+    /// Direction is always attacker → target, never downward or inverted.
+    /// Returns true if damage was applied.
+    /// </summary>
+    private bool TryImmediateDirectionalStrike()
+    {
+        if (_target == null) return false;
+
+        Vector3 origin     = transform.position + Vector3.up * 1.4f;
+        Vector3 targetMid  = _target.position   + Vector3.up * 1.0f;
+        Vector3 dir        = (targetMid - origin);
+        float   dist       = dir.magnitude;
+
+        if (dist < 0.01f) return false;
+        dir /= dist; // normalise
+
+        float maxReach = attackRadius + attackRangePadding + 0.5f;
+        if (dist > maxReach)
+        {
+            Debug.Log($"[L9Combat] IMMEDIATE_STRIKE missed (out of reach) attacker={name} dist={dist:F2} maxReach={maxReach:F2}");
+            return false;
+        }
+
+        IDamageable target = _target.GetComponentInParent<IDamageable>();
+        if (target == null || !target.IsAlive || target.gameObject == gameObject)
+            return false;
+
+        bool blocked = DamageOcclusion.IsBlockedFromPoint(gameObject, target.gameObject, origin);
+        Debug.Log($"[L9Combat] IMMEDIATE_STRIKE attacker={name} target={_target.name} dist={dist:F2} blockedByWall={blocked}");
+
+        if (blocked) return false;
+
+        int dmg = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
+
+        // Health before
+        float healthBefore = -1f;
+        EnemyController targetEc = target.gameObject.GetComponent<EnemyController>();
+        PlayerHealth    targetPh = target.gameObject.GetComponent<PlayerHealth>();
+        if (targetPh != null) healthBefore = targetPh.currentHealth;
+        else if (targetEc != null) healthBefore = targetEc.CurrentHealth;
+
+        target.ReceiveDamage(dmg, gameObject);
+
+        float healthAfter = targetPh != null ? targetPh.currentHealth
+                          : targetEc != null ? (float)targetEc.CurrentHealth : -1f;
+        Debug.Log($"[L9Combat] IMMEDIATE_DAMAGE attacker={name} target={_target.name} dmg={dmg} healthBefore={healthBefore:F1} healthAfter={healthAfter:F1}");
+
+        return true;
     }
 
     private void DriveChaseWithFlowField()
@@ -1411,9 +1619,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     private IEnumerator AttackHitboxWindowRoutine()
     {
         if (_equippedWeaponHitbox == null)
+        {
+            Debug.LogWarning($"[L9Combat] HITBOX_NULL — attacker={name} has no WeaponHitbox, attack will deal no damage.");
             yield break;
+        }
 
         _equippedWeaponHitbox.DisableHitbox();
+        Debug.Log($"[L9Combat] HITBOX_DISABLED (pre-windup) attacker={name} windup={attackHitboxWindup:F2}s");
 
         if (attackHitboxWindup > 0f)
             yield return new WaitForSeconds(attackHitboxWindup);
@@ -1421,11 +1633,13 @@ public class EnemyController : MonoBehaviour, IDamageable
         Physics.SyncTransforms();
         _equippedWeaponHitbox.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
         _equippedWeaponHitbox.EnableHitbox();
+        Debug.Log($"[L9Combat] HITBOX_ENABLED attacker={name} damage={_equippedWeaponHitbox.damage} activeWindow={attackHitboxActiveTime:F2}s maxRange={_equippedWeaponHitbox.maxAttackRange:F2}");
 
         if (attackHitboxActiveTime > 0f)
             yield return new WaitForSeconds(attackHitboxActiveTime);
 
         _equippedWeaponHitbox.DisableHitbox();
+        Debug.Log($"[L9Combat] HITBOX_DISABLED (end of window) attacker={name}");
         _attackHitboxRoutine = null;
     }
 
@@ -2678,7 +2892,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         _activeWeaponSocket   = null;
         _activeWeaponHandBone = null;
 
-        if (weaponGripSystem != null)
+        // Level 12 saw always uses the main attach path (bip_hand_R + stabilization).
+        // WeaponGripSystem uses its own bone resolution which may pick weapon_bone_R
+        // (a different bone with a baked orientation), producing an inconsistent grip
+        // across enemies depending on their Inspector setup.
+        if (weaponGripSystem != null && level != 12)
         {
             equippedWeaponObject = weaponGripSystem.AttachWeapon(
                 characterRoot: gameObject,
@@ -2703,7 +2921,17 @@ public class EnemyController : MonoBehaviour, IDamageable
                 WeaponHitbox wh = equippedWeaponObject.GetComponent<WeaponHitbox>();
                 if (wh == null) wh = equippedWeaponObject.AddComponent<WeaponHitbox>();
                 wh.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
-                wh.maxAttackRange = attackRadius + 1.0f;
+                if (level == 12)
+                {
+                    wh.overlapRadius = 0.45f;
+                    float engageDist12 = attackRadius + attackRangePadding;
+                    float tipDist12    = Mathf.Clamp(engageDist12 * 0.55f, 0.6f, 2.5f);
+                    wh.maxAttackRange  = tipDist12 + wh.overlapRadius + 0.1f;
+                }
+                else
+                {
+                    wh.maxAttackRange = attackRadius + 1.0f;
+                }
                 _equippedWeaponHitbox = wh;
                 _equippedWeaponPrefab = weaponPrefab;
                 _equippedWeaponLevel = level;
@@ -2725,7 +2953,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Both are single-handed weapons whose catalog euler already matches the
         // player's grip exactly — socket stabilization via weapon_bone_R would
         // cancel out the hand-bone rotation and produce a flipped/inverted result.
-        stabilizeWeaponSocketAgainstHandPose = (level != 2 && level != 9);
+        stabilizeWeaponSocketAgainstHandPose = (level != 2 && level != 9 && level != 12);
         ApplySavedRuntimeGripValuesForLevel(level);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
@@ -2742,12 +2970,14 @@ public class EnemyController : MonoBehaviour, IDamageable
                              "Weapon attached to root. Drag the hand bone into 'Weapon Attach Point'.");
         }
 
-        // Level 2 katana / Level 9 axe: bypass weapon_bone_R (Crosby's weapon socket
-        // which has a pre-baked orientation) in favour of bip_hand_R (the actual palm
-        // bone whose world-space orientation matches j_wrist_ri on the player rig).
+        // Level 2 katana / Level 9 axe / Level 12 saw: bypass weapon_bone_R (Crosby's
+        // weapon socket which has a baked orientation that varies per-prefab) in favour
+        // of bip_hand_R so every enemy uses the exact same bone as the stabilization base.
+        // Without this, enemies whose Inspector weaponAttachPoint differs get different
+        // stabilized socket frames and the same euler produces different visual results.
         // Priority 1 — Unity humanoid API (normalises world rotation across rigs).
         // Priority 2 — bip_hand_R by name (works even when Avatar is Generic).
-        if (level == 2 || level == 9)
+        if (level == 2 || level == 9 || level == 12)
         {
             Transform overrideHand = null;
 
@@ -2873,9 +3103,21 @@ public class EnemyController : MonoBehaviour, IDamageable
         WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
         if (hitbox == null) hitbox = equippedWeaponObject.AddComponent<WeaponHitbox>();
         hitbox.damage = (int)attackDamage;
-        // Clamp hits to attackRadius + 1 m so a mis-computed weapon-tip sphere
-        // cannot register damage from across the room.
-        hitbox.maxAttackRange = attackRadius + 1.0f;
+        if (level == 12)
+        {
+            // Derive max range from the same formula WeaponHitbox uses to place
+            // the tip sphere (GetWeaponTipWorldPosition: tipDist = engageDist * 0.55,
+            // clamped 0.6–2.5). A hit is only valid if the target is within actual
+            // physical reach: tipDist + overlapRadius + a 0.1 m tolerance.
+            hitbox.overlapRadius = 0.45f;
+            float engageDist = attackRadius + attackRangePadding;
+            float tipDist    = Mathf.Clamp(engageDist * 0.55f, 0.6f, 2.5f);
+            hitbox.maxAttackRange = tipDist + hitbox.overlapRadius + 0.1f;
+        }
+        else
+        {
+            hitbox.maxAttackRange = attackRadius + 1.0f;
+        }
         hitbox.DisableHitbox();
         _equippedWeaponHitbox = hitbox;
 
@@ -2883,9 +3125,13 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (equippedWeaponObject.GetComponent<WeaponVisibilityFix>() == null)
             equippedWeaponObject.AddComponent<WeaponVisibilityFix>();
 
-        _equippedWeaponPrefab = weaponPrefab;
-        _equippedWeaponLevel = level;
+        _equippedWeaponPrefab  = weaponPrefab;
+        _equippedWeaponLevel   = level;
         _weaponAttachInProgress = false;
+        // Cache the idle grip rotation so LateUpdate can use it as a stable
+        // base for the attack-swing correction without compounding each frame.
+        if (equippedWeaponObject != null)
+            _weaponBaseLocalRot = equippedWeaponObject.transform.localRotation;
 
         // Bind KatanaCombatHandler — it enforces the final grip pose via
         // WeaponGripOffset.Enforce() and routes hit detection on anim events.
