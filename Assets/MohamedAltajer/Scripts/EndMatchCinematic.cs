@@ -29,7 +29,7 @@ public class EndMatchCinematic : MonoBehaviour
     /// While the cinematic is running, gameplay scripts (player + enemies)
     /// short-circuit their per-frame updates so input/AI is fully frozen.
     /// </summary>
-    public static bool GameplayLocked { get; private set; }
+    public static bool GameplayLocked { get; set; }
 
     private const float SlowMotionScale     = 0.2f;
     private const float OrbitRadius         = 6.5f;
@@ -282,8 +282,34 @@ public class EndMatchCinematic : MonoBehaviour
 
         // Title — "MATCH OVER" + winner name, sized large for impact.
         IReadOnlyList<MatchStatsManager.CombatantSnapshot> all = GetAllCombatantsSorted();
-        string winnerName = (all.Count > 0) ? all[0].DisplayName : "—";
-        bool   winnerIsPlayer = (all.Count > 0) && all[0].IsPlayer;
+        string winnerName;
+        bool winnerIsPlayer = false;
+
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            winnerName = MpRoomConfig.ReadWinnerName();
+            if (string.IsNullOrEmpty(winnerName))
+            {
+                winnerName = (all.Count > 0) ? all[0].DisplayName : "—";
+            }
+            if (!string.IsNullOrEmpty(winnerName))
+            {
+                foreach (var c in all)
+                {
+                    if (string.Equals(c.DisplayName, winnerName, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        winnerIsPlayer = c.IsPlayer;
+                        break;
+                    }
+                }
+            }
+        }
+        else
+        {
+            winnerName = (all.Count > 0) ? all[0].DisplayName : "—";
+            winnerIsPlayer = (all.Count > 0) && all[0].IsPlayer;
+        }
+
         string banner = playerWon || winnerIsPlayer ? "VICTORY" : "MATCH OVER";
 
         MakeText(panel.transform, banner, 96, FontStyles.Bold,
@@ -302,8 +328,31 @@ public class EndMatchCinematic : MonoBehaviour
         const float rowGap  = 0.005f;
         int rows = Mathf.Min(all.Count, 8);
         for (int i = 0; i < rows; i++)
-            BuildResultRow(panel.transform, all[i], i == 0,
+        {
+            bool isRowWinner = false;
+            if (MultiplayerMode.IsMultiplayer)
+            {
+                if (string.Equals(winnerName, "HUMANS", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    isRowWinner = (i == 0);
+                }
+                else if (string.Equals(winnerName, "BOTS", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    isRowWinner = (i == 0 && !all[i].IsPlayer);
+                }
+                else
+                {
+                    isRowWinner = string.Equals(all[i].DisplayName, winnerName, System.StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            else
+            {
+                isRowWinner = (i == 0);
+            }
+
+            BuildResultRow(panel.transform, all[i], isRowWinner,
                 topY - i * (rowH + rowGap), topY - i * (rowH + rowGap) - rowH);
+        }
 
         // Earned-credits flash.
         int earned = (SessionManager.Instance != null && all.Count > 0 && all[0].IsPlayer)
@@ -318,21 +367,44 @@ public class EndMatchCinematic : MonoBehaviour
             new Vector2(0.04f, 0.13f), new Vector2(0.96f, 0.20f));
 
         // Buttons.
-        Button playAgainBtn = MakeButton(panel.transform, "PLAY AGAIN",
-            new Vector2(0.18f, 0.04f), new Vector2(0.48f, 0.11f),
-            new Color(0.30f, 0.95f, 0.55f, 1f), new Color(0.04f, 0.06f, 0.10f, 1f),
-            () => Finish(replay: true));
-        Button mainMenuBtn = MakeButton(panel.transform, "MAIN MENU",
-            new Vector2(0.52f, 0.04f), new Vector2(0.82f, 0.11f),
-            new Color(0.32f, 0.56f, 0.96f, 1f), Color.white,
-            () => Finish(replay: false));
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            Button mainMenuBtn = MakeButton(panel.transform, "MAIN MENU",
+                new Vector2(0.35f, 0.04f), new Vector2(0.65f, 0.11f),
+                new Color(0.32f, 0.56f, 0.96f, 1f), Color.white,
+                () => {
+#if PUN_2_OR_NEWER
+                    if (Photon.Pun.PhotonNetwork.InRoom)
+                        Photon.Pun.PhotonNetwork.LeaveRoom();
+#endif
+                    Finish(replay: false);
+                });
 
-        // Arrow + Enter navigation.
-        MenuKeyboardNavigator.AttachHorizontal(_scoreboardRoot, new List<Selectable> { playAgainBtn, mainMenuBtn });
+            // Arrow + Enter navigation.
+            MenuKeyboardNavigator.AttachHorizontal(_scoreboardRoot, new List<Selectable> { mainMenuBtn });
 
-        // Default selection so Enter works without a click.
-        if (UnityEngine.EventSystems.EventSystem.current != null)
-            UnityEngine.EventSystems.EventSystem.current.SetSelectedGameObject(playAgainBtn.gameObject);
+            // Default selection so Enter works without a click.
+            if (UnityEngine.EventSystems.EventSystem.current != null)
+                UnityEngine.EventSystems.EventSystem.current.SetSelectedGameObject(mainMenuBtn.gameObject);
+        }
+        else
+        {
+            Button playAgainBtn = MakeButton(panel.transform, "PLAY AGAIN",
+                new Vector2(0.18f, 0.04f), new Vector2(0.48f, 0.11f),
+                new Color(0.30f, 0.95f, 0.55f, 1f), new Color(0.04f, 0.06f, 0.10f, 1f),
+                () => Finish(replay: true));
+            Button mainMenuBtn = MakeButton(panel.transform, "MAIN MENU",
+                new Vector2(0.52f, 0.04f), new Vector2(0.82f, 0.11f),
+                new Color(0.32f, 0.56f, 0.96f, 1f), Color.white,
+                () => Finish(replay: false));
+
+            // Arrow + Enter navigation.
+            MenuKeyboardNavigator.AttachHorizontal(_scoreboardRoot, new List<Selectable> { playAgainBtn, mainMenuBtn });
+
+            // Default selection so Enter works without a click.
+            if (UnityEngine.EventSystems.EventSystem.current != null)
+                UnityEngine.EventSystems.EventSystem.current.SetSelectedGameObject(playAgainBtn.gameObject);
+        }
     }
 
     private IReadOnlyList<MatchStatsManager.CombatantSnapshot> GetAllCombatantsSorted()

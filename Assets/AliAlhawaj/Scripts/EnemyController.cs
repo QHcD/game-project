@@ -5,6 +5,11 @@ using UnityEngine.Serialization;
 using System.Collections;
 using System.Collections.Generic;
 
+#if PUN_2_OR_NEWER
+using Photon.Pun;
+#endif
+
+
 /// <summary>
 /// Enemy AI with NavMeshAgent pathfinding, jump-over-obstacles, natural animations,
 /// immediate ragdoll death, and proper weapon support.
@@ -215,6 +220,12 @@ public class EnemyController : MonoBehaviour, IDamageable
     public Color hitFlashColor = new Color(1f, 0.3f, 0.3f, 1f);
     public AudioClip hitSound;
     public AudioClip deathSound;
+
+    [Header("Combat Voice SFX")]
+    public AudioClip[] hurtSounds;
+    public AudioClip[] deathSounds;
+    private float _lastVoiceTime = -100f;
+
     [Tooltip("Damage-window start after attack trigger (seconds).")]
     public float attackHitboxWindup = 0.12f;
     [Tooltip("How long the weapon hitbox remains active during attack (seconds).")]
@@ -1636,6 +1647,12 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        if (MultiplayerMode.IsMultiplayer && MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival)
+        {
+            if (attackerRoot != null && attackerRoot.GetComponentInParent<EnemyController>() != null)
+                return;
+        }
+
         // Brief spawn-protection grace window: avoids enemies being killed in
         // the first frames before the AI has a chance to react / spread out.
         // Not invincibility — duration is short and tunable in Inspector.
@@ -1751,16 +1768,28 @@ public class EnemyController : MonoBehaviour, IDamageable
 
             if (_killedByPlayer)
             {
-                PlayerHealth player = FindFirstObjectByType<PlayerHealth>();
+                PlayerHealth player = null;
+                if (_lastAttacker != null)
+                {
+                    player = _lastAttacker.GetComponentInParent<PlayerHealth>();
+                }
+                if (player == null)
+                {
+                    player = FindFirstObjectByType<PlayerHealth>(); // Fallback
+                }
+                
                 string playerId = MatchStatsManager.BuildCombatantId(player);
                 MatchStatsManager.Instance.RecordKill(playerId);
 
-                // PRISM credits + lifetime kill counter for the persistent
-                // session — pays the +10 bounty and ticks "Kill N Enemies"
-                // challenges via SessionManager.EvaluateChallenges(). The
-                // currently-equipped weapon is forwarded so Weapon Master
-                // challenges (e.g. "5 kills with Nunchucks") can advance.
-                if (SessionManager.Instance != null)
+                // Enforce that single-player challenges and bounties are only advanced
+                // if the local player was the one who actually dealt the final blow.
+                #if PUN_2_OR_NEWER
+                bool isLocalKill = (player != null && player.GetComponent<PhotonView>() != null && player.GetComponent<PhotonView>().IsMine);
+                #else
+                bool isLocalKill = true;
+                #endif
+
+                if (isLocalKill && SessionManager.Instance != null)
                 {
                     string wid = SessionManager.Instance.EquippedWeaponId;
                     SessionManager.Instance.OnPlayerKilledEnemy(wid);
@@ -1784,8 +1813,25 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Play death sound
         if (_audio != null)
         {
-            if (deathSound != null) _audio.PlayOneShot(deathSound, AudioSettingsRuntime.ScaledSfx(1f));
-            else PlayProceduralSound(200f, 0.4f);
+            AudioClip clip = null;
+            if (deathSounds != null && deathSounds.Length > 0)
+            {
+                clip = deathSounds[Random.Range(0, deathSounds.Length)];
+            }
+            else if (deathSound != null)
+            {
+                clip = deathSound;
+            }
+
+            if (clip != null)
+            {
+                _audio.pitch = Random.Range(0.95f, 1.05f);
+                _audio.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(1.0f));
+            }
+            else
+            {
+                PlayProceduralSound(200f, 0.4f);
+            }
         }
 
         EnableRagdoll();
@@ -2262,8 +2308,30 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void PlayHitSound()
     {
         if (_audio == null) return;
-        if (hitSound != null) _audio.PlayOneShot(hitSound, AudioSettingsRuntime.ScaledSfx(0.7f));
-        else PlayProceduralSound(800f, 0.08f);
+
+        // Prevent voice spam/overlapping within a short duration (0.25s)
+        if (Time.time - _lastVoiceTime < 0.25f) return;
+
+        AudioClip clip = null;
+        if (hurtSounds != null && hurtSounds.Length > 0)
+        {
+            clip = hurtSounds[Random.Range(0, hurtSounds.Length)];
+        }
+        else if (hitSound != null)
+        {
+            clip = hitSound;
+        }
+
+        if (clip != null)
+        {
+            _lastVoiceTime = Time.time;
+            _audio.pitch = Random.Range(0.95f, 1.05f);
+            _audio.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(0.7f));
+        }
+        else
+        {
+            PlayProceduralSound(800f, 0.08f);
+        }
     }
 
     private void PlayProceduralSound(float frequency, float duration)

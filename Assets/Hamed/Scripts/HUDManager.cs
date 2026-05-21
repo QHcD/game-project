@@ -203,8 +203,17 @@ public class HUDManager : MonoBehaviour
 
     private void Update()
     {
-        elapsed += Time.deltaTime;
-        float remaining = Mathf.Max(0f, timeLimit - elapsed);
+        float remaining;
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            remaining = MpRoomConfig.ReadTimerDuration();
+            elapsed = timeLimit - remaining;
+        }
+        else
+        {
+            elapsed += Time.deltaTime;
+            remaining = Mathf.Max(0f, timeLimit - elapsed);
+        }
 
         if (timerText != null)
         {
@@ -1086,18 +1095,20 @@ public class HUDManager : MonoBehaviour
         MatchStatsManager stats = MatchStatsManager.Instance;
         if (stats == null) return;
 
+        bool showBots = !MultiplayerMode.IsMultiplayer || (MultiplayerMode.ActiveMode == MpGameMode.HybridChaos);
+
         // Header row stays as a fixed column guide.
         if (scoreboardSummaryText != null)
         {
-            int registeredCount = MultiplayerMode.IsMultiplayer
+            int registeredCount = !showBots
                 ? stats.GetRegisteredPlayerCount()
                 : stats.GetRegisteredCombatantCount();
-            scoreboardSummaryText.text = MultiplayerMode.IsMultiplayer
+            scoreboardSummaryText.text = !showBots
                 ? $"MULTIPLAYER LEADERBOARD  ({registeredCount} PLAYERS)"
                 : $"LIVE MATCH LEADERBOARD  ({registeredCount} COMBATANTS)";
         }
 
-        var entries = MultiplayerMode.IsMultiplayer
+        var entries = !showBots
             ? stats.GetTopPlayers(scoreboardRows.Length)
             : stats.GetTopCombatants(scoreboardRows.Length);
         for (int i = 0; i < scoreboardRows.Length; i++)

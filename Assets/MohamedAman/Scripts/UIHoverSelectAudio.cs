@@ -37,12 +37,19 @@ public class UIHoverSelectAudio : MonoBehaviour
     [Tooltip("Minimum seconds between sounds on the SAME widget. Stops mouse+keyboard double-fire.")]
     public float perTargetCooldown = 0.06f;
 
+    [Header("Diagnostics")]
+    [Tooltip("Toggle debug logging to trace hover/selection event sources in the console.")]
+    public bool debugLogging = false;
+
     private AudioSource _audioSource;
     private AudioClip _hoverClip;
 
     private readonly HashSet<int> _attached = new HashSet<int>();
     private int _lastSourceId;
     private float _lastPlayTime;
+
+    private GameObject _previousSelected;
+    private Coroutine _scanCoroutine;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
@@ -67,20 +74,42 @@ public class UIHoverSelectAudio : MonoBehaviour
         ResolveHoverClip();
         SceneManager.sceneLoaded += OnSceneLoaded;
         AttachToActiveScene();
+
+        // Start the periodic scanner in the background to wire up runtime spawned components
+        _scanCoroutine = StartCoroutine(PeriodicallyScanSelectables());
     }
 
     private void OnDestroy()
     {
         if (Instance == this) Instance = null;
         SceneManager.sceneLoaded -= OnSceneLoaded;
+        if (_scanCoroutine != null)
+        {
+            StopCoroutine(_scanCoroutine);
+            _scanCoroutine = null;
+        }
     }
 
-    private void OnSceneLoaded(Scene s, LoadSceneMode mode) => StartCoroutine(AttachAfterFrame());
+    private void OnSceneLoaded(Scene s, LoadSceneMode mode)
+    {
+        _attached.Clear();
+        _previousSelected = null;
+        StartCoroutine(AttachAfterFrame());
+    }
 
     private IEnumerator AttachAfterFrame()
     {
         yield return null;
         AttachToActiveScene();
+    }
+
+    private IEnumerator PeriodicallyScanSelectables()
+    {
+        while (true)
+        {
+            AttachToActiveScene();
+            yield return new WaitForSecondsRealtime(0.15f);
+        }
     }
 
     public void AttachToActiveScene()
@@ -102,18 +131,59 @@ public class UIHoverSelectAudio : MonoBehaviour
 
         if (s.GetComponent<UIHoverSelectRelay>() == null)
             s.gameObject.AddComponent<UIHoverSelectRelay>();
+
+        // If it is a Button, also register with the Click system
+        if (s is Button btn && UIClickAudio.Instance != null)
+        {
+            UIClickAudio.Instance.AttachIfNeeded(btn);
+        }
+    }
+
+    private void Update()
+    {
+        if (EventSystem.current != null)
+        {
+            GameObject currentSel = EventSystem.current.currentSelectedGameObject;
+            if (currentSel != _previousSelected)
+            {
+                _previousSelected = currentSel;
+                if (currentSel != null)
+                {
+                    Selectable s = currentSel.GetComponent<Selectable>();
+                    if (s != null && s.IsInteractable())
+                    {
+                        AttachIfNeeded(s);
+                        PlayNav(s.GetInstanceID(), currentSel.name);
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>Plays the navigation sound. <paramref name="sourceId"/> is the
     /// instance ID of the originating widget; identical IDs within
     /// <see cref="perTargetCooldown"/> are suppressed.</summary>
-    public void PlayNav(int sourceId)
+    public void PlayNav(int sourceId, string sourceName = "Relay")
     {
         if (_audioSource == null) return;
         float now = Time.unscaledTime;
+
+        // Suppress select/hover if click was triggered in the same brief window (prevents double triggers on click)
+        if (UIClickAudio.Instance != null && now - UIClickAudio.Instance.LastPlayTime < 0.04f)
+        {
+            if (debugLogging)
+                Debug.Log($"[UIHoverSelectAudio] Suppressed select/hover sound on {sourceName} because a click sound recently played.");
+            return;
+        }
+
         if (sourceId == _lastSourceId && now - _lastPlayTime < perTargetCooldown) return;
         _lastSourceId = sourceId;
         _lastPlayTime = now;
+
+        if (debugLogging)
+        {
+            Debug.Log($"[UIHoverSelectAudio] Playing hover/select sound for {sourceName} (ID: {sourceId})");
+        }
 
         _audioSource.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
 
@@ -165,7 +235,7 @@ public class UIHoverSelectRelay : MonoBehaviour, IPointerEnterHandler, ISelectHa
         Selectable s = GetComponent<Selectable>();
         if (s == null || !s.IsInteractable()) return;
         if (UIHoverSelectAudio.Instance != null)
-            UIHoverSelectAudio.Instance.PlayNav(GetInstanceID());
+            UIHoverSelectAudio.Instance.PlayNav(GetInstanceID(), gameObject.name);
     }
 
     public void OnSelect(BaseEventData eventData)
@@ -173,6 +243,6 @@ public class UIHoverSelectRelay : MonoBehaviour, IPointerEnterHandler, ISelectHa
         Selectable s = GetComponent<Selectable>();
         if (s == null || !s.IsInteractable()) return;
         if (UIHoverSelectAudio.Instance != null)
-            UIHoverSelectAudio.Instance.PlayNav(GetInstanceID());
+            UIHoverSelectAudio.Instance.PlayNav(GetInstanceID(), gameObject.name);
     }
 }

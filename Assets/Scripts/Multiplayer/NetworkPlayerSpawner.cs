@@ -1,6 +1,8 @@
 using System.Collections;
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.UI;
+using TMPro;
 
 #if PUN_2_OR_NEWER
 using Photon.Pun;
@@ -98,6 +100,13 @@ public class NetworkPlayerSpawner : MonoBehaviour
     {
         if (FindOwnedPlayer() != null)
             return;
+
+        if (MpRoomConfig.ReadMatchState() >= 2)
+        {
+            Debug.Log("[Spectator] Match already in progress (State >= 2). Entering spectator mode.");
+            SpawnAsSpectator();
+            return;
+        }
 
         Debug.Log($"[PhotonSpawn] prefab path={playerPrefabPath}");
 
@@ -208,6 +217,142 @@ public class NetworkPlayerSpawner : MonoBehaviour
             : player.NickName;
         MatchStatsManager.Instance.RegisterCombatant($"photon:{player.ActorNumber}", displayName, isPlayer: true);
         Debug.Log($"[MPHUD] registered player actor={player.ActorNumber} name={displayName}");
+    }
+
+    private void SpawnAsSpectator()
+    {
+        // 1. Find scene player and lock controls
+        PlayerController[] players = FindObjectsByType<PlayerController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        foreach (PlayerController pc in players)
+        {
+#if PUN_2_OR_NEWER
+            if (pc.GetComponent<PhotonView>() == null)
+            {
+                pc.enabled = false;
+                
+                // Disable combat and health
+                MonoBehaviour[] allScripts = pc.GetComponents<MonoBehaviour>();
+                foreach (MonoBehaviour script in allScripts)
+                {
+                    if (script != null && (script.GetType().Name == "KatanaCombatHandler" || script.GetType().Name == "PlayerHealth"))
+                    {
+                        script.enabled = false;
+                    }
+                }
+                
+                Debug.Log($"[Spectator] Disabled scene player components on: {pc.gameObject.name}");
+            }
+#else
+            pc.enabled = false;
+#endif
+        }
+
+        // 2. Enable mouse cursor so spectator can click buttons
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        // 3. Build the premium glassmorphic Spectator UI overlay
+        GameObject spectatorCanvasObj = new GameObject("SpectatorCanvas");
+        Canvas canvas = spectatorCanvasObj.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 999; // Ensure it's on top of everything
+        spectatorCanvasObj.AddComponent<UnityEngine.UI.CanvasScaler>();
+        spectatorCanvasObj.AddComponent<UnityEngine.UI.GraphicRaycaster>();
+
+        GameObject panelObj = new GameObject("SpectatorPanel");
+        panelObj.transform.SetParent(spectatorCanvasObj.transform, false);
+        Image panelImg = panelObj.AddComponent<Image>();
+        panelImg.color = new Color(0.04f, 0.08f, 0.18f, 0.92f); // Deep dark blue glass
+        
+        Outline panelOutline = panelObj.AddComponent<Outline>();
+        panelOutline.effectColor = new Color(0.3f, 0.5f, 1f, 0.6f);
+        panelOutline.effectDistance = new Vector2(2f, -2f);
+        
+        RectTransform panelRect = panelObj.GetComponent<RectTransform>();
+        panelRect.anchorMin = new Vector2(0.5f, 0.5f);
+        panelRect.anchorMax = new Vector2(0.5f, 0.5f);
+        panelRect.pivot = new Vector2(0.5f, 0.5f);
+        panelRect.sizeDelta = new Vector2(900f, 450f);
+
+        // Find font
+        TMP_FontAsset customFont = null;
+        TextMeshProUGUI existingText = FindFirstObjectByType<TextMeshProUGUI>();
+        if (existingText != null)
+            customFont = existingText.font;
+
+        // Title text
+        GameObject titleObj = new GameObject("SpectatorTitle");
+        titleObj.transform.SetParent(panelObj.transform, false);
+        TextMeshProUGUI titleText = titleObj.AddComponent<TextMeshProUGUI>();
+        titleText.text = "MATCH IN PROGRESS";
+        titleText.fontSize = 44;
+        titleText.color = new Color(1f, 0.2f, 0.3f, 1f); // Glowing light red
+        titleText.fontStyle = FontStyles.Bold;
+        titleText.alignment = TextAlignmentOptions.Center;
+        if (customFont != null) titleText.font = customFont;
+        
+        RectTransform titleRect = titleObj.GetComponent<RectTransform>();
+        titleRect.anchorMin = new Vector2(0.05f, 0.68f);
+        titleRect.anchorMax = new Vector2(0.95f, 0.88f);
+        titleRect.offsetMin = titleRect.offsetMax = Vector2.zero;
+
+        // Subtitle text
+        GameObject subObj = new GameObject("SpectatorSubtitle");
+        subObj.transform.SetParent(panelObj.transform, false);
+        TextMeshProUGUI subText = subObj.AddComponent<TextMeshProUGUI>();
+        subText.text = "LATE JOIN DETECTED — ENTERING SPECTATOR MODE";
+        subText.fontSize = 20;
+        subText.color = new Color(0.7f, 0.85f, 1f, 0.9f);
+        subText.fontStyle = FontStyles.Normal;
+        subText.alignment = TextAlignmentOptions.Center;
+        if (customFont != null) subText.font = customFont;
+        
+        RectTransform subRect = subObj.GetComponent<RectTransform>();
+        subRect.anchorMin = new Vector2(0.05f, 0.45f);
+        subRect.anchorMax = new Vector2(0.95f, 0.62f);
+        subRect.offsetMin = subRect.offsetMax = Vector2.zero;
+
+        // ── Exit Button ──
+        GameObject exitBtnObj = new GameObject("ExitButton");
+        exitBtnObj.transform.SetParent(panelObj.transform, false);
+        Image exitBtnImg = exitBtnObj.AddComponent<Image>();
+        exitBtnImg.color = new Color(0.15f, 0.18f, 0.25f, 0.95f);
+        
+        Outline exitBtnOutline = exitBtnObj.AddComponent<Outline>();
+        exitBtnOutline.effectColor = new Color(0.4f, 0.45f, 0.55f, 0.8f);
+        exitBtnOutline.effectDistance = new Vector2(1.5f, -1.5f);
+        
+        Button exitBtn = exitBtnObj.AddComponent<Button>();
+        exitBtn.targetGraphic = exitBtnImg;
+        exitBtn.onClick.AddListener(() => {
+#if PUN_2_OR_NEWER
+            if (PhotonNetwork.InRoom)
+            {
+                PhotonNetwork.LeaveRoom();
+            }
+#endif
+            UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+        });
+        
+        RectTransform exitRect = exitBtnObj.GetComponent<RectTransform>();
+        exitRect.anchorMin = new Vector2(0.3f, 0.15f);
+        exitRect.anchorMax = new Vector2(0.7f, 0.32f);
+        exitRect.offsetMin = exitRect.offsetMax = Vector2.zero;
+
+        GameObject exitBtnTextObj = new GameObject("ExitButtonText");
+        exitBtnTextObj.transform.SetParent(exitBtnObj.transform, false);
+        TextMeshProUGUI exitBtnText = exitBtnTextObj.AddComponent<TextMeshProUGUI>();
+        exitBtnText.text = "RETURN TO MAIN MENU";
+        exitBtnText.fontSize = 22;
+        exitBtnText.color = Color.white;
+        exitBtnText.fontStyle = FontStyles.Bold;
+        exitBtnText.alignment = TextAlignmentOptions.Center;
+        if (customFont != null) exitBtnText.font = customFont;
+        
+        RectTransform exitTextRect = exitBtnTextObj.GetComponent<RectTransform>();
+        exitTextRect.anchorMin = Vector2.zero;
+        exitTextRect.anchorMax = Vector2.one;
+        exitTextRect.offsetMin = exitTextRect.offsetMax = Vector2.zero;
     }
 #endif
 

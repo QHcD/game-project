@@ -25,11 +25,59 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     [Tooltip("Enable/disable auto-regeneration.")]
     public bool autoRegenEnabled = true;
 
+    [Header("Combat Voice SFX")]
+    public AudioClip[] hurtSounds;
+    public AudioClip[] deathSounds;
+
+    private AudioSource _audioSource;
+    private float _lastVoiceTime = -100f;
+
     // ── Internal state ──
     private float timeSinceLastDamage;
     private bool isRegenerating;
     private string _lastAttackerStatsId;
     private bool _loggedRemoteHudIgnored;
+
+    private void SetupVoiceAudioSource()
+    {
+        _audioSource = gameObject.AddComponent<AudioSource>();
+        _audioSource.spatialBlend = 1f; // 3D sound
+        _audioSource.playOnAwake = false;
+        _audioSource.loop = false;
+        _audioSource.minDistance = 2f;
+        _audioSource.maxDistance = 40f;
+        _audioSource.rolloffMode = AudioRolloffMode.Logarithmic;
+    }
+
+    private void PlayHurtVoice()
+    {
+        if (_audioSource == null) SetupVoiceAudioSource();
+        if (_audioSource == null) return;
+        if (hurtSounds == null || hurtSounds.Length == 0) return;
+        if (Time.unscaledTime - _lastVoiceTime < 0.25f) return; // avoid spam
+        _lastVoiceTime = Time.unscaledTime;
+
+        AudioClip clip = hurtSounds[Random.Range(0, hurtSounds.Length)];
+        if (clip != null)
+        {
+            _audioSource.pitch = Random.Range(0.95f, 1.05f);
+            _audioSource.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(0.7f));
+        }
+    }
+
+    private void PlayDeathVoice()
+    {
+        if (_audioSource == null) SetupVoiceAudioSource();
+        if (_audioSource == null) return;
+        if (deathSounds == null || deathSounds.Length == 0) return;
+
+        AudioClip clip = deathSounds[Random.Range(0, deathSounds.Length)];
+        if (clip != null)
+        {
+            _audioSource.pitch = Random.Range(0.95f, 1.05f);
+            _audioSource.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(1.0f));
+        }
+    }
 
     private void Awake()
     {
@@ -90,6 +138,9 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         timeSinceLastDamage = 0f;
         isRegenerating = false;
 
+        // Play hurt voice sound
+        PlayHurtVoice();
+
         // Notify the persistent profile so the "Win without dying" challenge
         // disqualifies the current match the moment we take any damage.
         if (SessionManager.Instance != null)
@@ -122,6 +173,9 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     {
         if (_deathHandled) return;
         _deathHandled = true;
+
+        // Play death voice sound
+        PlayDeathVoice();
 
         // Stop all locomotion so the corpse can't slide around or take more hits.
         CharacterController cc = GetComponent<CharacterController>();
@@ -160,11 +214,43 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         }
     }
 
+    private void Start()
+    {
+        if (MultiplayerMode.IsMultiplayer && MatchStatsManager.Instance != null)
+        {
+#if PUN_2_OR_NEWER
+            PhotonView view = GetComponent<PhotonView>();
+            if (view != null && view.Owner != null)
+            {
+                string label = string.IsNullOrWhiteSpace(view.Owner.NickName) ? $"Player_{view.Owner.ActorNumber}" : view.Owner.NickName;
+                MatchStatsManager.Instance.RegisterCombatant(GetStatsId(), label, isPlayer: true, transform: transform);
+            }
+#endif
+        }
+    }
+
     // ── IDamageable ─────────────────────────────────────────────────────────
     public bool IsAlive => currentHealth > 0f;
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            bool isFriendly = attackerRoot != null && attackerRoot.GetComponentInParent<PlayerHealth>() != null && attackerRoot.GetComponentInParent<PlayerHealth>().gameObject != gameObject;
+            if (isFriendly)
+            {
+                bool ff = true;
+#if PUN_2_OR_NEWER
+                if (PhotonNetwork.InRoom && PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(MpRoomConfig.KeyFriendlyFire, out object ffRaw))
+                    ff = (bool)ffRaw;
+#endif
+                if (MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival)
+                    ff = false;
+
+                if (!ff) return; // Block friendly fire
+            }
+        }
+
         if (attackerRoot != null)
         {
             EnemyController attackerEnemy = attackerRoot.GetComponentInParent<EnemyController>();

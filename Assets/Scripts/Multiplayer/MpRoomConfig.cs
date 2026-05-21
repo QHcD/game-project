@@ -20,6 +20,12 @@ public static class MpRoomConfig
     public const string KeyMode     = "gm";
     public const string KeyLevel    = "lv";
     public const string KeyBotCount = "bc";
+    public const string KeyBotsEnabled   = "be";
+    public const string KeyFriendlyFire  = "ff";
+    public const string KeyMatchState    = "ms";
+    public const string KeyTimerDuration = "td";
+    public const string KeyWinnerName    = "wn";
+    public const string KeyMaxPlayers    = "mh";
 
     public const int DefaultBotCount = 20;
 
@@ -77,6 +83,66 @@ public static class MpRoomConfig
         return DefaultBotCount;
     }
 
+    public static bool ReadBotsEnabled()
+    {
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.InRoom &&
+            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyBotsEnabled, out object raw))
+            return (bool)raw;
+#endif
+        return true;
+    }
+
+    public static bool ReadFriendlyFire()
+    {
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.InRoom &&
+            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyFriendlyFire, out object raw))
+            return (bool)raw;
+#endif
+        return true;
+    }
+
+    public static byte ReadMatchState()
+    {
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.InRoom &&
+            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyMatchState, out object raw))
+            return (byte)raw;
+#endif
+        return 0; // WaitingForPlayers
+    }
+
+    public static float ReadTimerDuration()
+    {
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.InRoom &&
+            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyTimerDuration, out object raw))
+            return (float)raw;
+#endif
+        return 300f;
+    }
+
+    public static string ReadWinnerName()
+    {
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.InRoom &&
+            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyWinnerName, out object raw))
+            return (string)raw;
+#endif
+        return string.Empty;
+    }
+
+    public static int ReadMaxPlayers()
+    {
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.InRoom &&
+            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyMaxPlayers, out object raw))
+            return (int)raw;
+#endif
+        return 8;
+    }
+
     /// <summary>
     /// Reads all properties from the room and applies them to local state.
     /// Call this on every client after joining a room.
@@ -85,6 +151,6 @@ public static class MpRoomConfig
     {
         MpGameMode mode = ReadMode();
         MultiplayerMode.SetMode(mode);
-        Debug.Log($"[MpRoomConfig] applied mode={mode} level={ReadLevel()} bots={ReadBotCount()}");
+        Debug.Log($"[MpRoomConfig] applied mode={mode} level={ReadLevel()} bots={ReadBotCount()} botsEnabled={ReadBotsEnabled()} friendlyFire={ReadFriendlyFire()} state={ReadMatchState()}");
     }
 }

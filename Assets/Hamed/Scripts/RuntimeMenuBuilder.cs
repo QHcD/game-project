@@ -246,15 +246,95 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         // ── Title ─────────────────────────────────────────────────────────────
         MakeText(panelObj.transform, "MULTIPLAYER", 64, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.05f, 0.755f), new Vector2(0.95f, 0.935f), true);
+            new Vector2(0.05f, 0.85f), new Vector2(0.95f, 0.95f), true);
 
         // Subtitle — premium / COD-style (ASCII only).
         MakeText(panelObj.transform, "DEPLOY ONLINE - UP TO 8 OPERATORS", 21f,
             new Color(0.48f, 0.66f, 1f, 0.82f),
-            new Vector2(0.08f, 0.665f), new Vector2(0.92f, 0.725f), false);
+            new Vector2(0.08f, 0.79f), new Vector2(0.92f, 0.84f), false);
 
         // ── Name input ────────────────────────────────────────────────────────
         TMP_InputField nameInput = CreateMultiplayerNameInput(panelObj.transform);
+
+        // ── Game Mode Selector Widget (Side-by-Side) ──────────────────────────
+        System.Action updateModeUI = null;
+        Image coopBg = null, chaosBg = null, pvpBg = null;
+        Outline coopOutline = null, chaosOutline = null, pvpOutline = null;
+        TextMeshProUGUI coopText = null, chaosText = null, pvpText = null;
+
+        Button modeCoopBtn = MakeGameModeButton(panelObj.transform, "CO-OP SURVIVAL",
+            new Vector2(0.15f, 0.57f), new Vector2(0.37f, 0.65f),
+            () => { MultiplayerMode.SetMode(MpGameMode.CoopSurvival); updateModeUI(); },
+            out coopBg, out coopOutline, out coopText);
+
+        Button modeChaosBtn = MakeGameModeButton(panelObj.transform, "HYBRID CHAOS",
+            new Vector2(0.39f, 0.57f), new Vector2(0.61f, 0.65f),
+            () => { MultiplayerMode.SetMode(MpGameMode.HybridChaos); updateModeUI(); },
+            out chaosBg, out chaosOutline, out chaosText);
+
+        Button modePvpBtn = MakeGameModeButton(panelObj.transform, "PURE PVP",
+            new Vector2(0.63f, 0.57f), new Vector2(0.85f, 0.65f),
+            () => { MultiplayerMode.SetMode(MpGameMode.PurePvP); updateModeUI(); },
+            out pvpBg, out pvpOutline, out pvpText);
+
+        updateModeUI = () => {
+            MpGameMode cur = MultiplayerMode.ActiveMode;
+
+            // Harmonious premium palettes (vibrant blues and sleek outlines)
+            Color activeBg = new Color(0.12f, 0.36f, 0.90f, 0.85f);
+            Color activeHoverBg = new Color(0.18f, 0.48f, 1f, 0.95f);
+            Color activeOutline = new Color(0.35f, 0.75f, 1f, 0.90f);
+            Color activeText = new Color(0.95f, 0.98f, 1f, 1f);
+
+            Color inactiveBg = new Color(0.03f, 0.05f, 0.12f, 0.45f);
+            Color inactiveHoverBg = new Color(0.06f, 0.10f, 0.22f, 0.70f);
+            Color inactiveOutline = new Color(0.20f, 0.35f, 0.60f, 0.40f);
+            Color inactiveText = new Color(0.55f, 0.70f, 0.90f, 0.75f);
+
+            // Co-op
+            bool isCoop = cur == MpGameMode.CoopSurvival;
+            coopBg.color = isCoop ? activeBg : inactiveBg;
+            coopOutline.effectColor = isCoop ? activeOutline : inactiveOutline;
+            coopText.color = isCoop ? activeText : inactiveText;
+            var hCoop = modeCoopBtn.GetComponent<MenuButtonHoverEffect>();
+            if (hCoop != null) {
+                hCoop.normalBackgroundColor = isCoop ? activeBg : inactiveBg;
+                hCoop.hoverBackgroundColor = isCoop ? activeHoverBg : inactiveHoverBg;
+                hCoop.normalOutlineColor = isCoop ? activeOutline : inactiveOutline;
+                hCoop.hoverOutlineColor = isCoop ? activeOutline : inactiveOutline;
+                hCoop.normalTextColor = isCoop ? activeText : inactiveText;
+            }
+
+            // Chaos
+            bool isChaos = cur == MpGameMode.HybridChaos;
+            chaosBg.color = isChaos ? activeBg : inactiveBg;
+            chaosOutline.effectColor = isChaos ? activeOutline : inactiveOutline;
+            chaosText.color = isChaos ? activeText : inactiveText;
+            var hChaos = modeChaosBtn.GetComponent<MenuButtonHoverEffect>();
+            if (hChaos != null) {
+                hChaos.normalBackgroundColor = isChaos ? activeBg : inactiveBg;
+                hChaos.hoverBackgroundColor = isChaos ? activeHoverBg : inactiveHoverBg;
+                hChaos.normalOutlineColor = isChaos ? activeOutline : inactiveOutline;
+                hChaos.hoverOutlineColor = isChaos ? activeOutline : inactiveOutline;
+                hChaos.normalTextColor = isChaos ? activeText : inactiveText;
+            }
+
+            // PvP
+            bool isPvp = cur == MpGameMode.PurePvP;
+            pvpBg.color = isPvp ? activeBg : inactiveBg;
+            pvpOutline.effectColor = isPvp ? activeOutline : inactiveOutline;
+            pvpText.color = isPvp ? activeText : inactiveText;
+            var hPvp = modePvpBtn.GetComponent<MenuButtonHoverEffect>();
+            if (hPvp != null) {
+                hPvp.normalBackgroundColor = isPvp ? activeBg : inactiveBg;
+                hPvp.hoverBackgroundColor = isPvp ? activeHoverBg : inactiveHoverBg;
+                hPvp.normalOutlineColor = isPvp ? activeOutline : inactiveOutline;
+                hPvp.hoverOutlineColor = isPvp ? activeOutline : inactiveOutline;
+                hPvp.normalTextColor = isPvp ? activeText : inactiveText;
+            }
+        };
+
+        updateModeUI();
 
         // ── Status area: connection text + animated dots (no instructional copy).
         TextMeshProUGUI status = MakeText(panelObj.transform,
@@ -278,23 +358,35 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         // ── Buttons (neon gradient tiers + rim glow hover) ─────────────────────
         Button connectBtn = MakeMultiplayerNeonButton(panelObj.transform, "CONNECT / PLAY ONLINE",
-            new Vector2(0.15f, 0.415f), new Vector2(0.85f, 0.495f),
+            new Vector2(0.15f, 0.465f), new Vector2(0.85f, 0.535f),
             launcher.ConnectAndPlayOnline, 28f, true,
             new Color(0.05f, 0.38f, 0.95f, 1f), new Color(0.10f, 0.55f, 1f, 1f),
             new Color(0.35f, 0.85f, 1f, 1f),
             new Color(0.25f, 0.72f, 1f, 0.95f), new Color(0.55f, 0.95f, 1f, 1f));
+
+        Button createBtn = MakeMultiplayerNeonButton(panelObj.transform, "CREATE ROOM",
+            new Vector2(0.15f, 0.375f), new Vector2(0.85f, 0.445f),
+            launcher.CreateRoomWithCode, 28f, true,
+            new Color(0.16f, 0.08f, 0.58f, 1f), new Color(0.28f, 0.14f, 0.78f, 1f),
+            new Color(0.62f, 0.38f, 1f, 1f),
+            new Color(0.48f, 0.30f, 1f, 0.75f), new Color(0.78f, 0.55f, 1f, 1f));
+
+        TMP_InputField roomCodeInput = CreateMultiplayerRoomCodeInput(panelObj.transform);
+
+        Button joinCodeBtn = MakeMultiplayerNeonButton(panelObj.transform, "JOIN BY CODE",
+            new Vector2(0.52f, 0.285f), new Vector2(0.85f, 0.355f),
+            launcher.JoinRoomWithCode, 28f, true,
+            new Color(0.05f, 0.24f, 0.68f, 1f), new Color(0.08f, 0.36f, 0.88f, 1f),
+            new Color(0.22f, 0.62f, 0.98f, 1f),
+            new Color(0.18f, 0.58f, 0.92f, 0.55f), new Color(0.42f, 0.78f, 1f, 0.95f));
+
         Button joinBtn = MakeMultiplayerNeonButton(panelObj.transform, "JOIN RANDOM ROOM",
-            new Vector2(0.15f, 0.315f), new Vector2(0.85f, 0.395f),
+            new Vector2(0.15f, 0.195f), new Vector2(0.85f, 0.265f),
             launcher.JoinRandomRoom, 28f, true,
             new Color(0.05f, 0.24f, 0.68f, 1f), new Color(0.08f, 0.36f, 0.88f, 1f),
             new Color(0.22f, 0.62f, 0.98f, 1f),
             new Color(0.18f, 0.58f, 0.92f, 0.55f), new Color(0.42f, 0.78f, 1f, 0.95f));
-        Button createBtn = MakeMultiplayerNeonButton(panelObj.transform, "CREATE ROOM",
-            new Vector2(0.15f, 0.215f), new Vector2(0.85f, 0.295f),
-            launcher.CreateRoom, 28f, true,
-            new Color(0.16f, 0.08f, 0.58f, 1f), new Color(0.28f, 0.14f, 0.78f, 1f),
-            new Color(0.62f, 0.38f, 1f, 1f),
-            new Color(0.48f, 0.30f, 1f, 0.75f), new Color(0.78f, 0.55f, 1f, 1f));
+
         Button backBtn = MakePanelButton(panelObj.transform, "BACK",
             new Vector2(0.38f, 0.038f), new Vector2(0.62f, 0.108f),
             () =>
@@ -306,6 +398,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
         launcher.connectButton = connectBtn;
         launcher.joinRandomButton = joinBtn;
         launcher.createRoomButton = createBtn;
+        launcher.roomCodeInput = roomCodeInput;
+        launcher.joinByCodeButton = joinCodeBtn;
 
         // Animated dots: watch connectBtn — when it goes non-interactable
         // (i.e. Photon is working) the dots start cycling automatically.
@@ -313,13 +407,48 @@ public class RuntimeMenuBuilder : MonoBehaviour
         dots.dotsLabel = dotsLabel;
         dots.watchButton = connectBtn;
 
-        var nav = new System.Collections.Generic.List<Selectable>(5);
+        var nav = new System.Collections.Generic.List<Selectable>(10);
         nav.Add(nameInput);
+        nav.Add(modeCoopBtn);
+        nav.Add(modeChaosBtn);
+        nav.Add(modePvpBtn);
         nav.Add(connectBtn);
-        nav.Add(joinBtn);
         nav.Add(createBtn);
+        nav.Add(roomCodeInput);
+        nav.Add(joinCodeBtn);
+        nav.Add(joinBtn);
         nav.Add(backBtn);
         MenuNavigationManager.AttachLinear(overlayObj, nav);
+    }
+
+    Button MakeGameModeButton(Transform parent, string label, Vector2 anchorMin, Vector2 anchorMax, System.Action action, out Image bgImage, out Outline outline, out TextMeshProUGUI textComp)
+    {
+        GameObject obj = new GameObject(label + "_ModeBtn", typeof(RectTransform));
+        obj.transform.SetParent(parent, false);
+
+        RectTransform rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = anchorMin;
+        rect.anchorMax = anchorMax;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+
+        bgImage = obj.AddComponent<Image>();
+        outline = obj.AddComponent<Outline>();
+        outline.effectDistance = new Vector2(1.5f, -1.5f);
+
+        Button btn = obj.AddComponent<Button>();
+        btn.targetGraphic = bgImage;
+        btn.onClick.AddListener(() => action());
+
+        textComp = CreateCenteredLabel(obj.transform, label, 18f, Color.white, true);
+        textComp.fontStyle = FontStyles.Bold;
+
+        MenuButtonHoverEffect hover = obj.AddComponent<MenuButtonHoverEffect>();
+        hover.label = textComp;
+        hover.background = bgImage;
+        hover.hoverScale = new Vector3(1.05f, 1.05f, 1f);
+        hover.normalScale = Vector3.one;
+
+        return btn;
     }
 
     TMP_InputField CreateMultiplayerNameInput(Transform parent)
@@ -334,8 +463,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         RectTransform rect = inputObj.GetComponent<RectTransform>();
         // ~68px tall on 820px panel (0.083), centered under subtitle; tighter horizontal margins.
-        rect.anchorMin = new Vector2(0.16f, 0.568f);
-        rect.anchorMax = new Vector2(0.84f, 0.651f);
+        rect.anchorMin = new Vector2(0.16f, 0.68f);
+        rect.anchorMax = new Vector2(0.84f, 0.76f);
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
         TMP_InputField input = inputObj.AddComponent<TMP_InputField>();
@@ -350,6 +479,44 @@ public class RuntimeMenuBuilder : MonoBehaviour
         input.placeholder = placeholder;
         input.text = PlayerProfile.HasUsername ? PlayerProfile.Username : string.Empty;
         input.characterLimit = PlayerProfile.MaxNameLength;
+        return input;
+    }
+
+    TMP_InputField CreateMultiplayerRoomCodeInput(Transform parent)
+    {
+        GameObject inputObj = new GameObject("RoomCodeInput");
+        inputObj.transform.SetParent(parent, false);
+        Image image = inputObj.AddComponent<Image>();
+        image.color = new Color(0.028f, 0.042f, 0.088f, 0.94f);
+        Outline outline = inputObj.AddComponent<Outline>();
+        outline.effectColor = new Color(0.28f, 0.78f, 1f, 0.72f);
+        outline.effectDistance = new Vector2(1.5f, -1.5f);
+
+        RectTransform rect = inputObj.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.15f, 0.285f);
+        rect.anchorMax = new Vector2(0.48f, 0.355f);
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+
+        TMP_InputField input = inputObj.AddComponent<TMP_InputField>();
+        TextMeshProUGUI text = CreateCenteredLabel(inputObj.transform, string.Empty, 26f, new Color(0.94f, 0.98f, 1f, 1f), true);
+        text.alignment = TextAlignmentOptions.Center;
+        
+        TextMeshProUGUI placeholder = CreateCenteredLabel(inputObj.transform, "ENTER CODE", 24f, new Color(0.55f, 0.72f, 1f, 0.48f), false);
+        placeholder.alignment = TextAlignmentOptions.Center;
+
+        input.textComponent = text;
+        input.placeholder = placeholder;
+        input.characterLimit = 6;
+        
+        // Force uppercase input securely
+        input.onValueChanged.AddListener((val) => {
+            string upper = val.ToUpper();
+            if (val != upper)
+            {
+                input.text = upper;
+            }
+        });
+        
         return input;
     }
 
@@ -780,7 +947,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Vector2 rowAnchorMin, Vector2 rowAnchorMax, float centerX,
         UnityEngine.Events.UnityAction action, float labelFontSize = 40f)
     {
-        GameObject obj = new GameObject(label + "_Btn");
+        GameObject obj = new GameObject(label + "_Btn", typeof(RectTransform));
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
         img.color = new Color(1f, 1f, 1f, 0f);
@@ -860,10 +1027,10 @@ public class RuntimeMenuBuilder : MonoBehaviour
     Button MakePillMenuButton(Transform parent, string label,
         UnityEngine.Events.UnityAction action, float labelFontSize = 40f)
     {
-        GameObject obj = new GameObject(label + "_Btn");
+        GameObject obj = new GameObject(label + "_Btn", typeof(RectTransform));
         obj.transform.SetParent(parent, false);
 
-        RectTransform rect = obj.AddComponent<RectTransform>();
+        RectTransform rect = obj.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(0.5f, 0.5f);
         rect.anchorMax = new Vector2(0.5f, 0.5f);
         rect.pivot = new Vector2(0.5f, 0.5f);
@@ -911,7 +1078,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         bool staticMenuBlue = false,
         bool autoSizeSingleLine = false)
     {
-        GameObject obj = new GameObject(label + "_Btn");
+        GameObject obj = new GameObject(label + "_Btn", typeof(RectTransform));
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
         img.color = staticMenuBlue ? SettingsManager.MenuBlue : Color.white;
@@ -983,7 +1150,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Color topSheenRgb,
         Color normalOutline, Color hoverOutline)
     {
-        GameObject obj = new GameObject(label + "_Btn");
+        GameObject obj = new GameObject(label + "_Btn", typeof(RectTransform));
         obj.transform.SetParent(parent, false);
 
         Image img = obj.AddComponent<Image>();
@@ -2195,7 +2362,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Vector2 anchorMin, Vector2 anchorMax, Color accent, Color fill,
         UnityEngine.Events.UnityAction action)
     {
-        GameObject obj = new GameObject(label + "_NeonBtn");
+        GameObject obj = new GameObject(label + "_NeonBtn", typeof(RectTransform));
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
         img.color = fill;
@@ -3293,7 +3460,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     Button MakeChoiceButton(Transform parent, string label,
         Vector2 anchorMin, Vector2 anchorMax, UnityEngine.Events.UnityAction action)
     {
-        GameObject obj = new GameObject(label + "_Choice");
+        GameObject obj = new GameObject(label + "_Choice", typeof(RectTransform));
         obj.transform.SetParent(parent, false);
         Image img = obj.AddComponent<Image>();
         img.color = SettingsManager.MenuBlue;
