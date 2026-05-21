@@ -15,6 +15,17 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public class DoorController : MonoBehaviour, IInteractable
 {
+    /// <summary>
+    /// Global kill-switch for the "[E] / CLICK OPEN DOOR" prompt and toggle.
+    /// The v3 industrial map ships with welded fake doors (named like "door" /
+    /// "gate" / "Object084") that PlayerInteractor + LevelBuilder previously
+    /// auto-promoted to interactive — leading to a useless prompt on every
+    /// fence and container. Default false: prompt and interaction are
+    /// suppressed scene-wide. Set true to re-enable on a project that ships
+    /// real, properly-pivoted door prefabs.
+    /// </summary>
+    public static bool DoorInteractionsEnabled = false;
+
     [Header("Swing")]
     [Tooltip("Degrees to rotate around the Y axis. Positive = clockwise from above.")]
     public float openAngle = 90f;
@@ -104,11 +115,15 @@ public class DoorController : MonoBehaviour, IInteractable
     }
 
     // ── IInteractable ───────────────────────────────────────────────────────
-    string IInteractable.GetPrompt() => interactiveToggle
+    // All three accessors gate on the global DoorInteractionsEnabled kill-switch
+    // so disabling the system at any point in the session immediately removes
+    // the on-screen prompt and the toggle, without having to find and disable
+    // every individual DoorController instance.
+    string IInteractable.GetPrompt() => (DoorInteractionsEnabled && interactiveToggle)
         ? (_isOpen ? "CLOSE DOOR" : interactionPrompt)
         : string.Empty;
-    void   IInteractable.Interact(GameObject by) { if (interactiveToggle) Toggle(); }
-    bool   IInteractable.CanInteract           => interactiveToggle;
+    void   IInteractable.Interact(GameObject by) { if (DoorInteractionsEnabled && interactiveToggle) Toggle(); }
+    bool   IInteractable.CanInteract           => DoorInteractionsEnabled && interactiveToggle;
 
     private IEnumerator SwingDoor(Quaternion targetRot)
     {

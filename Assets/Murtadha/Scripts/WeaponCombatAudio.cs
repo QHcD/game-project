@@ -46,7 +46,23 @@ public class WeaponCombatAudio : MonoBehaviour
     [Header("Mixing")]
     [Range(0f, 2f)] public float swingVolume = 0.9f;
     [Range(0f, 2f)] public float hitVolume = 1.0f;
-    public Vector2 pitchJitter = new Vector2(0.95f, 1.05f);
+    public Vector2 pitchJitter = new Vector2(0.94f, 1.06f);
+    [Tooltip("Multiplicative volume jitter applied on top of hitVolume for organic variation.")]
+    public Vector2 hitVolumeJitter = new Vector2(0.90f, 1.00f);
+
+    [Header("Hit Spam Guard")]
+    [Tooltip("Minimum seconds between two hit-sound plays for the same (attacker, target, level) triple. " +
+             "Prevents OverlapSphere ticking from machine-gunning the clip on a slow swing.")]
+    public float perTargetHitCooldown = 0.08f;
+
+    [Header("Debug")]
+    [Tooltip("If enabled, logs which clip was resolved per hit and which fallback (if any) was used.")]
+    public bool debugLog = false;
+
+    // Per-(attacker,target,level) cooldown so repeated OverlapSphere ticks
+    // within the same swing window don't retrigger the same clip every frame.
+    private static readonly System.Collections.Generic.Dictionary<long, float> _hitCooldownByKey
+        = new System.Collections.Generic.Dictionary<long, float>();
 
     [Tooltip("Optional override for the hand transform where the swing trail VFX spawns. " +
              "If null, falls back to this GameObject's transform.")]
@@ -98,7 +114,17 @@ public class WeaponCombatAudio : MonoBehaviour
     {
         WeaponCombatAudio inst = FindFor(owner);
         if (inst == null) return;
-        inst.PlayHitInternal(WeaponAnimationCategories.ForLevel(weaponLevel), worldPos);
+
+        // Anti-spam: throttle the same (attacker, level) combo. Target identity is
+        // folded into the position hash so distinct targets still play in parallel.
+        int attackerId = owner != null ? owner.GetInstanceID() : 0;
+        long key = ((long)attackerId << 24) ^ ((long)weaponLevel << 16) ^ Mathf.RoundToInt(worldPos.x * 17f + worldPos.z * 29f);
+        float now = Time.unscaledTime;
+        if (_hitCooldownByKey.TryGetValue(key, out float nextOk) && now < nextOk)
+            return;
+        _hitCooldownByKey[key] = now + Mathf.Max(0f, inst.perTargetHitCooldown);
+
+        inst.PlayHitInternal(weaponLevel, WeaponAnimationCategories.ForLevel(weaponLevel), worldPos);
     }
 
     private static WeaponCombatAudio FindFor(GameObject owner)
@@ -107,7 +133,18 @@ public class WeaponCombatAudio : MonoBehaviour
         // Prefer a component on the owner hierarchy; fall back to any registered.
         WeaponCombatAudio direct = owner.GetComponentInParent<WeaponCombatAudio>();
         if (direct != null) return direct;
-        return _registry.Count > 0 ? _registry[0] : null;
+        if (_registry.Count > 0) return _registry[0];
+
+        // Auto-attach safety net: the player prefab in this project does not
+        // always ship with WeaponCombatAudio wired up, which silently dropped
+        // every hit sound. Adding the component on demand to the owner root
+        // means the very first confirmed hit will both play correctly AND
+        // leave the component in place for every subsequent hit.
+        Transform root = owner.transform.root;
+        if (root == null) return null;
+        WeaponCombatAudio created = root.gameObject.AddComponent<WeaponCombatAudio>();
+        Debug.Log($"[WeaponCombatAudio] Auto-attached to {root.name} (no instance found in scene).");
+        return created;
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
@@ -126,11 +163,40 @@ public class WeaponCombatAudio : MonoBehaviour
         }
     }
 
-    private void PlayHitInternal(WeaponAnimationCategory category, Vector3 worldPos)
+    private void PlayHitInternal(int weaponLevel, WeaponAnimationCategory category, Vector3 worldPos)
     {
+        // Resolution order:
+        //   1. Per-level clip from the auto-generated WeaponHitAudioDatabase.
+        //   2. Per-category clip serialised on this component.
+        //   3. Generic hit clip.
+        string source = "generic";
+        AudioClip clip = null;
+        var db = WeaponHitAudioDatabase.Instance;
+        if (db != null)
+        {
+            clip = db.GetClip(weaponLevel);
+            if (clip != null) source = "level";
+        }
         bool found = TryGetRow(category, out CategoryAudio row);
-        AudioClip clip = found && row.hit != null ? row.hit : genericHit;
-        PlayOneShotScaled(clip, hitVolume, worldPos);
+        if (clip == null && found && row.hit != null)
+        {
+            clip = row.hit;
+            source = "category";
+        }
+        if (clip == null)
+        {
+            clip = genericHit;
+            source = "generic";
+        }
+
+        // Volume jitter on top of base for organic variation.
+        float volMul = Random.Range(
+            Mathf.Min(hitVolumeJitter.x, hitVolumeJitter.y),
+            Mathf.Max(hitVolumeJitter.x, hitVolumeJitter.y));
+        PlayOneShotScaled(clip, hitVolume * volMul, worldPos);
+
+        if (debugLog)
+            Debug.Log($"[WeaponCombatAudio] hit level={weaponLevel} cat={category} clip={(clip != null ? clip.name : "<null>")} source={source}");
 
         GameObject spark = found && row.hitSparkPrefab != null ? row.hitSparkPrefab : genericHitSparkPrefab;
         if (spark != null)

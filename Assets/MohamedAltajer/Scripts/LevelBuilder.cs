@@ -405,6 +405,17 @@ public class LevelBuilder : MonoBehaviour
     {
         if (arenaRoot == null) return;
 
+        // Fake-door suppression: bail out unless the project has explicitly
+        // opted back in to door interactions. Without this guard the method
+        // attaches a DoorController + DoorPassThroughOpen to every fence/gate/
+        // shutter-named mesh in the imported industrial map, producing the
+        // "[E] OPEN DOOR" prompt on non-doors.
+        if (!DoorController.DoorInteractionsEnabled)
+        {
+            Debug.Log("[DoorFix] Skipped: DoorController.DoorInteractionsEnabled=false (v3 map welded doors are not interactive).");
+            return;
+        }
+
         Collider[] colliders = arenaRoot.GetComponentsInChildren<Collider>(true);
         int fixedCount = 0;
         for (int i = 0; i < colliders.Length; i++)
@@ -496,9 +507,13 @@ public class LevelBuilder : MonoBehaviour
             ? GameManager.Instance.GetSelectedMap()
             : GameManager.ArenaMap.Map1;
 
-        // The industrial map provides its own ground and colliders —
-        // skip procedural physics bounds entirely to avoid the green floor
-        // and cyan wall artefacts that conflict with the map geometry.
+        // Invisible boundary walls + physics floor — added back 2026-05-21 so
+        // the player cannot walk off the v3 industrial map into the gray
+        // under-map void. CreatePhysicsBounds keeps every renderer disabled
+        // so the visible industrial map ground/walls still show through; only
+        // the colliders exist, sealing the arena.
+        CreatePhysicsBounds(arenaRoot);
+
         // LoadFbxMap adds MeshColliders to every mesh for NavMesh + physics.
         LoadFbxMap(arenaRoot, map);
     }
@@ -1030,6 +1045,21 @@ public class LevelBuilder : MonoBehaviour
         return path.status == NavMeshPathStatus.PathComplete;
     }
 
+    /// <summary>
+    /// Maximum Y delta (metres) above the player at which an enemy may spawn.
+    /// NavMesh.SamplePosition will happily snap onto rooftops, containers, and
+    /// raised walkways if the bake reached up there — producing the "enemy on
+    /// the roof spinning" bug. We reject any sample whose Y is more than this
+    /// above the player's NavMesh foothold.
+    /// </summary>
+    public const float MaxSpawnYAbovePlayer = 3.5f;
+
+    /// <summary>True when the candidate is too far above the playable arena floor.</summary>
+    private static bool IsAboveArenaFloor(Vector3 candidate, Vector3 playerNavPos)
+    {
+        return (candidate.y - playerNavPos.y) > MaxSpawnYAbovePlayer;
+    }
+
     private bool TryEvaluateEnemySpawnCandidate(
         Vector3 playerNavPos,
         Vector3 cand,
@@ -1040,6 +1070,14 @@ public class LevelBuilder : MonoBehaviour
         bool requirePathFromPlayer,
         bool requirePlayerMinDistance)
     {
+        // Reject rooftops / containers / raised walkways — even if NavMesh said
+        // they're reachable, enemies stranded up there spin and never engage.
+        if (IsAboveArenaFloor(cand, playerNavPos))
+        {
+            if (debugEnemySpawnDistribution)
+                Debug.Log($"[LevelBuilder] Rejected rooftop spawn cand={cand} dy={(cand.y - playerNavPos.y):F2}");
+            return false;
+        }
         if (requirePlayerMinDistance && playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
             return false;
         if (!PassesEnemySeparationSq(cand, placedSoFar, minSepSqr))
@@ -1328,10 +1366,15 @@ public class LevelBuilder : MonoBehaviour
             // This prevents "Failed to create agent because it is not close enough to the NavMesh".
             NavMeshAgent agent = EnsureComponent<NavMeshAgent>(enemyObject);
             if (agent.enabled) agent.enabled = false;
-            agent.speed                  = 5.2f;
-            agent.acceleration           = 14f;
-            agent.angularSpeed           = 540f;
-            agent.stoppingDistance       = 1.7f;
+            // Tuned 2026-05-21: punchier closing & turning so enemies don't feel
+            // laggy or stiff. EnemyController.UpdateChaseMovement may override
+            // these per-frame (sprint chase, stuck recovery) but these are the
+            // baseline at spawn so the very first second of contact already feels
+            // aggressive instead of dragging up to chaseSpeed.
+            agent.speed                  = 5.8f;   // was 5.2 — base chase
+            agent.acceleration           = 20f;    // was 14 — snappier accel
+            agent.angularSpeed           = 720f;   // was 540 — kills spin / hesitation
+            agent.stoppingDistance       = 1.2f;   // was 1.7 — close in tighter for melee
             agent.radius                 = 0.45f;
             agent.height                 = 2f;
             agent.avoidancePriority      = 30 + (i * 3) % 40;

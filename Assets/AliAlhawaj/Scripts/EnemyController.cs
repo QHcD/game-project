@@ -214,6 +214,32 @@ public class EnemyController : MonoBehaviour, IDamageable
              "0 = disabled. Keep small (1.0–2.0s).")]
     public float spawnProtectionDuration = 1.25f;
     private float _spawnTime = -1f;
+    private float _spawnY = float.NaN; // captured in Start for rooftop watchdog
+
+    [Header("Aggression Tuning (2026-05-21)")]
+    [Tooltip("Multiplier applied to chaseSpeed at runtime. 1.0 = unchanged, 1.2 = 20% snappier closing.")]
+    [Range(0.5f, 2.0f)] public float chaseSpeedMultiplier = 1.10f;
+    [Tooltip("Extra multiplier applied when target distance > farTargetBurstDistance, so enemies don't drag at long range.")]
+    [Range(1.0f, 2.0f)] public float farTargetBurstMultiplier = 1.25f;
+    [Tooltip("Distance (m) beyond which the burst multiplier kicks in.")]
+    public float farTargetBurstDistance = 12f;
+    [Tooltip("Multiplier on NavMeshAgent.angularSpeed so enemies turn toward the player without spinning.")]
+    [Range(0.5f, 3.0f)] public float turnResponsiveness = 1.30f;
+    [Tooltip("Multiplier on the Animator.speed so locomotion cycles read snappier without changing transitions.")]
+    [Range(0.5f, 1.5f)] public float animatorSpeedMultiplier = 1.08f;
+
+    [Header("Rooftop / Stuck Watchdog (2026-05-21)")]
+    [Tooltip("If enemy.Y rises this far above its spawn Y, it is treated as 'on a rooftop' and warped back down.")]
+    public float watchdogMaxYAboveSpawn = 3.5f;
+    [Tooltip("Seconds the enemy may remain in an invalid high position before being warped back.")]
+    public float watchdogInvalidHighSeconds = 2.5f;
+    [Tooltip("Seconds with no path progress while a target is present before forcing a repath / relocate.")]
+    public float watchdogStuckPathSeconds = 3.5f;
+    [Tooltip("Logs watchdog actions (rooftop warps, stuck recoveries). Off in shipped builds.")]
+    public bool debugWatchdog = false;
+    private float _highSinceTime = -1f;
+    private float _lowProgressSinceTime = -1f;
+    private Vector3 _watchdogLastPosition;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -506,7 +532,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
         _currentHealth = maxHealth;
         _spawnTime = Time.time;
+        _spawnY = transform.position.y;
+        _watchdogLastPosition = transform.position;
         ConfigureAgent();
+        ApplyAggressionTuning();
 
         // Minimal runtime safety: ensure agent is enabled and actually sits on the NavMesh.
         EnsureAgentOnNavMesh();
@@ -610,6 +639,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         // Warp logic removed per user request
+
+        // Rooftop / stuck watchdog — surgical, runs once per frame, no allocations.
+        TickWatchdog();
 
         // Minimal runtime safety: keep forcing retarget when we have none.
         if (_target == null && Time.time >= _nextForceRetargetTime)
@@ -3554,5 +3586,119 @@ public class EnemyController : MonoBehaviour, IDamageable
         Gizmos.color = Color.magenta;
         Vector3 origin = transform.position + Vector3.up * 0.6f;
         Gizmos.DrawRay(origin, transform.forward * obstacleCheckDist);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  AGGRESSION TUNING (added 2026-05-21)
+    //  Pure tuning shim: bakes the new multipliers into the same agent fields
+    //  ConfigureAgent already drives. Called once at Start, and live each tick
+    //  via the existing chase-update path because UpdateChaseMovement writes
+    //  _agent.speed/acceleration/angularSpeed itself — we only need to update
+    //  the source-of-truth `chaseSpeed`, `agentAcceleration`, `agentAngularSpeed`
+    //  fields so those writes pick up the multipliers.
+    // ════════════════════════════════════════════════════════════════════════
+    private bool _aggressionApplied;
+    private float _baseChaseSpeed;
+    private float _baseAgentAccel;
+    private float _baseAgentAngular;
+    private float _baseAnimatorSpeed = 1f;
+    private void ApplyAggressionTuning()
+    {
+        if (_aggressionApplied) return;
+        _aggressionApplied = true;
+
+        _baseChaseSpeed   = chaseSpeed;
+        _baseAgentAccel   = agentAcceleration;
+        _baseAgentAngular = agentAngularSpeed;
+
+        chaseSpeed         = _baseChaseSpeed   * chaseSpeedMultiplier;
+        agentAcceleration  = _baseAgentAccel   * Mathf.Max(1f, chaseSpeedMultiplier);
+        agentAngularSpeed  = _baseAgentAngular * Mathf.Max(0.5f, turnResponsiveness);
+
+        // Animator speed is read by the existing SyncAnimator path; bumping the
+        // root Animator speed is the cleanest one-shot to make locomotion read
+        // less robotic without changing any transition graph.
+        Animator a = GetComponentInChildren<Animator>();
+        if (a != null)
+        {
+            _baseAnimatorSpeed = a.speed > 0.01f ? a.speed : 1f;
+            a.speed = _baseAnimatorSpeed * Mathf.Max(0.5f, animatorSpeedMultiplier);
+        }
+
+        if (_agent != null && _agent.enabled)
+        {
+            _agent.acceleration = agentAcceleration;
+            _agent.angularSpeed = agentAngularSpeed;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  WATCHDOG (added 2026-05-21)
+    //  Two cheap checks per frame; no allocations, no FindObject calls.
+    //   1. Y-above-spawn rooftop trap — warps the agent back down to the
+    //      nearest NavMesh sample near the original spawn Y.
+    //   2. No-path-progress timeout — resets the path and re-acquires a target
+    //      when the enemy is stuck rotating in place without closing distance.
+    // ════════════════════════════════════════════════════════════════════════
+    private void TickWatchdog()
+    {
+        if (_state == State.Dead) return;
+        if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh) return;
+        if (float.IsNaN(_spawnY)) return;
+
+        float now = Time.time;
+        float yDelta = transform.position.y - _spawnY;
+
+        // ── 1. Rooftop trap ──────────────────────────────────────────────────
+        if (yDelta > watchdogMaxYAboveSpawn)
+        {
+            if (_highSinceTime < 0f) _highSinceTime = now;
+            else if (now - _highSinceTime >= watchdogInvalidHighSeconds)
+            {
+                Vector3 anchor = _target != null
+                    ? new Vector3(_target.position.x, _spawnY, _target.position.z)
+                    : new Vector3(transform.position.x, _spawnY, transform.position.z);
+                if (UnityEngine.AI.NavMesh.SamplePosition(anchor, out UnityEngine.AI.NavMeshHit hit, 14f, UnityEngine.AI.NavMesh.AllAreas))
+                {
+                    _agent.Warp(hit.position);
+                    if (debugWatchdog)
+                        Debug.Log($"[EnemyWatchdog] {name} rooftop warp {transform.position.y:F1} -> {hit.position.y:F1}");
+                }
+                _highSinceTime = -1f;
+                _lowProgressSinceTime = -1f;
+            }
+        }
+        else
+        {
+            _highSinceTime = -1f;
+        }
+
+        // ── 2. No path progress while chasing ────────────────────────────────
+        if (_target != null && _agent.hasPath && !_agent.pathPending)
+        {
+            float moved = (transform.position - _watchdogLastPosition).sqrMagnitude;
+            if (moved < 0.04f) // < 0.2m of motion since last frame snapshot
+            {
+                if (_lowProgressSinceTime < 0f) _lowProgressSinceTime = now;
+                else if (now - _lowProgressSinceTime >= watchdogStuckPathSeconds)
+                {
+                    _agent.ResetPath();
+                    EvaluateTargets();
+                    if (debugWatchdog)
+                        Debug.Log($"[EnemyWatchdog] {name} stuck path reset; reacquiring target.");
+                    _lowProgressSinceTime = -1f;
+                }
+            }
+            else
+            {
+                _lowProgressSinceTime = -1f;
+                _watchdogLastPosition = transform.position;
+            }
+        }
+        else
+        {
+            _lowProgressSinceTime = -1f;
+            _watchdogLastPosition = transform.position;
+        }
     }
 }

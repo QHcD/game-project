@@ -223,9 +223,14 @@ public class HUDManager : MonoBehaviour
         if (GameManager.Instance != null && !MultiplayerMode.IsMultiplayer)
             GameManager.Instance.levelTime = elapsed;
 
-        // In multiplayer, never freeze time — clients each run their own
-        // HUD timer but the match end is server-driven, not timer-driven.
-        if (!matchFinished && remaining <= 0.001f && !MultiplayerMode.IsMultiplayer)
+        // Timer-end UI is owned by GameManager.ResolveTimedMatchWinner — it
+        // decides Victory vs GameOver from the kill leaderboard and routes
+        // directly to the correct MainMenu screen. The HUD must NOT also pop
+        // a generic "MATCH FINISHED" overlay; that produced the double UI
+        // sequence (MATCH FINISHED → MainMenu → Victory) the user reported.
+        // ShowMatchFinishedOverlay remains available for explicit callers
+        // (multiplayer drop, abort flows) via TriggerMatchFinishedOverlay.
+        if (false && !matchFinished && remaining <= 0.001f && !MultiplayerMode.IsMultiplayer)
             ShowMatchFinishedOverlay();
 
         TickDamageFlash();

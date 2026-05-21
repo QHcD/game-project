@@ -1,0 +1,32 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 357c6172e97a403488a966710fc6edc4, type: 3}
+  m_Name: WeaponHitAudioDatabase
+  m_EditorClassIdentifier: 
+  levelClips:
+  - {fileID: 8300000, guid: ae80b0df17789e0488b00c910137f812, type: 3}
+  - {fileID: 8300000, guid: 2d7e8239caaf9c0429f8ca6196794259, type: 3}
+  - {fileID: 8300000, guid: 2412809edf0745e4692765e347259c12, type: 3}
+  - {fileID: 8300000, guid: 0c9ca6c33c8ada9408e26efdd44e2206, type: 3}
+  - {fileID: 8300000, guid: 503c0e92eaa640840af9450e734e7247, type: 3}
+  - {fileID: 8300000, guid: 7789028426982e347a0f61de9e733d35, type: 3}
+  - {fileID: 8300000, guid: d493ee117c1feaa42a066d0c019ad30f, type: 3}
+  - {fileID: 8300000, guid: deb33775cfb57cb4cafd68f98727bba4, type: 3}
+  - {fileID: 8300000, guid: ee79df4170fc896439ede3b9001d368d, type: 3}
+  - {fileID: 8300000, guid: 6d829ef37d573b74ebcd16111fee3469, type: 3}
+  - {fileID: 8300000, guid: 429e926a5663649428a38f2de6a69c49, type: 3}
+  - {fileID: 8300000, guid: 1617de7868758bc48a671e79fae0bfd5, type: 3}
+  - {fileID: 8300000, guid: 648c5aa89f801254bb657d01c3d36f32, type: 3}
+  - {fileID: 8300000, guid: b6a2ccfb2935ed64fbe4b08a7f510dfe, type: 3}
+  - {fileID: 8300000, guid: 0e9567179891b434d800c852f03894bd, type: 3}
+  - {fileID: 8300000, guid: 073e1e8f94692134c9d0e38aebb0f57a, type: 3}
+  victoryClip: {fileID: 8300000, guid: 58fe86906eb8854498de22708c44d39b, type: 3}

@@ -325,6 +325,14 @@ public class PlayerInteractor : MonoBehaviour
 
     private static DoorController EnsureRuntimeDoorController(Collider col)
     {
+        // Fake-door suppression: when the global DoorController kill-switch is
+        // off (default for the v3 industrial map), do NOT promote arbitrary
+        // door-/gate-/Object084-named colliders into runtime DoorControllers.
+        // This prevents the "[E] OPEN DOOR" prompt from appearing on fences,
+        // containers, and welded hangar doors.
+        if (!DoorController.DoorInteractionsEnabled)
+            return null;
+
         Transform doorRoot = FindNearestDoorRoot(col);
         if (doorRoot == null)
             return null;
