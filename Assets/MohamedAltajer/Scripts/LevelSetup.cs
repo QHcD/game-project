@@ -94,6 +94,7 @@ public class LevelSetup : MonoBehaviour
 
     private void EnsureGroundVisible()
     {
+        bool hasFbxMap = GameObject.Find("FbxMap") != null;
         bool foundGround = false;
         string[] names = { "Plane", "Ground", "ground", "PhysicsFloor", "Ground_PhysicsFloor", "ArenaFloor" };
 
@@ -103,19 +104,31 @@ public class LevelSetup : MonoBehaviour
             if (ground == null)
                 continue;
 
-            ground.SetActive(true);
-            Renderer[] renderers = ground.GetComponentsInChildren<Renderer>(true);
-            for (int r = 0; r < renderers.Length; r++)
+            if (hasFbxMap)
             {
-                if (renderers[r] == null)
+                // Hide procedural/fallback ground meshes since FbxMap is successfully loaded
+                Renderer[] renderers = ground.GetComponentsInChildren<Renderer>(true);
+                for (int r = 0; r < renderers.Length; r++)
+                {
+                    if (renderers[r] != null)
+                        renderers[r].enabled = false;
+                }
+                continue;
+            }
+
+            ground.SetActive(true);
+            Renderer[] renderers2 = ground.GetComponentsInChildren<Renderer>(true);
+            for (int r = 0; r < renderers2.Length; r++)
+            {
+                if (renderers2[r] == null)
                     continue;
 
-                renderers[r].enabled = true;
+                renderers2[r].enabled = true;
                 foundGround = true;
             }
         }
 
-        if (foundGround)
+        if (hasFbxMap || foundGround)
             return;
 
         GameObject fallbackGround = GameObject.CreatePrimitive(PrimitiveType.Cube);

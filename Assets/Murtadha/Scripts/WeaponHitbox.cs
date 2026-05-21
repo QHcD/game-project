@@ -271,11 +271,24 @@ public class WeaponHitbox : MonoBehaviour
 
         // Per-category hit audio + optional hit-spark VFX. No-ops if the
         // attacker has no WeaponCombatAudio component. Weapon level resolved
-        // from the attacker's PlayerController (enemies pass level 0 → falls
-        // back to the generic clip/prefab on the player's combat audio).
+        // from the attacker's PlayerController or EnemyController.
         int weaponLevel = 0;
-        PlayerController pc = resolvedOwner != null ? resolvedOwner.GetComponent<PlayerController>() : null;
-        if (pc != null) weaponLevel = pc.GetEquippedWeaponLevel();
+        if (resolvedOwner != null)
+        {
+            PlayerController pc = resolvedOwner.GetComponent<PlayerController>();
+            if (pc != null)
+            {
+                weaponLevel = pc.GetEquippedWeaponLevel();
+            }
+            else
+            {
+                EnemyController ec = resolvedOwner.GetComponent<EnemyController>();
+                if (ec != null)
+                {
+                    weaponLevel = ec.GetEquippedWeaponLevel();
+                }
+            }
+        }
         WeaponCombatAudio.PlayHitAt(resolvedOwner, weaponLevel, target.gameObject.transform.position + Vector3.up * 1.0f);
 
         return true;

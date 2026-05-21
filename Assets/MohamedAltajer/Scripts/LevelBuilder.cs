@@ -507,24 +507,26 @@ public class LevelBuilder : MonoBehaviour
             ? GameManager.Instance.GetSelectedMap()
             : GameManager.ArenaMap.Map1;
 
-        // Invisible boundary walls + physics floor — added back 2026-05-21 so
-        // the player cannot walk off the v3 industrial map into the gray
-        // under-map void. CreatePhysicsBounds keeps every renderer disabled
-        // so the visible industrial map ground/walls still show through; only
-        // the colliders exist, sealing the arena.
-        CreatePhysicsBounds(arenaRoot);
-
-        // LoadFbxMap adds MeshColliders to every mesh for NavMesh + physics.
+        // LoadFbxMap adds MeshColliders to every mesh for NavMesh + physics,
+        // dynamically measures the map bounds, and grounds the FBX visuals at Y=0.
         LoadFbxMap(arenaRoot, map);
+
+        // Invisible boundary walls + physics floor — sized dynamically to the loaded map's bounds.
+        CreatePhysicsBounds(arenaRoot);
     }
 
     // Arena half-size for the RPG/FPS industrial map (larger than the old 44×44 primitive arenas)
-    private const float ArenaHalfSize = 80f;
+    [Header("Stabilization Settings")]
+    [Tooltip("Dynamic half size of the arena, computed from the loaded map's bounds.")]
+    public float arenaHalfSize = 80f;
+    [Tooltip("Logs spawn bounds and reachability checks when enabled.")]
+    public bool debugSpawnValidation = false;
+
 
     /// <summary>Creates a NavMesh floor and invisible boundary walls sized for the industrial map.</summary>
     private void CreatePhysicsBounds(Transform parent)
     {
-        float full = ArenaHalfSize * 2f;
+        float full = arenaHalfSize * 2f;
 
         // Physics floor — kept invisible; the industrial map provides its own visible ground.
         // It still gives NavMesh a solid surface to bake on.
@@ -539,12 +541,12 @@ public class LevelBuilder : MonoBehaviour
         // Invisible boundary walls — keep players and enemies inside the industrial arena
         string[] wallNames = { "PhysicsWall_N", "PhysicsWall_S", "PhysicsWall_E", "PhysicsWall_W" };
         Vector3[] wallPos  = {
-            new Vector3(0f, 5f,  ArenaHalfSize), new Vector3(0f, 5f, -ArenaHalfSize),
-            new Vector3( ArenaHalfSize, 5f, 0f), new Vector3(-ArenaHalfSize, 5f, 0f)
+            new Vector3(0f, 15f,  arenaHalfSize), new Vector3(0f, 15f, -arenaHalfSize),
+            new Vector3( arenaHalfSize, 15f, 0f), new Vector3(-arenaHalfSize, 15f, 0f)
         };
         Vector3[] wallScale = {
-            new Vector3(full, 10f, 1f), new Vector3(full, 10f, 1f),
-            new Vector3(1f, 10f, full), new Vector3(1f, 10f, full)
+            new Vector3(full, 30f, 1f), new Vector3(full, 30f, 1f),
+            new Vector3(1f, 30f, full), new Vector3(1f, 30f, full)
         };
         for (int i = 0; i < 4; i++)
         {
@@ -560,6 +562,7 @@ public class LevelBuilder : MonoBehaviour
 
     private static void EnsureSceneGroundVisible(Transform fallbackParent)
     {
+        bool hasFbxMap = GameObject.Find("FbxMap") != null;
         bool foundVisibleGround = false;
 
         string[] knownGroundNames =
@@ -574,7 +577,7 @@ public class LevelBuilder : MonoBehaviour
             if (ground == null)
                 continue;
 
-            if (IsNavOnlySurfaceName(ground.name))
+            if (hasFbxMap || IsNavOnlySurfaceName(ground.name))
             {
                 HideNavOnlySurface(ground);
                 continue;
@@ -582,6 +585,9 @@ public class LevelBuilder : MonoBehaviour
 
             foundVisibleGround |= ForceGroundVisible(ground);
         }
+
+        if (hasFbxMap)
+            return; // We have FbxMap loaded, so skip fallbacks and do not overwrite its materials
 
         if (fallbackParent != null)
         {
@@ -711,6 +717,38 @@ public class LevelBuilder : MonoBehaviour
         rend.receiveShadows = true;
     }
 
+    private static bool IsRoadOrGroundMesh(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        string lower = name.ToLowerInvariant();
+
+        // Exclude meshes that represent vertical or elevated structures, or non-ground props
+        if (lower.Contains("wall") || lower.Contains("ceiling") || lower.Contains("roof") ||
+            lower.Contains("door") || lower.Contains("gate") || lower.Contains("container") ||
+            lower.Contains("building") || lower.Contains("prop") || lower.Contains("crate") ||
+            lower.Contains("barrier") || lower.Contains("window") || lower.Contains("pillar") ||
+            lower.Contains("column") || lower.Contains("fence") || lower.Contains("pipe") ||
+            lower.Contains("ladder") || lower.Contains("stair") || lower.Contains("step") ||
+            lower.Contains("skybox") || lower.Contains("reflection") || lower.Contains("invisible") ||
+            lower.Contains("hanger") || lower.Contains("hangar") || lower.Contains("beam") ||
+            lower.Contains("bridge") || lower.Contains("railing") || lower.Contains("office") ||
+            lower.Contains("interior") || lower.Contains("car") || lower.Contains("vehicle") ||
+            lower.Contains("light") || lower.Contains("lamp") || lower.Contains("barrel") ||
+            lower.Contains("canister") || lower.Contains("chimney") || lower.Contains("wires") ||
+            lower.Contains("cable"))
+        {
+            return false;
+        }
+
+        // Include names that specifically match road, ground, asphalt, floor, etc.
+        return lower.Contains("road") || lower.Contains("ground") || lower.Contains("asphalt") ||
+               lower.Contains("street") || lower.Contains("floor") || lower.Contains("concrete") ||
+               lower.Contains("path") || lower.Contains("walkway") || lower.Contains("pavement") ||
+               lower.Contains("tarmac") || lower.Contains("sidewalk") || lower.Contains("dirt") ||
+               lower.Contains("sand") || lower.Contains("terrain") || lower.Contains("way") ||
+               lower.Contains("arena") || lower.Contains("platform");
+    }
+
     /// <summary>Loads the industrial map prefab from Resources and places it as visual geometry.</summary>
     private void LoadFbxMap(Transform parent, GameManager.ArenaMap map)
     {
@@ -736,6 +774,91 @@ public class LevelBuilder : MonoBehaviour
         mapInstance.transform.localRotation = Quaternion.identity;
         TagObjectIfDefined(mapInstance, "Map");
         TagHierarchyByName(mapInstance.transform);
+
+        // Compute overall and road-only bounds of the loaded FBX map renderers
+        Bounds overallBounds = new Bounds(Vector3.zero, Vector3.zero);
+        bool hasOverall = false;
+
+        Bounds roadBounds = new Bounds(Vector3.zero, Vector3.zero);
+        bool hasRoad = false;
+
+        foreach (Renderer rend in mapInstance.GetComponentsInChildren<Renderer>(true))
+        {
+            if (rend is ParticleSystemRenderer) continue;
+            string lowerName = rend.gameObject.name.ToLowerInvariant();
+            if (lowerName.Contains("skybox") || lowerName.Contains("reflection") || lowerName.Contains("invisible"))
+                continue;
+
+            // Encapsulate in overall bounds
+            if (!hasOverall)
+            {
+                overallBounds = rend.bounds;
+                hasOverall = true;
+            }
+            else
+            {
+                overallBounds.Encapsulate(rend.bounds);
+            }
+
+            // Filter for road/ground
+            if (IsRoadOrGroundMesh(rend.gameObject.name))
+            {
+                if (!hasRoad)
+                {
+                    roadBounds = rend.bounds;
+                    hasRoad = true;
+                }
+                else
+                {
+                    roadBounds.Encapsulate(rend.bounds);
+                }
+            }
+        }
+
+        if (hasOverall)
+        {
+            // Align visual geometry's horizontal center to (0, 0, 0)
+            Vector3 pos = mapInstance.transform.position;
+            pos.x -= overallBounds.center.x;
+            
+            // Ground vertically using the road bounds if available, otherwise fallback to overall bounds
+            if (hasRoad)
+            {
+                pos.y = -roadBounds.min.y; // sit the bottom of road meshes exactly at Y = 0
+                Debug.Log($"[LevelBuilder] Grounding FBX map using road/ground meshes bounds min Y: {roadBounds.min.y}. Shifting mapInstance Y by {-roadBounds.min.y}");
+            }
+            else
+            {
+                pos.y = -overallBounds.min.y; // sit the overall bottom boundary exactly at Y = 0
+                Debug.LogWarning($"[LevelBuilder] No road/ground meshes found! Grounding FBX map using overall bounds min Y: {overallBounds.min.y}");
+            }
+            
+            pos.z -= overallBounds.center.z;
+            mapInstance.transform.position = pos;
+
+            // Recalculate overall bounds after shifting for arenaHalfSize calculation
+            overallBounds = new Bounds(Vector3.zero, Vector3.zero);
+            hasOverall = false;
+            foreach (Renderer rend in mapInstance.GetComponentsInChildren<Renderer>(true))
+            {
+                if (rend is ParticleSystemRenderer) continue;
+                string lowerName = rend.gameObject.name.ToLowerInvariant();
+                if (lowerName.Contains("skybox") || lowerName.Contains("reflection") || lowerName.Contains("invisible"))
+                    continue;
+
+                if (!hasOverall) { overallBounds = rend.bounds; hasOverall = true; }
+                else overallBounds.Encapsulate(rend.bounds);
+            }
+
+            if (hasOverall)
+            {
+                float mapExtentX = Mathf.Abs(overallBounds.extents.x);
+                float mapExtentZ = Mathf.Abs(overallBounds.extents.z);
+                arenaHalfSize = Mathf.Max(mapExtentX, mapExtentZ) + 1.0f;
+                arenaHalfSize = Mathf.Max(30f, arenaHalfSize);
+                Debug.Log($"[LevelBuilder] DynBounds: Centered and grounded FBX map at {mapInstance.transform.position}, arenaHalfSize dynamically set to {arenaHalfSize}");
+            }
+        }
 
         // ── Activate EVERYTHING in the industrial map ──────────────────────
         // The prefab may have been captured with some objects inactive.
@@ -883,7 +1006,8 @@ public class LevelBuilder : MonoBehaviour
     private static EnemySpawnZone[] BuildEnemySpawnZones(out System.Collections.Generic.List<Vector3> flatAnchors)
     {
         const float y = 0.01f;
-        float arenaR = ArenaHalfSize * 0.82f;
+        float currentHalfSize = Instance != null ? Instance.arenaHalfSize : 80f;
+        float arenaR = currentHalfSize * 0.82f;
 
         var north  = new EnemySpawnZone("North");
         var south  = new EnemySpawnZone("South");
@@ -1196,7 +1320,8 @@ public class LevelBuilder : MonoBehaviour
         usedZone = "Emergency";
         float fallbackSq = MinEnemySpawnHardFloor * MinEnemySpawnHardFloor;
         float playerMinSq = Mathf.Max(0f, minEnemyToPlayerDistance) * Mathf.Max(0f, minEnemyToPlayerDistance);
-        float arenaR = ArenaHalfSize * 0.82f;
+        float currentHalfSize = Instance != null ? Instance.arenaHalfSize : 80f;
+        float arenaR = currentHalfSize * 0.82f;
 
         if (zones != null)
         {
@@ -1212,6 +1337,10 @@ public class LevelBuilder : MonoBehaviour
                 Vector3 open = FindOpenEnemySpawnAtPreferred(seed, enemyIndex + attempt);
                 float drift = Mathf.Min(24f, MaxNavSnapHorizontalDrift + attempt * 0.12f);
                 if (!TrySampleNavMeshPreservingAnchor(open, drift, out Vector3 cand))
+                    continue;
+
+                float distFromCenter = Mathf.Sqrt(cand.x * cand.x + cand.z * cand.z);
+                if (distFromCenter > currentHalfSize * 0.95f)
                     continue;
 
                 if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
@@ -1232,6 +1361,10 @@ public class LevelBuilder : MonoBehaviour
             float rad = Random.Range(arenaR * 0.35f, arenaR * 0.95f);
             Vector3 probe = new Vector3(Mathf.Cos(ang) * rad, 0.01f, Mathf.Sin(ang) * rad);
             if (!TrySampleNavMeshPreservingAnchor(probe, MaxNavSnapHorizontalDrift, out Vector3 cand))
+                continue;
+
+            float distFromCenter = Mathf.Sqrt(cand.x * cand.x + cand.z * cand.z);
+            if (distFromCenter > currentHalfSize * 0.95f)
                 continue;
 
             if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
@@ -2444,6 +2577,12 @@ public class LevelBuilder : MonoBehaviour
     private static bool IsOpenSpawnPoint(Vector3 xzCandidate, out Vector3 groundPos)
     {
         groundPos = Vector3.zero;
+
+        // Dynamic bounds safety: reject any candidate spawn point whose horizontal distance from center exceeds 95% of arenaHalfSize
+        float currentHalfSize = Instance != null ? Instance.arenaHalfSize : 80f;
+        float distFromCenter = Mathf.Sqrt(xzCandidate.x * xzCandidate.x + xzCandidate.z * xzCandidate.z);
+        if (distFromCenter > currentHalfSize * 0.95f)
+            return false;
 
         // 1) Find NavMesh surface near this XZ position
         Vector3 samplePoint = new Vector3(xzCandidate.x, 0.5f, xzCandidate.z);

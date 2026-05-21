@@ -194,9 +194,31 @@ public class UIHoverSelectAudio : MonoBehaviour
 
     private void ResolveHoverClip()
     {
-        AudioClip ac = Resources.Load<AudioClip>(ResourcePath);
-        if (ac != null) { _hoverClip = ac; return; }
-        _hoverClip = SynthesiseTick();
+        if (_hoverClip == null && WeaponHitAudioDatabase.Instance != null)
+        {
+            _hoverClip = WeaponHitAudioDatabase.Instance.uiHoverClip;
+        }
+
+#if UNITY_EDITOR
+        if (_hoverClip == null)
+            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UI_clickSound.mp3");
+#endif
+
+        if (_hoverClip == null)
+        {
+            _hoverClip = Resources.Load<AudioClip>("Audio/UI_clickSound");
+        }
+
+        if (_hoverClip == null)
+        {
+            AudioClip ac = Resources.Load<AudioClip>(ResourcePath);
+            if (ac != null) { _hoverClip = ac; }
+        }
+
+        if (_hoverClip == null)
+        {
+            _hoverClip = SynthesiseTick();
+        }
     }
 
     private static AudioClip SynthesiseTick()
