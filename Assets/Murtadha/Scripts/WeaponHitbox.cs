@@ -19,6 +19,12 @@ public class WeaponHitbox : MonoBehaviour
              "Set from EnemyController.attackRadius + buffer. 0 = no limit (player weapons).")]
     public float maxAttackRange = 0f;
 
+    [Tooltip("Strict melee range gate checked at the moment of impact. " +
+             "A hit is cancelled if the attacker is farther than this from the target. " +
+             "Auto-set from EnemyController.meleeAttackRange for enemy weapons. " +
+             "0 = gate disabled (default for player weapons).")]
+    public float meleeAttackRange = 0f;
+
     [Tooltip("Enemy hitbox only. Forward distance (metres) from the enemy root to the overlap sphere centre.\n" +
              "0 = auto-derive from the owner EnemyController.attackRadius so the sphere always reaches\n" +
              "the enemy's full engage distance without needing a manual value per weapon.\n" +
@@ -194,6 +200,22 @@ public class WeaponHitbox : MonoBehaviour
             }
         }
 
+        // Strict melee range gate — checked at impact time using sqrMagnitude for
+        // performance. Ensures damage only lands when the attacker is genuinely
+        // within melee reach, regardless of how the OverlapSphere was placed.
+        if (meleeAttackRange > 0f && resolvedOwner != null)
+        {
+            float sqrDist  = (target.gameObject.transform.position - resolvedOwner.transform.position).sqrMagnitude;
+            float sqrRange = meleeAttackRange * meleeAttackRange;
+            if (sqrDist > sqrRange)
+            {
+                float actualDist = Mathf.Sqrt(sqrDist);
+                Debug.Log($"[MeleeGate] HIT_CANCELLED_OUT_OF_RANGE — attacker={resolvedOwner.name} " +
+                          $"target={target.gameObject.name} dist={actualDist:F2} meleeAttackRange={meleeAttackRange:F2}");
+                return false;
+            }
+        }
+
         int id = target.gameObject.GetInstanceID();
         if (hitThisSwing.Contains(id))
         {
@@ -235,12 +257,16 @@ public class WeaponHitbox : MonoBehaviour
         target.ReceiveDamage(dmg, resolvedOwner);
         hitThisSwing.Add(id);
 
-        if (isEnemyAttacker)
         {
+            float hitDist = resolvedOwner != null
+                ? Vector3.Distance(resolvedOwner.transform.position, target.gameObject.transform.position)
+                : -1f;
             float healthAfter = ph != null ? ph.currentHealth
                               : targetEc != null ? (float)targetEc.CurrentHealth
                               : -1f;
-            Debug.Log($"[WeaponHitbox][L9] DAMAGE APPLIED → attacker={resolvedOwner.name} target={target.gameObject.name} dmg={dmg} healthBefore={healthBefore:F1} healthAfter={healthAfter:F1}");
+            Debug.Log($"[MeleeGate] HIT_LANDED — attacker={resolvedOwner?.name ?? "?"} " +
+                      $"target={target.gameObject.name} dist={hitDist:F2} dmg={dmg} " +
+                      $"hp {healthBefore:F0}→{healthAfter:F0}");
         }
 
         // Per-category hit audio + optional hit-spark VFX. No-ops if the

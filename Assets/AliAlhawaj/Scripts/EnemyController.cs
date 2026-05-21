@@ -28,6 +28,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Header("Combat")]
     public float detectionRadius  = 12f;
     public float attackRadius     = 2f;
+    [Tooltip("Hard distance gate applied at the moment of impact (after windup). " +
+             "A hit is cancelled if the attacker root is farther than this from the target. " +
+             "Keep at or below attackRadius so the enemy must be truly close to land a hit.")]
+    public float meleeAttackRange = 2.0f;
     public float attackDamage     = 10f;
     public float attackCooldown   = 0.65f;
     public int   maxHealth        = 60;
@@ -1523,72 +1527,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_equippedWeaponHitbox != null)
             _equippedWeaponHitbox.DisableHitbox();
 
-        // Mirrors PlayerController.TryImmediateMeleeStrike():
-        // Cast directly from the enemy's chest toward the target so hit direction
-        // is always forward-toward-target — identical to the black player's method.
-        // If this lands, the hitbox coroutine is skipped to prevent a double-hit.
-        bool immediateHit = TryImmediateDirectionalStrike();
-        if (immediateHit)
-        {
-            Debug.Log($"[L9Combat] IMMEDIATE_HIT landed — hitbox coroutine skipped for attacker={name}");
-            return;
-        }
-
-        // Fallback: timed hitbox window catches targets that were at the edge of
-        // range or partially blocked when the immediate cast fired.
+        // Damage fires only through the timed hitbox window so it aligns with
+        // the swing animation — the immediate strike was removed because it applied
+        // damage at animation start (before the weapon reaches the player), making
+        // enemies appear to hit from a distance.
         _attackHitboxRoutine = StartCoroutine(AttackHitboxWindowRoutine());
-    }
-
-    /// <summary>
-    /// Forward directional melee check — mirrors PlayerController.TryImmediateMeleeStrike().
-    /// Fires a sphere from the enemy's chest straight toward the current target.
-    /// Direction is always attacker → target, never downward or inverted.
-    /// Returns true if damage was applied.
-    /// </summary>
-    private bool TryImmediateDirectionalStrike()
-    {
-        if (_target == null) return false;
-
-        Vector3 origin     = transform.position + Vector3.up * 1.4f;
-        Vector3 targetMid  = _target.position   + Vector3.up * 1.0f;
-        Vector3 dir        = (targetMid - origin);
-        float   dist       = dir.magnitude;
-
-        if (dist < 0.01f) return false;
-        dir /= dist; // normalise
-
-        float maxReach = attackRadius + attackRangePadding + 0.5f;
-        if (dist > maxReach)
-        {
-            Debug.Log($"[L9Combat] IMMEDIATE_STRIKE missed (out of reach) attacker={name} dist={dist:F2} maxReach={maxReach:F2}");
-            return false;
-        }
-
-        IDamageable target = _target.GetComponentInParent<IDamageable>();
-        if (target == null || !target.IsAlive || target.gameObject == gameObject)
-            return false;
-
-        bool blocked = DamageOcclusion.IsBlockedFromPoint(gameObject, target.gameObject, origin);
-        Debug.Log($"[L9Combat] IMMEDIATE_STRIKE attacker={name} target={_target.name} dist={dist:F2} blockedByWall={blocked}");
-
-        if (blocked) return false;
-
-        int dmg = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
-
-        // Health before
-        float healthBefore = -1f;
-        EnemyController targetEc = target.gameObject.GetComponent<EnemyController>();
-        PlayerHealth    targetPh = target.gameObject.GetComponent<PlayerHealth>();
-        if (targetPh != null) healthBefore = targetPh.currentHealth;
-        else if (targetEc != null) healthBefore = targetEc.CurrentHealth;
-
-        target.ReceiveDamage(dmg, gameObject);
-
-        float healthAfter = targetPh != null ? targetPh.currentHealth
-                          : targetEc != null ? (float)targetEc.CurrentHealth : -1f;
-        Debug.Log($"[L9Combat] IMMEDIATE_DAMAGE attacker={name} target={_target.name} dmg={dmg} healthBefore={healthBefore:F1} healthAfter={healthAfter:F1}");
-
-        return true;
     }
 
     private void DriveChaseWithFlowField()
@@ -1630,10 +1573,28 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (attackHitboxWindup > 0f)
             yield return new WaitForSeconds(attackHitboxWindup);
 
+        // Post-windup distance gate: if the target moved out of melee range during
+        // the windup animation, cancel the swing before the hitbox becomes active.
+        if (_target != null)
+        {
+            float sqrDist  = (_target.position - transform.position).sqrMagnitude;
+            float sqrRange = meleeAttackRange * meleeAttackRange;
+            if (sqrDist > sqrRange)
+            {
+                float actualDist = Mathf.Sqrt(sqrDist);
+                Debug.Log($"[MeleeGate] SWING_CANCELLED_POST_WINDUP — attacker={name} target={_target.name} " +
+                          $"dist={actualDist:F2} meleeAttackRange={meleeAttackRange:F2} (target left range during windup)");
+                _equippedWeaponHitbox.DisableHitbox();
+                _attackHitboxRoutine = null;
+                yield break;
+            }
+        }
+
         Physics.SyncTransforms();
+        _equippedWeaponHitbox.meleeAttackRange = meleeAttackRange;
         _equippedWeaponHitbox.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
         _equippedWeaponHitbox.EnableHitbox();
-        Debug.Log($"[L9Combat] HITBOX_ENABLED attacker={name} damage={_equippedWeaponHitbox.damage} activeWindow={attackHitboxActiveTime:F2}s maxRange={_equippedWeaponHitbox.maxAttackRange:F2}");
+        Debug.Log($"[L9Combat] HITBOX_ENABLED attacker={name} damage={_equippedWeaponHitbox.damage} activeWindow={attackHitboxActiveTime:F2}s meleeAttackRange={meleeAttackRange:F2}");
 
         if (attackHitboxActiveTime > 0f)
             yield return new WaitForSeconds(attackHitboxActiveTime);
@@ -2921,6 +2882,7 @@ public class EnemyController : MonoBehaviour, IDamageable
                 WeaponHitbox wh = equippedWeaponObject.GetComponent<WeaponHitbox>();
                 if (wh == null) wh = equippedWeaponObject.AddComponent<WeaponHitbox>();
                 wh.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
+                wh.meleeAttackRange = meleeAttackRange;
                 if (level == 12)
                 {
                     wh.overlapRadius = 0.45f;
@@ -3118,6 +3080,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             hitbox.maxAttackRange = attackRadius + 1.0f;
         }
+        hitbox.meleeAttackRange = meleeAttackRange;
         hitbox.DisableHitbox();
         _equippedWeaponHitbox = hitbox;
 
