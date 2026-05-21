@@ -19,7 +19,9 @@ public class PlayerTacticalActions : MonoBehaviour
     [Tooltip("Capsule height as fraction of standing height. 0.38 ≈ 0.68m when standing is 1.8m.")]
     [Range(0.22f, 0.55f)] public float proneHeightRatio = 0.38f;
     [Tooltip("Raises the visual body mesh while prone (CharacterController root unchanged). Tune 0.06–0.09 if floating/sinking.")]
-    public float proneVisualYOffset = 0.08f;
+    public float proneVisualYOffset = 0.07f;
+    [Tooltip("Hard clamp on prone visual lift to prevent negative offsets that bury the mesh.")]
+    public float proneVisualYOffsetMax = 0.12f;
     [Tooltip("Lerp speed when standing up from prone.")]
     public float proneRestoreSpeed = 10f;
 
@@ -38,7 +40,7 @@ public class PlayerTacticalActions : MonoBehaviour
     public bool IsTacticalAnimActive => _tacticalAnimTimer > 0f;
     public bool IsProneActive => _proneActive;
     public bool IsActionLocked => _tacticalAnimTimer > 0f;
-    public float ProneVisualYOffset => proneVisualYOffset;
+    public float ProneVisualYOffset => Mathf.Clamp(proneVisualYOffset, 0f, proneVisualYOffsetMax);
 
     public float TacticalHeight => _standingHeight * tacticalHeightRatio;
     public float ProneColliderHeight => GetProneColliderHeight();
@@ -209,10 +211,12 @@ public class PlayerTacticalActions : MonoBehaviour
 
         float capsuleBottomY = transform.position.y + _controller.center.y - _controller.height * 0.5f;
         float floorY = hit.point.y;
-        if (capsuleBottomY >= floorY - _controller.skinWidth - 0.005f)
+        float tolerance = _controller.skinWidth + 0.004f;
+        if (capsuleBottomY >= floorY - tolerance)
             return;
 
         float lift = floorY - capsuleBottomY + _controller.skinWidth;
+        lift = Mathf.Clamp(lift, 0f, 0.35f);
         if (lift > 0.001f)
             _controller.Move(Vector3.up * lift);
     }
@@ -234,7 +238,8 @@ public class PlayerTacticalActions : MonoBehaviour
 
         float targetRootY = hit.point.y - _controller.center.y + _controller.height * 0.5f + _controller.skinWidth;
         float deltaY = targetRootY - transform.position.y;
-        if (deltaY > 0.001f)
+        deltaY = Mathf.Clamp(deltaY, -0.02f, 0.35f);
+        if (Mathf.Abs(deltaY) > 0.001f)
             _controller.Move(Vector3.up * deltaY);
     }
 

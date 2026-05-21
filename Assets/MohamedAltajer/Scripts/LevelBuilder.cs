@@ -511,8 +511,15 @@ public class LevelBuilder : MonoBehaviour
         // dynamically measures the map bounds, and grounds the FBX visuals at Y=0.
         LoadFbxMap(arenaRoot, map);
 
-        // Invisible boundary walls + physics floor — sized dynamically to the loaded map's bounds.
+        // Physics floor, kill volume, fog — sized dynamically to the loaded map's bounds.
         CreatePhysicsBounds(arenaRoot);
+
+        Transform fbx = arenaRoot.Find("FbxMap");
+        ArenaVisualBounds.Install(arenaRoot, arenaHalfSize, fbx, debugArenaVisualBounds || debugSpawnValidation);
+
+        Transform closure = arenaRoot.Find("ArenaVisualClosure");
+        if (closure != null)
+            MapVisibilityStabilizer.Install(closure, debugArenaVisualBounds || debugSpawnValidation);
     }
 
     // Arena half-size for the RPG/FPS industrial map (larger than the old 44×44 primitive arenas)
@@ -521,9 +528,11 @@ public class LevelBuilder : MonoBehaviour
     public float arenaHalfSize = 80f;
     [Tooltip("Logs spawn bounds and reachability checks when enabled.")]
     public bool debugSpawnValidation = false;
+    [Tooltip("Draw arena perimeter/floor gizmos and log visual closure build.")]
+    public bool debugArenaVisualBounds = false;
 
 
-    /// <summary>Creates a NavMesh floor and invisible boundary walls sized for the industrial map.</summary>
+    /// <summary>Creates a NavMesh floor and installs arena envelope (walls, fog, kill volume).</summary>
     private void CreatePhysicsBounds(Transform parent)
     {
         float full = arenaHalfSize * 2f;
@@ -537,27 +546,9 @@ public class LevelBuilder : MonoBehaviour
         floor.transform.localScale    = new Vector3(full, 0.1f, full);
         Renderer floorRend = floor.GetComponent<Renderer>();
         if (floorRend != null) floorRend.enabled = false;  // invisible — industrial map ground shows instead
+        HideNavOnlySurface(floor);
 
-        // Invisible boundary walls — keep players and enemies inside the industrial arena
-        string[] wallNames = { "PhysicsWall_N", "PhysicsWall_S", "PhysicsWall_E", "PhysicsWall_W" };
-        Vector3[] wallPos  = {
-            new Vector3(0f, 15f,  arenaHalfSize), new Vector3(0f, 15f, -arenaHalfSize),
-            new Vector3( arenaHalfSize, 15f, 0f), new Vector3(-arenaHalfSize, 15f, 0f)
-        };
-        Vector3[] wallScale = {
-            new Vector3(full, 30f, 1f), new Vector3(full, 30f, 1f),
-            new Vector3(1f, 30f, full), new Vector3(1f, 30f, full)
-        };
-        for (int i = 0; i < 4; i++)
-        {
-            GameObject wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            wall.name = wallNames[i];
-            wall.transform.SetParent(parent, false);
-            wall.transform.localPosition = wallPos[i];
-            wall.transform.localScale    = wallScale[i];
-            Renderer wr = wall.GetComponent<Renderer>();
-            if (wr != null) wr.enabled = false; // invisible
-        }
+        WorldArenaStabilizer.Install(parent, arenaHalfSize, debugSpawnValidation);
     }
 
     private static void EnsureSceneGroundVisible(Transform fallbackParent)
@@ -908,6 +899,8 @@ public class LevelBuilder : MonoBehaviour
 
         EnsureIndustrialDoorsInteractable(mapInstance.transform);
 
+        MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
+
         Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
     }
 
@@ -1184,6 +1177,38 @@ public class LevelBuilder : MonoBehaviour
         return (candidate.y - playerNavPos.y) > MaxSpawnYAbovePlayer;
     }
 
+    /// <summary>
+    /// Rejects spawns intersecting geometry, lacking ground support, or with no headroom.
+    /// </summary>
+    private static bool HasSpawnGroundAndClearance(Vector3 candidate, float requiredHeight = 1.95f)
+    {
+        int mask = Physics.DefaultRaycastLayers;
+        int playerLayer = LayerMask.NameToLayer("Player");
+        int characterLayer = LayerMask.NameToLayer("Character");
+        int hittableLayer = LayerMask.NameToLayer("Hittable");
+        if (playerLayer >= 0) mask &= ~(1 << playerLayer);
+        if (characterLayer >= 0) mask &= ~(1 << characterLayer);
+        if (hittableLayer >= 0) mask &= ~(1 << hittableLayer);
+
+        Vector3 feetProbe = candidate + Vector3.up * 0.35f;
+        if (!Physics.Raycast(feetProbe, Vector3.down, out RaycastHit ground, 2.5f, mask, QueryTriggerInteraction.Ignore))
+            return false;
+
+        if (candidate.y < ground.point.y - 0.35f)
+            return false;
+
+        if (Physics.Raycast(candidate + Vector3.up * 0.12f, Vector3.up, requiredHeight + 0.25f, mask,
+                QueryTriggerInteraction.Ignore))
+            return false;
+
+        float bodyRadius = 0.45f;
+        Vector3 bodyCenter = candidate + Vector3.up * (requiredHeight * 0.5f);
+        if (Physics.CheckSphere(bodyCenter, bodyRadius, mask, QueryTriggerInteraction.Ignore))
+            return false;
+
+        return true;
+    }
+
     private bool TryEvaluateEnemySpawnCandidate(
         Vector3 playerNavPos,
         Vector3 cand,
@@ -1200,6 +1225,12 @@ public class LevelBuilder : MonoBehaviour
         {
             if (debugEnemySpawnDistribution)
                 Debug.Log($"[LevelBuilder] Rejected rooftop spawn cand={cand} dy={(cand.y - playerNavPos.y):F2}");
+            return false;
+        }
+        if (!HasSpawnGroundAndClearance(cand))
+        {
+            if (debugSpawnValidation || debugEnemySpawnDistribution)
+                Debug.Log($"[LevelBuilder] Rejected spawn (ground/clearance) cand={cand}");
             return false;
         }
         if (requirePlayerMinDistance && playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
@@ -2595,6 +2626,8 @@ public class LevelBuilder : MonoBehaviour
             return false;
 
         Vector3 feetPos = hit.position + Vector3.up * 0.1f;
+        if (!HasSpawnGroundAndClearance(feetPos))
+            return false;
 
         // 2) Check open sky — raycast upward from the spawn point. If it hits
         //    something within 4m, we're inside a building.
@@ -2820,10 +2853,10 @@ public class LevelBuilder : MonoBehaviour
             // Layer
             if (envLayer >= 0) SetLayerRecursively(go, envLayer);
 
-            // Static flags — marks for batching, navigation, occlusion bake.
+            // Static flags — batching + NavMesh only (avoid Occluder/Occludee hiding walls at angles).
 #if UNITY_EDITOR
-            UnityEditor.GameObjectUtility.SetStaticEditorFlags(
-                go, (UnityEditor.StaticEditorFlags)~0);
+            UnityEditor.StaticEditorFlags flags = UnityEditor.StaticEditorFlags.BatchingStatic;
+            UnityEditor.GameObjectUtility.SetStaticEditorFlags(go, flags);
 #endif
             go.isStatic = true;
 

@@ -195,7 +195,13 @@ public class CameraController : MonoBehaviour
         // Force near-clip to a sane value for third-person.
         // 0.01 can cause severe character clipping (seeing inside body/legs).
         Camera cam = GetComponent<Camera>();
-        if (cam != null) cam.nearClipPlane = 0.08f;
+        if (cam != null)
+        {
+            cam.nearClipPlane = 0.08f;
+            // Industrial map uses thin fences / one-sided meshes; occlusion culling
+            // was hiding entire wall chunks and exposing gray void behind them.
+            cam.useOcclusionCulling = false;
+        }
 
         if (cam != null)
             defaultFieldOfView = cam.fieldOfView;

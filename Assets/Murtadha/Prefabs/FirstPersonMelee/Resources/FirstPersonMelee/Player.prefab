@@ -1580,6 +1580,7 @@ MonoBehaviour:
   arenaFloorHeight: 0.1
   floorSnapSpeed: 14
   maxFloorSnapDistance: 0.45
+  standingVisualFootLift: 0.045
   staticObstacleMask:
     serializedVersion: 2
     m_Bits: 0

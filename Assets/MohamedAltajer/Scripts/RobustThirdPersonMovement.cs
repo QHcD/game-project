@@ -54,6 +54,7 @@ public class RobustThirdPersonMovement : MonoBehaviour
     private float _verticalVelocity;
     private bool _isGrounded;
     private bool _isSprinting;
+    private bool _sprintToggleLatch;
     private bool _isSliding;
     private float _slideTimer;
     private float _nextSlideTime;
@@ -125,7 +126,15 @@ public class RobustThirdPersonMovement : MonoBehaviour
     private void HandleMovement()
     {
         Vector2 input = ReadMoveInput();
-        _isSprinting = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
+        bool shiftHeld = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
+        if (Keyboard.current != null && Keyboard.current.leftShiftKey.wasPressedThisFrame && SprintModeRuntime.IsToggleMode)
+            _sprintToggleLatch = !_sprintToggleLatch;
+
+        bool kbSprint = SprintModeRuntime.IsToggleMode ? _sprintToggleLatch : shiftHeld;
+        bool padSprint = Gamepad.current != null
+            && (Gamepad.current.leftShoulder.isPressed || Gamepad.current.leftTrigger.ReadValue() > 0.45f)
+            && input.sqrMagnitude > 0.05f;
+        _isSprinting = kbSprint || padSprint;
 
         Vector3 inputDirection = new Vector3(input.x, 0f, input.y);
         inputDirection = Vector3.ClampMagnitude(inputDirection, 1f);
