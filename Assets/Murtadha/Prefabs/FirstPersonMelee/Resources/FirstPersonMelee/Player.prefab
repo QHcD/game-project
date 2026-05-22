@@ -1512,8 +1512,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   moveSpeed: 8.5
   sprintMultiplier: 2
-  gravity: -28
-  jumpHeight: 1.2
+  gravity: -24
+  maxJumpApexHeight: 1.75
+  thrusterApexHeight: 2.15
   gamepadMoveDeadzone: 0.2
   debugMovementInput: 0
   playerAnimatorController: {fileID: 9100000, guid: e271718b7cc6d4af7a7cb713e7076aeb, type: 2}
@@ -1534,7 +1535,7 @@ MonoBehaviour:
   mantleUpHeight: 1.1
   mantleForwardDistance: 1
   mantleDuration: 0.25
-  thrusterJumpHeight: 2.8
+  thrusterApexHeightOverride: 0
   thrusterForwardBoost: 5.8
   thrusterCooldown: 0.8
   crouchBodyYOffset: -0.28
@@ -1587,7 +1588,14 @@ MonoBehaviour:
   wallCollisionPadding: 0.045
   minMoveClearance: 0.025
   maxSeparationPushPerFrame: 0.08
-  jumpGroundProbeExtra: 0.14
+  jumpGroundProbeExtra: 0.22
+  coyoteTime: 0.16
+  jumpBufferTime: 0.14
+  ascentGravityMultiplier: 0.78
+  descentGravityMultiplier: 1.62
+  jumpCutGravityMultiplier: 1.15
+  jumpCutReleaseSpeed: 2.35
+  maxFallSpeed: 48
   safeSpawnObstacleClearance: 0.45
   safeSpawnSearchRadius: 18
   safeSpawnMaxAttempts: 72

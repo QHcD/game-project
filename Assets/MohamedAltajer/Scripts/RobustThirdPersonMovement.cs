@@ -43,8 +43,13 @@ public class RobustThirdPersonMovement : MonoBehaviour
     [SerializeField] private float colliderRestoreSpeed = 12f;
 
     [Header("Jump / Gravity")]
-    [SerializeField] private float jumpHeight = 2.5f;
-    [SerializeField] private float gravity = -32f;
+    [SerializeField] private float maxJumpApexHeight = 1.75f;
+    [SerializeField] private float gravity = -24f;
+    [SerializeField] private float ascentGravityMultiplier = 0.78f;
+    [SerializeField] private float descentGravityMultiplier = 1.62f;
+    [SerializeField] private float jumpCutGravityMultiplier = 1.15f;
+    [SerializeField] private float coyoteTime = 0.16f;
+    [SerializeField] private float jumpBufferTime = 0.14f;
     [SerializeField] private float groundedOffset = 0.1f;
     [SerializeField] private float groundedRadius = 0.28f;
     [SerializeField] private LayerMask groundLayers = ~0;
@@ -54,6 +59,8 @@ public class RobustThirdPersonMovement : MonoBehaviour
     private float _verticalVelocity;
     private bool _isGrounded;
     private bool _isSprinting;
+    private float _coyoteTimeCounter;
+    private float _jumpBufferCounter;
     private bool _sprintToggleLatch;
     private bool _isSliding;
     private float _slideTimer;
@@ -191,35 +198,106 @@ public class RobustThirdPersonMovement : MonoBehaviour
         }
     }
 
+    private float GetAscentGravityMagnitude()
+    {
+        return Mathf.Abs(gravity) * Mathf.Max(0.01f, ascentGravityMultiplier);
+    }
+
+    private float ComputeLaunchSpeedForApex(float apexHeight)
+    {
+        return Mathf.Sqrt(2f * GetAscentGravityMagnitude() * Mathf.Max(0f, apexHeight));
+    }
+
+    private float ResolveJumpLaunchSpeed()
+    {
+        return ComputeLaunchSpeedForApex(maxJumpApexHeight);
+    }
+
+    private float ResolveJumpCutReleaseSpeed()
+    {
+        return Mathf.Max(0.5f, ResolveJumpLaunchSpeed() * 0.38f);
+    }
+
+    private bool IsAscendingJump()
+    {
+        return _verticalVelocity > 0.06f;
+    }
+
+    private float EvaluateAirborneGravity(bool jumpHeld)
+    {
+        if (_verticalVelocity > 0f)
+        {
+            if (!jumpHeld && _verticalVelocity < ResolveJumpCutReleaseSpeed())
+                return gravity * jumpCutGravityMultiplier;
+            return gravity * ascentGravityMultiplier;
+        }
+
+        if (_verticalVelocity < 0f)
+            return gravity * descentGravityMultiplier;
+
+        return gravity;
+    }
+
+    private void TryLaunchJump()
+    {
+        if (_coyoteTimeCounter <= 0f || _jumpBufferCounter <= 0f)
+            return;
+        _verticalVelocity = ResolveJumpLaunchSpeed();
+        _coyoteTimeCounter = 0f;
+        _jumpBufferCounter = 0f;
+        if (PlayerSfx.Instance != null)
+            PlayerSfx.Instance.NotifyJump();
+    }
+
     private void HandleJumpAndGravity()
     {
         bool jumpPressed = Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
-        if (_isGrounded && jumpPressed)
+        bool jumpHeld = Keyboard.current != null && Keyboard.current.spaceKey.isPressed;
+
+        if (_isGrounded)
+            _coyoteTimeCounter = coyoteTime;
+        else
+            _coyoteTimeCounter -= Time.deltaTime;
+
+        if (jumpPressed)
         {
-            _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
-            if (PlayerSfx.Instance != null) PlayerSfx.Instance.NotifyJump();
+            _jumpBufferCounter = jumpBufferTime;
+            TryLaunchJump();
+        }
+        else
+            _jumpBufferCounter -= Time.deltaTime;
+
+        if (_jumpBufferCounter > 0f)
+            TryLaunchJump();
+
+        if (_isGrounded && _verticalVelocity <= 0f)
+            _verticalVelocity = -2f;
+        else if (!_isGrounded)
+        {
+            float appliedGravity = EvaluateAirborneGravity(jumpHeld);
+            _verticalVelocity += appliedGravity * Time.deltaTime;
         }
 
-        _verticalVelocity += gravity * Time.deltaTime;
-
-        // When a tactical animation is active, the collider is smaller than standing
-        // size. If the CharacterController briefly loses ground contact due to the
-        // resize (reporting isGrounded=false for a frame), gravity accumulates at
-        // -32 m/s² and can reach tunneling speed within a few frames.  Clamping to
-        // -2 while the sphere check says we are on the ground prevents this without
-        // interfering with actual jumps or falls.
         if (_isGrounded && _tacticalAnimTimer > 0f)
             _verticalVelocity = Mathf.Max(_verticalVelocity, -2f);
     }
 
     private void ApplyMovement()
     {
-        // 100% air control: always allow full horizontal direction changes mid-air.
-        // Because we use a CharacterController (not Rigidbody), we can simply
-        // apply the requested horizontal velocity every frame.
-        Vector3 finalVelocity = _moveVelocity;
-        finalVelocity.y = _verticalVelocity;
-        _controller.Move(finalVelocity * Time.deltaTime);
+        Vector3 horizontal = _moveVelocity;
+        horizontal.y = 0f;
+        Vector3 vertical = new Vector3(0f, _verticalVelocity * Time.deltaTime, 0f);
+        if (IsAscendingJump())
+        {
+            _controller.Move(vertical);
+            _controller.Move(horizontal * Time.deltaTime);
+        }
+        else
+        {
+            Vector3 finalVelocity = _moveVelocity;
+            finalVelocity.y = _verticalVelocity;
+            _controller.Move(finalVelocity * Time.deltaTime);
+        }
     }
 
     private void LateUpdate()

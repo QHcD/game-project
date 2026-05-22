@@ -517,6 +517,9 @@ public class LevelBuilder : MonoBehaviour
         Transform fbx = arenaRoot.Find("FbxMap");
         ArenaVisualBounds.Install(arenaRoot, arenaHalfSize, fbx, debugArenaVisualBounds || debugSpawnValidation);
 
+        if (fbx != null)
+            EnvironmentGroundAnchor.Install(fbx, debugArenaVisualBounds || debugSpawnValidation);
+
         Transform closure = arenaRoot.Find("ArenaVisualClosure");
         if (closure != null)
             MapVisibilityStabilizer.Install(closure, debugArenaVisualBounds || debugSpawnValidation);
@@ -898,6 +901,8 @@ public class LevelBuilder : MonoBehaviour
         }
 
         EnsureIndustrialDoorsInteractable(mapInstance.transform);
+
+        EnvironmentGroundAnchor.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
 
         MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
 

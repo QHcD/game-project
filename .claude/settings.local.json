@@ -17,7 +17,8 @@
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\murta\\\\Desktop\\\\PRISM-7\\\\Assets\" -Recurse -Filter \"*.meta\")",
       "Bash(Select-String \"99fdce567ba49aa4cb099d09ecea163b\")",
       "Bash(Select-Object -First 5 Path)",
-      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\murta\\\\Desktop\\\\PRISM-7\\\\Assets\" -Directory)"
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\murta\\\\Desktop\\\\PRISM-7\\\\Assets\" -Directory)",
+      "mcp__coplay-mcp__search_files"
     ]
   }
 }
