@@ -57,6 +57,14 @@ public class HUDManager : MonoBehaviour
     private Image healthFillVisual;
     private bool isFullMapVisible;
     private bool isScoreboardVisible;
+    private MinimapCameraFollow _cachedMinimap;
+    private Camera _cachedMinimapCamera;
+    private float _mapArrowTimer;
+    private float _scoreboardRefreshTimer;
+    private readonly List<EnemyController> _mapEnemyScratch = new List<EnemyController>(48);
+    private const float MapArrowRefreshInterval = 0.12f;
+    private const float ScoreboardHiddenRefreshInterval = 0.4f;
+    private const float ScoreboardVisibleRefreshInterval = 0.15f;
     private int localMultiplayerActorNumber = -1;
     private string localMultiplayerPlayerName = "Player";
     private bool singlePlayerInitComplete;
@@ -254,6 +262,27 @@ public class HUDManager : MonoBehaviour
 
         HandleOverlayInput();
         UpdateMinimap();
+        TryRefreshScoreboardPeriodic();
+    }
+
+    private void EnsureMinimapReferences()
+    {
+        if (_cachedMinimap == null)
+            _cachedMinimap = FindFirstObjectByType<MinimapCameraFollow>();
+        if (_cachedMinimap != null && _cachedMinimapCamera == null)
+            _cachedMinimapCamera = _cachedMinimap.GetComponent<Camera>();
+    }
+
+    private void TryRefreshScoreboardPeriodic()
+    {
+        float interval = isScoreboardVisible
+            ? ScoreboardVisibleRefreshInterval
+            : ScoreboardHiddenRefreshInterval;
+        _scoreboardRefreshTimer -= Time.deltaTime;
+        if (_scoreboardRefreshTimer > 0f)
+            return;
+
+        _scoreboardRefreshTimer = interval;
         RefreshScoreboard();
     }
 
@@ -803,6 +832,7 @@ public class HUDManager : MonoBehaviour
         minimapArrow = arrowObject.GetComponent<RectTransform>();
         minimapArrow.sizeDelta = new Vector2(40f, 50f);
         EnsureEnemyArrowPool(minimapRoot.transform, enemyMinimapArrows, "EnemyMiniArrow_", 24f);
+        EnsureMinimapReferences();
     }
 
     private void EnsureFullMapOverlay(Transform canvasTransform)
@@ -866,9 +896,9 @@ public class HUDManager : MonoBehaviour
 
         isFullMapVisible = false;
         fullMapOverlay.SetActive(false);
-        MinimapCameraFollow minimap = FindFirstObjectByType<MinimapCameraFollow>();
-        if (minimap != null)
-            minimap.SetFullMapMode(false, playerController != null ? playerController.transform : null);
+        EnsureMinimapReferences();
+        if (_cachedMinimap != null)
+            _cachedMinimap.SetFullMapMode(false, playerController != null ? playerController.transform : null);
     }
 
     private void EnsureScoreboardOverlay(Transform canvasTransform)
@@ -957,7 +987,8 @@ public class HUDManager : MonoBehaviour
             return;
         }
 
-        MinimapCameraFollow minimap = FindFirstObjectByType<MinimapCameraFollow>();
+        EnsureMinimapReferences();
+        MinimapCameraFollow minimap = _cachedMinimap;
         if (minimap != null)
         {
             RenderTexture texture = minimap.EnsureRenderTexture();
@@ -969,7 +1000,6 @@ public class HUDManager : MonoBehaviour
             if (fullMapImage != null && fullMapImage.texture != texture)
                 fullMapImage.texture = texture;
 
-            // Update minimap camera position HERE before rendering so it tracks the player this frame
             if (playerController != null && !minimap.lockToArenaCenter)
             {
                 minimap.transform.position = new Vector3(
@@ -979,11 +1009,8 @@ public class HUDManager : MonoBehaviour
                 minimap.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
             }
 
-            Camera minimapCamera = minimap.GetComponent<Camera>();
-            if (minimapCamera != null)
-            {
-                minimapCamera.Render();
-            }
+            if (_cachedMinimapCamera != null)
+                _cachedMinimapCamera.Render();
         }
 
         if (minimapArrow != null && playerController != null)
@@ -996,7 +1023,12 @@ public class HUDManager : MonoBehaviour
         if (minimapArrow != null)
             minimapArrow.gameObject.SetActive(!isFullMapVisible);
 
-        UpdateMapArrows(minimap);
+        _mapArrowTimer -= Time.deltaTime;
+        if (_mapArrowTimer <= 0f)
+        {
+            _mapArrowTimer = MapArrowRefreshInterval;
+            UpdateMapArrows(minimap);
+        }
     }
 
     private const int MaxEnemyMapArrows = 32;
@@ -1021,10 +1053,10 @@ public class HUDManager : MonoBehaviour
         if (minimap == null || playerController == null)
             return;
 
-        EnemyController[] enemies = FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
+        EnemyController.CopyAliveEnemies(_mapEnemyScratch);
         UpdateFullMapPlayerArrow(minimap);
-        UpdateEnemyArrowPool(enemyMinimapArrows, enemies, minimap, minimapRootRect, false);
-        UpdateEnemyArrowPool(enemyFullMapArrows, enemies, minimap, fullMapFrameRect, true);
+        UpdateEnemyArrowPool(enemyMinimapArrows, _mapEnemyScratch, minimap, minimapRootRect, false);
+        UpdateEnemyArrowPool(enemyFullMapArrows, _mapEnemyScratch, minimap, fullMapFrameRect, true);
     }
 
     private void UpdateFullMapPlayerArrow(MinimapCameraFollow minimap)
@@ -1043,19 +1075,19 @@ public class HUDManager : MonoBehaviour
         fullMapPlayerArrow.gameObject.SetActive(isFullMapVisible);
     }
 
-    private void UpdateEnemyArrowPool(List<RectTransform> pool, EnemyController[] enemies, MinimapCameraFollow minimap, RectTransform mapRect, bool fullMap)
+    private void UpdateEnemyArrowPool(List<RectTransform> pool, List<EnemyController> enemies, MinimapCameraFollow minimap, RectTransform mapRect, bool fullMap)
     {
-        if (pool == null || mapRect == null)
+        if (pool == null || mapRect == null || enemies == null)
             return;
 
-        Camera mapCamera = minimap.GetComponent<Camera>();
+        Camera mapCamera = _cachedMinimapCamera != null ? _cachedMinimapCamera : minimap.GetComponent<Camera>();
         if (mapCamera == null)
             return;
 
         float halfSize = Mathf.Min(mapRect.rect.width, mapRect.rect.height) * 0.5f;
         int used = 0;
 
-        for (int i = 0; i < enemies.Length && used < pool.Count; i++)
+        for (int i = 0; i < enemies.Count && used < pool.Count; i++)
         {
             EnemyController enemy = enemies[i];
             if (enemy == null || !enemy.IsAlive)
@@ -1130,9 +1162,9 @@ public class HUDManager : MonoBehaviour
         if (fullMapOverlay != null)
             fullMapOverlay.SetActive(isFullMapVisible);
 
-        MinimapCameraFollow minimap = FindFirstObjectByType<MinimapCameraFollow>();
-        if (minimap != null)
-            minimap.SetFullMapMode(isFullMapVisible, playerController != null ? playerController.transform : null);
+        EnsureMinimapReferences();
+        if (_cachedMinimap != null)
+            _cachedMinimap.SetFullMapMode(isFullMapVisible, playerController != null ? playerController.transform : null);
     }
 
     private void ToggleScoreboard()
