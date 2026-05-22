@@ -16,6 +16,7 @@ using Photon.Pun;
 /// Parameters fed each frame: Speed, IsGrounded, IsAttacking, IsSprinting.
 /// The Animator Controller is responsible for all blending and leg motion.
 /// </summary>
+[DefaultExecutionOrder(50)]
 public class PlayerController : MonoBehaviour, IDamageable
 {
     // ── IDamageable bridge ───────────────────────────────────────────────────
@@ -402,12 +403,17 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private int _cachedGroundMask;
     private bool _groundMaskReady;
     private Camera _cachedGameplayCamera;
+    private static readonly RaycastHit[] _groundProbeHits = new RaycastHit[12];
+    private float _probedFloorY;
+    private bool _probedFloorValid;
+    private int _probedFloorFrame = -1;
 
     // ════════════════════════════════════════════════════════════════════════
     //  PUBLIC API
     // ════════════════════════════════════════════════════════════════════════
 
     public Camera ActiveCamera => runtimeThirdPersonCamera;
+    public float PlanarSpeed => actualHorizontalVelocity.magnitude;
     public GameObject GetThirdPersonBody() => thirdPersonBody;
     public bool IsMeleeWeapon => true;
     public int GetEquippedWeaponLevel() => equippedWeaponLevel > 0 ? equippedWeaponLevel : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
@@ -440,6 +446,107 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (_cachedGameplayCamera == null)
             RefreshCachedGameplayCamera();
         return _cachedGameplayCamera;
+    }
+
+    private float MovementDeltaTime()
+    {
+        return Time.inFixedTimeStep ? Time.fixedDeltaTime : Time.deltaTime;
+    }
+
+    private bool TryGetWalkableFloorY(out float floorY)
+    {
+        int frame = Time.frameCount;
+        if (_probedFloorFrame == frame && _probedFloorValid)
+        {
+            floorY = _probedFloorY;
+            return true;
+        }
+
+        _probedFloorFrame = frame;
+        _probedFloorValid = false;
+        floorY = 0f;
+        if (controller == null)
+            return false;
+
+        GetCapsuleWorldEndpoints(transform.position, out Vector3 bottom, out Vector3 _);
+        float radius = Mathf.Max(0.06f, controller.radius * 0.72f);
+        Vector3 origin = bottom + Vector3.up * (radius + 0.03f);
+        float maxDist = radius + Mathf.Max(controller.stepOffset, controller.skinWidth)
+                        + jumpGroundProbeExtra + 0.08f;
+        int mask = GetGroundCheckMask();
+
+        int count = Physics.SphereCastNonAlloc(
+            origin,
+            radius,
+            Vector3.down,
+            _groundProbeHits,
+            maxDist,
+            mask,
+            QueryTriggerInteraction.Ignore);
+
+        float bestY = float.NegativeInfinity;
+        bool found = false;
+
+        for (int i = 0; i < count; i++)
+        {
+            ref RaycastHit h = ref _groundProbeHits[i];
+            if (h.collider == null || h.collider.transform.IsChildOf(transform))
+                continue;
+            if (h.normal.y < 0.65f)
+                continue;
+
+            if (!found || h.point.y > bestY)
+            {
+                bestY = h.point.y;
+                found = true;
+            }
+        }
+
+        if (!found
+            && Physics.Raycast(origin, Vector3.down, out RaycastHit rayHit, maxDist, mask, QueryTriggerInteraction.Ignore)
+            && rayHit.collider != null
+            && !rayHit.collider.transform.IsChildOf(transform)
+            && rayHit.normal.y >= 0.65f)
+        {
+            bestY = rayHit.point.y;
+            found = true;
+        }
+
+        if (!found)
+            return false;
+
+        _probedFloorY = bestY;
+        _probedFloorValid = true;
+        floorY = bestY;
+        return true;
+    }
+
+    private void ResolveGroundContact()
+    {
+        if (controller == null || isMantling)
+            return;
+        if (verticalVelocity.y > 0.12f)
+            return;
+
+        bool lowProfile = isProne || isSliding
+            || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
+        if (!controller.isGrounded && !lowProfile && !TryGetWalkableFloorY(out _))
+            return;
+
+        if (!TryGetWalkableFloorY(out float floorY))
+            return;
+
+        float capsuleBottomY = transform.position.y + controller.center.y - controller.height * 0.5f;
+        float minBottomY = floorY + controller.skinWidth;
+        if (capsuleBottomY >= minBottomY - 0.001f)
+            return;
+
+        float lift = minBottomY - capsuleBottomY;
+        controller.enabled = false;
+        transform.position += Vector3.up * lift;
+        controller.enabled = true;
+        if (verticalVelocity.y < 0f)
+            verticalVelocity.y = -2f;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -829,8 +936,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         ReadInput();
         HandleActionInput();
-        ApplyMovement();
-        ApplyCharacterSeparationPush();
         ApplyLook();
         // UpdateCameraZoom removed — zoom is permanently disabled.
         UpdateHeadBob();
@@ -901,9 +1006,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (isProne || isSliding || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive))
             ClampLowProfileVisualMesh();
 
-        SnapCharacterToGroundNavMesh();
-        SnapToArenaFloor();
-        EnforceGroundYLock();
         AlignStandingVisualToCapsule();
 
         if (_tacticalActions != null)
@@ -916,11 +1018,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         }
         else if (isProne || isSliding)
             FlushLowProfileGroundSnap(forceZeroMove: false);
-
-        // ── Final feet correction: runs LAST so nothing overrides it ──────────
-        // Measures actual foot bone position vs ground and closes any remaining
-        // gap after AlignStandingVisualToCapsule and all other positioning are done.
-        CorrectFeetToGround();
     }
 
     private void NormalizeThirdPersonBodyLocalRotation()
@@ -950,85 +1047,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (controller == null) return;
         if (EndMatchCinematic.GameplayLocked) return;
 
-        // ── Rule 2: hard yaw-only rotation lock ─────────────────────────────
-        // Unconditional — no threshold. The root MUST stay Y-only every physics
-        // tick. Flip visuals live on the body's local rotation, not here.
         Vector3 e = transform.eulerAngles;
         transform.eulerAngles = new Vector3(0f, e.y, 0f);
 
-        // ── Rule 1: hard anti-sink floor clamp ──────────────────────────────
-        EnforceFloorClamp();
-    }
-
-    private void EnforceFloorClamp()
-    {
-        if (isMantling) return;
-        if (verticalVelocity.y > 0.12f) return;
-        // NOTE: intentionally runs during tactical moves so any sink condition
-        // (capsule bottom below floor) is fixed immediately.
-
-        // Probe from inside the capsule downward to find the real floor.
-        Vector3 castOrigin = transform.position
-                           + Vector3.up * (controller.center.y + 0.05f);
-        int groundMask = GetGroundCheckMask();
-
-        // Distance covers the full capsule height plus 1 m so a knockback or
-        // slope dive that briefly sinks us is still recoverable on one tick.
-        float castDist = controller.height + 1f;
-        if (!Physics.Raycast(castOrigin, Vector3.down, out RaycastHit hit,
-                             castDist, groundMask, QueryTriggerInteraction.Ignore))
+        if (IsRemoteNetworkPlayer())
             return;
 
-        if (hit.collider != null && hit.collider.transform.IsChildOf(transform))
-            return;
-
-        float capsuleBottomY = transform.position.y
-                             + controller.center.y
-                             - controller.height * 0.5f;
-        float floorY         = hit.point.y;
-
-        // Allow exactly skinWidth of penetration (the CC's natural contact
-        // tolerance).  Anything past that is a sink — fix it now.  Toggling
-        // controller.enabled bypasses CC depenetration, which can fail on
-        // thin floor meshes for a single tick.
-        if (capsuleBottomY >= floorY - controller.skinWidth) return;
-
-        float lift = floorY - capsuleBottomY;
-        controller.enabled = false;
-        transform.position = new Vector3(transform.position.x,
-                                         transform.position.y + lift,
-                                         transform.position.z);
-        controller.enabled = true;
-        if (verticalVelocity.y < 0f) verticalVelocity.y = -2f;
-    }
-
-    /// <summary>
-    /// Keeps the capsule bottom from sitting under the baked NavMesh surface (arena floors).
-    /// </summary>
-    private void SnapCharacterToGroundNavMesh()
-    {
-        if (controller == null || !controller.enabled) return;
-        if (EndMatchCinematic.GameplayLocked) return;
-        if (verticalVelocity.y > 0.08f) return;
-        bool lowProfile = isProne || isSliding
-            || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
-        if (!isGrounded && !IsGroundedForJump() && !lowProfile)
-            return;
-
-        Vector3 sampleOrigin = transform.position + Vector3.up * 0.25f;
-        if (!NavMesh.SamplePosition(sampleOrigin, out NavMeshHit hit, 2.5f, NavMesh.AllAreas))
-            return;
-
-        float capsuleBottomY = transform.position.y + controller.center.y - controller.height * 0.5f;
-        float groundY = hit.position.y;
-        const float sinkAllowance = 0.02f;
-        if (capsuleBottomY >= groundY - sinkAllowance)
-            return;
-
-        float lift = (groundY - sinkAllowance) - capsuleBottomY;
-        lift = Mathf.Clamp(lift, 0f, lowProfile ? 0.25f : 0.4f);
-        if (lift > 1e-4f)
-            controller.Move(Vector3.up * lift);
+        _probedFloorValid = false;
+        _probedFloorFrame = -1;
+        isGrounded = controller.isGrounded;
+        ApplyMovement();
+        ApplyCharacterSeparationPush();
+        ResolveGroundContact();
     }
 
     /// <summary>
@@ -1332,6 +1362,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             if (rb == null) continue;
             rb.isKinematic = true;
             rb.useGravity = false;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
             rb.linearVelocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
             rb.constraints = RigidbodyConstraints.FreezeRotationX
@@ -1371,13 +1402,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (controller == null) return false;
         if (controller.isGrounded) return true;
-
-        float reach = Mathf.Max(controller.stepOffset, controller.skinWidth) + jumpGroundProbeExtra;
-        GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 _);
-        float probeRadius = Mathf.Max(0.08f, controller.radius * 0.82f);
-        Vector3 origin = bottom + Vector3.up * (probeRadius + 0.04f);
-        return Physics.SphereCast(origin, probeRadius, Vector3.down, out _, reach + probeRadius,
-            GetGroundCheckMask(), QueryTriggerInteraction.Ignore);
+        return TryGetWalkableFloorY(out _);
     }
 
     private bool IsAscendingJump()
@@ -1397,9 +1422,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (IsGroundedForJump())
             coyoteTimeCounter = coyoteTime;
         else
-            coyoteTimeCounter -= Time.deltaTime;
+            coyoteTimeCounter -= MovementDeltaTime();
 
-        jumpBufferCounter -= Time.deltaTime;
+        jumpBufferCounter -= MovementDeltaTime();
     }
 
     private float GetAscentGravityMagnitude()
@@ -1515,33 +1540,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// Forward + slightly-down ray: if we're driving velocity into a wall, damp horizontal speed
     /// (extra layer on top of CapsuleCast clamp) to reduce "frozen" feel on box colliders.
     /// </summary>
-    private Vector3 DampHorizontalVelocityIntoWalls(Vector3 worldHorizontalVelocity)
-    {
-        if (IsAscendingJump()) return worldHorizontalVelocity;
-        if (controller == null || staticObstacleMask.value == 0) return worldHorizontalVelocity;
-        worldHorizontalVelocity.y = 0f;
-        float mag = worldHorizontalVelocity.magnitude;
-        if (mag < 0.01f) return worldHorizontalVelocity;
-        if ((Time.frameCount + GetInstanceID()) % 2 != 0)
-            return worldHorizontalVelocity;
-
-        Vector3 dir = worldHorizontalVelocity / mag;
-        GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 _);
-        Vector3 origin = bottom + Vector3.up * Mathf.Max(0.05f, controller.radius * 0.6f);
-        Vector3 probeDir = (dir + Vector3.down * 0.15f).normalized;
-        float dist = Mathf.Clamp(mag * Time.deltaTime + controller.radius * 0.35f, 0.08f, 0.55f);
-
-        if (Physics.Raycast(origin, probeDir, out RaycastHit hit, dist, staticObstacleMask, QueryTriggerInteraction.Ignore)
-            && hit.collider != null
-            && !hit.collider.transform.IsChildOf(transform))
-        {
-            float damp = Mathf.Clamp01(hit.distance / Mathf.Max(0.01f, dist));
-            return worldHorizontalVelocity * damp * damp;
-        }
-
-        return worldHorizontalVelocity;
-    }
-
     /// <summary>
     /// CapsuleCast + one slide iteration so we shed velocity into walls instead of
     /// hammering CharacterController internal depenetration (stutter near crates).
@@ -1647,15 +1645,19 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         else if (isCrouching) targetSpeed *= crouchSpeedMultiplier;
 
         // Dodge roll preserves its short boost so WASD cannot over-accelerate it.
+        float dt = MovementDeltaTime();
+
         if (!isFlipping)
         {
             Vector3 moveDirection = GetCameraRelativeMoveDirection(moveInputSmoothed);
             Vector3 targetVelocity = moveDirection * targetSpeed;
 
             float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
-            horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
-            if (!IsAscendingJump())
-                horizontalVelocity = DampHorizontalVelocityIntoWalls(horizontalVelocity);
+            horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * dt);
+
+            float planarSpeed = horizontalVelocity.magnitude;
+            if (planarSpeed > targetSpeed + 0.02f)
+                horizontalVelocity = horizontalVelocity * (targetSpeed / planarSpeed);
 
             // Facing is driven by RAW input, not the smoothed move vector.
             // The smoothed vector decays slowly on release, and its
@@ -1674,14 +1676,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                     transform.rotation = Quaternion.RotateTowards(
                         transform.rotation,
                         Quaternion.Euler(0f, targetYaw, 0f),
-                        Mathf.Max(1f, turnSpeed) * Time.deltaTime);
+                        Mathf.Max(1f, turnSpeed) * dt);
                 }
             }
 
             DebugMovementInput(moveDirection);
         }
 
-        Vector3 horizontalDelta = horizontalVelocity * Time.deltaTime;
+        Vector3 horizontalDelta = horizontalVelocity * dt;
         horizontalDelta.y = 0f;
         if (staticObstacleMask.value != 0 && !IsAscendingJump())
             horizontalDelta = ClampHorizontalMoveAgainstStatics(horizontalDelta);
@@ -1703,12 +1705,12 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         else
         {
             float appliedGravity = EvaluateAirborneGravity(IsJumpHeld());
-            verticalVelocity.y += appliedGravity * Time.deltaTime;
+            verticalVelocity.y += appliedGravity * dt;
             ConstrainAscentToActiveApex();
             verticalVelocity.y = Mathf.Max(verticalVelocity.y, -maxFallSpeed);
         }
 
-        Vector3 verticalDelta = new Vector3(0f, verticalVelocity.y * Time.deltaTime, 0f);
+        Vector3 verticalDelta = new Vector3(0f, verticalVelocity.y * dt, 0f);
         if (IsAscendingJump())
         {
             controller.Move(verticalDelta);
@@ -1721,14 +1723,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         UpdateStanceCollider();
 
         if (_tacticalActions != null)
-            _tacticalActions.Tick(Time.deltaTime);
+            _tacticalActions.Tick(dt);
 
         ClampInsideArena();
 
         Vector3 frameDisplacement = transform.position - frameStartPosition;
         frameDisplacement.y = 0f;
-        actualHorizontalVelocity = Time.deltaTime > 0f
-            ? frameDisplacement / Time.deltaTime
+        actualHorizontalVelocity = dt > 0f
+            ? frameDisplacement / dt
             : Vector3.zero;
 
         wasMoving = moveInputSmoothed.sqrMagnitude > 0.01f;
@@ -1740,9 +1742,19 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (input.sqrMagnitude < 0.0001f)
             return Vector3.zero;
 
-        Quaternion yawOnlyBasis = Quaternion.Euler(0f, cameraYaw, 0f);
-        Vector3 forward = yawOnlyBasis * Vector3.forward;
-        Vector3 right = yawOnlyBasis * Vector3.right;
+        Vector3 forward;
+        Vector3 right;
+        if (isThirdPersonActive && ThirdPersonOrbitCamera.Instance != null)
+        {
+            forward = ThirdPersonOrbitCamera.GetMovementForward();
+            right = ThirdPersonOrbitCamera.GetMovementRight();
+        }
+        else
+        {
+            Quaternion yawOnlyBasis = Quaternion.Euler(0f, cameraYaw, 0f);
+            forward = yawOnlyBasis * Vector3.forward;
+            right = yawOnlyBasis * Vector3.right;
+        }
 
         Vector3 moveDirection = (right * input.x) + (forward * input.y);
         moveDirection.y = 0f;
@@ -2179,16 +2191,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (controller == null) return;
 
         Vector3 p = transform.position;
-        // Use a generous cast so this works after jumps and short tactical moves.
-        Vector3 origin = p + Vector3.up * 0.35f;
-        int groundMask = GetGroundCheckMask();
-        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 10f, groundMask, QueryTriggerInteraction.Ignore))
+        if (!TryGetWalkableFloorY(out float floorY))
             return;
 
-        // Place the capsule bottom exactly on the floor surface (+ skinWidth so
-        // the CC's internal contact offset keeps the player flush, not buried).
-        // Previous formula subtracted skinWidth, which put the capsule 4 cm underground.
-        float restY = hit.point.y - controller.center.y + (controller.height * 0.5f) + controller.skinWidth;
+        float restY = floorY - controller.center.y + (controller.height * 0.5f) + controller.skinWidth;
         if (p.y < restY - 0.02f)
         {
             controller.enabled = false;
@@ -3358,75 +3364,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         return arenaFloorHeight - controller.center.y + (controller.height * 0.5f);
     }
 
-    private void SnapToArenaFloor()
-    {
-        if (controller == null) return;
-        bool lowProfileGrounded = isProne || isSliding
-            || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
-        if (!isGrounded && !(lowProfileGrounded && IsGroundedForJump())) return;
-        if (verticalVelocity.y > 0.1f && !lowProfileGrounded) return;
-
-        int groundMask = GetGroundCheckMask();
-        Vector3 origin = transform.position + Vector3.up * 0.3f;
-        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit,
-                             maxFloorSnapDistance + 0.4f, groundMask, QueryTriggerInteraction.Ignore))
-            return;
-
-        float capsuleBottomY = transform.position.y + controller.center.y - controller.height * 0.5f;
-        float floorY         = hit.point.y;
-
-        // Capsule bottom is already at or above the floor — nothing to do.
-        if (capsuleBottomY >= floorY - 0.02f) return;
-
-        // Capsule has sunk below the floor surface: lift it back up smoothly.
-        float lift      = floorY - capsuleBottomY;
-        float snapSpeed = Mathf.Lerp(floorSnapSpeed, floorSnapSpeed * 4f, Mathf.Clamp01(lift / 0.5f));
-        float liftDelta = Mathf.MoveTowards(0f, lift, snapSpeed * Time.deltaTime);
-
-        // controller.Move avoids toggling enabled (which resets internal state and causes jitter)
-        controller.Move(Vector3.up * liftDelta);
-    }
-
-    /// <summary>
-    /// Strict Y-axis ground lock: if the CharacterController has confirmed the
-    /// player is grounded, the capsule bottom must sit at exactly
-    /// (detected floor Y + 1.0 m above the capsule centre offset) — preventing
-    /// any frame where the feet visually sink below the surface.
-    ///
-    /// This runs AFTER all other snapping so it acts as the final safety net.
-    /// Skipped during flips, mantles, and airborne frames so it never fights
-    /// intentional vertical motion.
-    /// </summary>
-    private void EnforceGroundYLock()
-    {
-        if (controller == null || !controller.enabled) return;
-        if (isMantling) return;
-
-        bool lowProfile = isProne || isSliding
-            || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
-        if (!controller.isGrounded && !(lowProfile && IsGroundedForJump())) return;
-        if (verticalVelocity.y > 0.05f && !lowProfile) return;
-
-        int groundMask = GetGroundCheckMask();
-        Vector3 probeOrigin = transform.position + Vector3.up * 0.3f;
-        if (!Physics.Raycast(probeOrigin, Vector3.down, out RaycastHit hit,
-                             1.5f, groundMask, QueryTriggerInteraction.Ignore))
-            return;
-
-        // Target: capsule bottom exactly on the floor surface.
-        // capsuleBottomY = transform.position.y + center.y - height*0.5
-        // → transform.position.y = floorY - center.y + height*0.5
-        float targetY = hit.point.y - controller.center.y + controller.height * 0.5f;
-
-        // Only lift (never push down) — prevents fighting the physics step offset.
-        if (transform.position.y < targetY - 0.005f)
-        {
-            // controller.Move avoids toggling enabled (which resets internal state and causes jitter)
-            controller.Move(Vector3.up * (targetY - transform.position.y));
-            if (verticalVelocity.y < 0f) verticalVelocity.y = -2f;
-        }
-    }
-
     // ════════════════════════════════════════════════════════════════════════
     //  PERSPECTIVE MANAGEMENT
     // ════════════════════════════════════════════════════════════════════════
@@ -4027,154 +3964,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
         Debug.Log($"[PlayerController] Feet aligned: gap={gap:+0.000;-0.000} m (ankleToSole={ankleToSole} m).");
         return true;
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  PER-FRAME FEET → GROUND CORRECTION  (runs at end of LateUpdate)
-    // ════════════════════════════════════════════════════════════════════════
-    /// <summary>
-    /// Called at the very end of LateUpdate — AFTER AlignStandingVisualToCapsule
-    /// and all other body-position methods — so it is never overridden.
-    ///
-    /// Two-stage fix:
-    ///   Stage A: If the CHARACTER ROOT (capsule) itself is floating above the
-    ///            physics ground, push it down immediately (works on all maps,
-    ///            bridges, multi-level areas).
-    ///   Stage B: Measure the actual foot-bone-to-ground gap and shift
-    ///            thirdPersonBody to close it.  Updates thirdPersonBodyBaseLocalPosition
-    ///            so AlignStandingVisualToCapsule targets the corrected height
-    ///            next frame (prevents oscillation).
-    /// </summary>
-    private void CorrectFeetToGround()
-    {
-        if (thirdPersonBody == null || controller == null) return;
-        if (verticalVelocity.y > 0.05f) return;
-
-        if (isProne || isSliding) return;
-        if (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive) return;
-        if (isMantling) return;
-
-        int  groundMask  = GetGroundCheckMask();
-        bool localPlayer = !IsRemoteNetworkPlayer();
-
-        // ── STAGE A: Push the character ROOT down (LOCAL player only) ─────────
-        // Remote players' positions are driven by the network — never push them
-        // down locally or it fights Photon position updates and causes jitter.
-        //
-        // All built-in snap functions only LIFT — none push the root DOWN.
-        // If the root is floating (NavMesh baked above visual mesh, multi-level
-        // map, bridge offset, etc.) gravity alone may be slow to close the gap.
-        // We detect the physics surface and hard-snap the root onto it.
-        //
-        // SKIP during a jump (verticalVelocity.y > 0.05) so we never cancel
-        // upward launch velocity.
-        if (localPlayer && verticalVelocity.y <= 0.05f)
-        {
-            Vector3 probeA = transform.position + Vector3.up * (controller.center.y + 0.05f);
-            float   castA  = controller.height + 0.5f;
-            if (Physics.Raycast(probeA, Vector3.down, out RaycastHit rootHit, castA,
-                                groundMask, QueryTriggerInteraction.Ignore)
-                && !rootHit.collider.transform.IsChildOf(transform))
-            {
-                // Capsule bottom = transform.position.y  (center.y == height * 0.5)
-                float capsuleBottom = transform.position.y
-                                    + controller.center.y - controller.height * 0.5f;
-                float floorY = rootHit.point.y;
-
-                // Push DOWN only when floating MORE than one skinWidth above floor
-                if (capsuleBottom > floorY + controller.skinWidth + 0.005f)
-                {
-                    float pushDown = capsuleBottom - (floorY + controller.skinWidth);
-                    controller.enabled = false;
-                    transform.position = new Vector3(transform.position.x,
-                                                     transform.position.y - pushDown,
-                                                     transform.position.z);
-                    controller.enabled = true;
-                    verticalVelocity.y = -2f;   // re-anchor downward velocity
-                }
-            }
-        }
-
-        // ── STAGE B: Close the VISUAL foot-to-ground gap ─────────────────────
-        // CRITICAL: Skip while airborne (jumping / falling).
-        //   When the player jumps, the CC root moves UP — the camera (which
-        //   follows the root) rises with it ("screen jumps").  If Stage B runs
-        //   during a jump it measures a huge gap between the now-elevated foot
-        //   bones and the ground and shoves the visual body back DOWN every
-        //   frame, so the character VISUALLY never leaves the ground even though
-        //   the camera moves.  Skipping Stage B while airborne lets the body
-        //   travel with the root naturally during a jump.
-        if (verticalVelocity.y > 0.05f) return;
-        if (!isGrounded && !IsGroundedForJump()) return;
-
-        // Cache animator (re-fetch when body prefab variant is swapped)
-        if (_lastThirdPersonBodyRef != thirdPersonBody)
-        {
-            _bodyAnimatorCached     = thirdPersonBody.GetComponentInChildren<Animator>(true);
-            _lastThirdPersonBodyRef = thirdPersonBody;
-        }
-
-        // ── 1. Lowest foot world-Y (humanoid bone or renderer bounds fallback) ─
-        float feetY      = float.MaxValue;
-        bool  hasFeet    = false;
-        bool  usingBones = false;   // true = foot BONE (ankle), false = renderer sole
-
-        if (_bodyAnimatorCached != null && _bodyAnimatorCached.isInitialized && _bodyAnimatorCached.isHuman)
-        {
-            Transform lf = _bodyAnimatorCached.GetBoneTransform(HumanBodyBones.LeftFoot);
-            Transform rf = _bodyAnimatorCached.GetBoneTransform(HumanBodyBones.RightFoot);
-            if (lf != null) { feetY = Mathf.Min(feetY, lf.position.y); hasFeet = true; }
-            if (rf != null) { feetY = Mathf.Min(feetY, rf.position.y); hasFeet = true; }
-            usingBones = hasFeet;
-        }
-
-        // Fallback: lowest renderer bound (works for non-humanoid rigs too)
-        if (!hasFeet)
-        {
-            foreach (Renderer r in thirdPersonBody.GetComponentsInChildren<Renderer>(true))
-            {
-                if (r.bounds.size.sqrMagnitude < 0.001f) continue;   // skip uninitialized
-                feetY   = Mathf.Min(feetY, r.bounds.min.y);
-                hasFeet = true;
-            }
-            // bounds.min.y is already at sole level — no bone offset needed
-        }
-
-        if (!hasFeet || feetY >= 9999f) return;
-
-        // ── 2. Physics ground Y directly below character ──────────────────────
-        float groundY  = transform.position.y;   // safe fallback = capsule bottom
-        Vector3 probeB = transform.position + Vector3.up * 0.3f;
-        if (Physics.Raycast(probeB, Vector3.down, out RaycastHit gHit,
-                            2f, groundMask, QueryTriggerInteraction.Ignore)
-            && !gHit.collider.transform.IsChildOf(transform))
-            groundY = gHit.point.y;
-
-        // ── 3. Gap = sole Y - ground Y ───────────────────────────────────────
-        // Humanoid foot BONE is at the ankle (~8 cm above shoe sole).
-        // Renderer bounds.min.y is already the sole — no offset needed.
-        const float ankleToSole = 0.08f;
-        float soleY = usingBones ? (feetY - ankleToSole) : feetY;
-        float gap   = soleY - groundY;
-
-        if (Mathf.Abs(gap) < 0.002f) return;   // already flush — nothing to do
-
-        // ── 4. Shift visual body to close the gap ────────────────────────────
-        Vector3 lp = thirdPersonBody.transform.localPosition;
-        lp.y -= gap;
-        thirdPersonBody.transform.localPosition = lp;
-
-        // ── 5. Update base so AlignStandingVisualToCapsule won't undo this ───
-        // AlignStandingVisualToCapsule sets body to (base + effectiveYOff).
-        // Setting base = corrected_y - effectiveYOff means next frame the
-        // "desired" value equals exactly corrected_y → no oscillation.
-        float effectiveYOff = isCrouching
-            ? Mathf.Max(standingVisualFootLift, crouchBodyYOffset)
-            : standingVisualFootLift;
-        thirdPersonBodyBaseLocalPosition = new Vector3(
-            thirdPersonBodyBaseLocalPosition.x,
-            lp.y - effectiveYOff,
-            thirdPersonBodyBaseLocalPosition.z);
     }
 
     private void EnsureAnimationEventSink(GameObject root)
