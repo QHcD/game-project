@@ -399,6 +399,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private static readonly int HashSprinting = Animator.StringToHash("IsSprinting");
 
     private HashSet<int> _animParameterHashes;
+    private int _cachedGroundMask;
+    private bool _groundMaskReady;
+    private Camera _cachedGameplayCamera;
 
     // ════════════════════════════════════════════════════════════════════════
     //  PUBLIC API
@@ -415,6 +418,29 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     // both remain camera-relative without any other code changes.
     public void SetOrbitYaw(float yaw)    { cameraYaw   = yaw; }
     public void SetOrbitPitch(float pitch){ cameraPitch = pitch; }
+
+    private int GetGroundCheckMask()
+    {
+        if (!_groundMaskReady)
+        {
+            _cachedGroundMask = BuildGroundCheckMask();
+            _groundMaskReady = true;
+        }
+
+        return _cachedGroundMask;
+    }
+
+    private void RefreshCachedGameplayCamera()
+    {
+        _cachedGameplayCamera = ActiveCamera != null ? ActiveCamera : GetComponentInChildren<Camera>(true);
+    }
+
+    private Camera GetGameplayCamera()
+    {
+        if (_cachedGameplayCamera == null)
+            RefreshCachedGameplayCamera();
+        return _cachedGameplayCamera;
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     //  LIFECYCLE
@@ -494,6 +520,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         resolvedAttackMask   = ResolveHittableMask();
         if (staticObstacleMask.value == 0)
             staticObstacleMask = BuildDefaultStaticObstacleMask();
+
+        _cachedGroundMask = BuildGroundCheckMask();
+        _groundMaskReady = true;
+        RefreshCachedGameplayCamera();
 
         foreach (Animator childAnimator in GetComponentsInChildren<Animator>(true))
             childAnimator.applyRootMotion = false;
@@ -940,7 +970,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         // Probe from inside the capsule downward to find the real floor.
         Vector3 castOrigin = transform.position
                            + Vector3.up * (controller.center.y + 0.05f);
-        int groundMask = BuildGroundCheckMask();
+        int groundMask = GetGroundCheckMask();
 
         // Distance covers the full capsule height plus 1 m so a knockback or
         // slope dive that briefly sinks us is still recoverable on one tick.
@@ -1347,7 +1377,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         float probeRadius = Mathf.Max(0.08f, controller.radius * 0.82f);
         Vector3 origin = bottom + Vector3.up * (probeRadius + 0.04f);
         return Physics.SphereCast(origin, probeRadius, Vector3.down, out _, reach + probeRadius,
-            BuildGroundCheckMask(), QueryTriggerInteraction.Ignore);
+            GetGroundCheckMask(), QueryTriggerInteraction.Ignore);
     }
 
     private bool IsAscendingJump()
@@ -1492,6 +1522,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         worldHorizontalVelocity.y = 0f;
         float mag = worldHorizontalVelocity.magnitude;
         if (mag < 0.01f) return worldHorizontalVelocity;
+        if ((Time.frameCount + GetInstanceID()) % 2 != 0)
+            return worldHorizontalVelocity;
 
         Vector3 dir = worldHorizontalVelocity / mag;
         GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 _);
@@ -2149,7 +2181,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Vector3 p = transform.position;
         // Use a generous cast so this works after jumps and short tactical moves.
         Vector3 origin = p + Vector3.up * 0.35f;
-        int groundMask = BuildGroundCheckMask();
+        int groundMask = GetGroundCheckMask();
         if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 10f, groundMask, QueryTriggerInteraction.Ignore))
             return;
 
@@ -2259,7 +2291,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (mantleCoroutine != null) return;
 
         Vector3 origin = transform.position + Vector3.up * 1.0f;
-        int groundMask = BuildGroundCheckMask();
+        int groundMask = GetGroundCheckMask();
         if (!Physics.Raycast(origin, transform.forward, out RaycastHit wallHit, 1.1f, groundMask, QueryTriggerInteraction.Ignore))
         {
             // Fallback mini-vault so V always produces a visible maneuver.
@@ -2403,7 +2435,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (forceZeroMove)
             controller.Move(Vector3.zero);
 
-        int groundMask = BuildGroundCheckMask();
+        int groundMask = GetGroundCheckMask();
         Vector3 rayOrigin = transform.position + Vector3.up * 0.35f;
         if (!Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, 10f, groundMask, QueryTriggerInteraction.Ignore))
             return;
@@ -2544,7 +2576,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         Physics.SyncTransforms();
 
-        Camera cam = ActiveCamera != null ? ActiveCamera : Camera.main;
+        Camera cam = GetGameplayCamera();
+        if (cam == null)
+            cam = Camera.main;
         Vector3 origin;
         Vector3 forward;
 
@@ -3332,7 +3366,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (!isGrounded && !(lowProfileGrounded && IsGroundedForJump())) return;
         if (verticalVelocity.y > 0.1f && !lowProfileGrounded) return;
 
-        int groundMask = BuildGroundCheckMask();
+        int groundMask = GetGroundCheckMask();
         Vector3 origin = transform.position + Vector3.up * 0.3f;
         if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit,
                              maxFloorSnapDistance + 0.4f, groundMask, QueryTriggerInteraction.Ignore))
@@ -3373,7 +3407,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (!controller.isGrounded && !(lowProfile && IsGroundedForJump())) return;
         if (verticalVelocity.y > 0.05f && !lowProfile) return;
 
-        int groundMask = BuildGroundCheckMask();
+        int groundMask = GetGroundCheckMask();
         Vector3 probeOrigin = transform.position + Vector3.up * 0.3f;
         if (!Physics.Raycast(probeOrigin, Vector3.down, out RaycastHit hit,
                              1.5f, groundMask, QueryTriggerInteraction.Ignore))
@@ -3564,6 +3598,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 // Must be MainCamera so Camera.main / interaction rays match gameplay.
                 runtimeThirdPersonCamera.tag = "MainCamera";
                 ApplyThirdPersonCameraSettings(existingFollow, runtimeThirdPersonCamera);
+                RefreshCachedGameplayCamera();
                 DestroyDuplicateThirdPersonCameras(existingFollows, i);
                 return;
             }
@@ -3622,6 +3657,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         }
 
         thirdPersonCam = runtimeThirdPersonCamera;
+        RefreshCachedGameplayCamera();
     }
 
     private void ApplyThirdPersonCameraSettings(CameraController follow, Camera cam)
@@ -4018,7 +4054,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive) return;
         if (isMantling) return;
 
-        int  groundMask  = BuildGroundCheckMask();
+        int  groundMask  = GetGroundCheckMask();
         bool localPlayer = !IsRemoteNetworkPlayer();
 
         // ── STAGE A: Push the character ROOT down (LOCAL player only) ─────────

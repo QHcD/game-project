@@ -25,6 +25,11 @@ using Photon.Pun;
 [RequireComponent(typeof(NavMeshAgent))]
 public class EnemyController : MonoBehaviour, IDamageable
 {
+    private static readonly List<EnemyController> s_aliveEnemies = new List<EnemyController>(64);
+    private static PlayerController s_scenePlayer;
+    private static float s_scenePlayerRefreshTime = -999f;
+    private const float ChaseGateRecheckInterval = 0.65f;
+
     private const string PrefKeySicklePos = "Grip.Player.L13.Sickle.Pos";
     private const string PrefKeySickleEuler = "Grip.Player.L13.Sickle.Euler";
     private const string PrefKeySawPos = "Grip.Player.L12.Saw.Pos";
@@ -185,7 +190,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Seconds at low velocity with an active path before StuckRecovery.")]
     public float stuckTimeThreshold = 1.5f;
     [Tooltip("How often to revalidate NavMesh path and refresh chase destination.")]
-    public float repathInterval = 0.35f;
+    public float repathInterval = 0.45f;
     [Tooltip("Seconds in Idle before starting Patrol.")]
     public float idleToPatrolDelay = 0.55f;
     [Tooltip("Max degrees off-forward allowed before swinging at the target.")]
@@ -384,6 +389,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private Coroutine _attackHitboxRoutine;
     private WeaponHitbox _equippedWeaponHitbox;
     private float _repathTimer;
+    private float _chaseGateTimer;
+    private Transform _chaseGateTarget;
+    private bool _chaseGateResult;
     private float _idleTimer;
     private float _navStuckTimer;
     private State _resumeAfterStuck = State.Patrol;
@@ -633,13 +641,51 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
+    private void OnEnable()
+    {
+        if (!s_aliveEnemies.Contains(this))
+            s_aliveEnemies.Add(this);
+    }
+
     private void OnDisable()
     {
+        s_aliveEnemies.Remove(this);
+
         if (_scanCoroutine != null)
         {
             StopCoroutine(_scanCoroutine);
             _scanCoroutine = null;
         }
+    }
+
+    public static void CopyAliveEnemies(List<EnemyController> buffer)
+    {
+        if (buffer == null) return;
+        buffer.Clear();
+        for (int i = 0; i < s_aliveEnemies.Count; i++)
+        {
+            EnemyController e = s_aliveEnemies[i];
+            if (e != null && e.IsAlive)
+                buffer.Add(e);
+        }
+    }
+
+    private static PlayerController ResolveScenePlayer()
+    {
+        float t = Time.unscaledTime;
+        if (s_scenePlayer == null || t - s_scenePlayerRefreshTime > 1.5f)
+        {
+            s_scenePlayer = Object.FindFirstObjectByType<PlayerController>(FindObjectsInactive.Exclude);
+            s_scenePlayerRefreshTime = t;
+        }
+
+        return s_scenePlayer;
+    }
+
+    private static Transform ResolveScenePlayerTransform()
+    {
+        PlayerController pc = ResolveScenePlayer();
+        return pc != null ? pc.transform : null;
     }
 
     private void Update()
@@ -659,8 +705,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Warp logic removed per user request
 
         // Rooftop / stuck / NavMesh watchdog — surgical, runs once per frame, no allocations.
-        TickWatchdog();
-        RecoverOnlyIfOutOfMap();
+        if (ShouldRunWatchdogThisFrame())
+        {
+            TickWatchdog();
+            RecoverOnlyIfOutOfMap();
+        }
+
         TickCombatDrive();
 
         // Fail-Safe Timer:
@@ -703,7 +753,31 @@ public class EnemyController : MonoBehaviour, IDamageable
             case State.Jumping:        UpdateJumping();        break;
         }
 
-        SyncAnimator();
+        if (ShouldSyncAnimatorThisFrame())
+            SyncAnimator();
+    }
+
+    private bool ShouldRunWatchdogThisFrame()
+    {
+        if ((Time.frameCount + GetInstanceID()) % 2 == 0)
+            return true;
+
+        return _state == State.Chase || _state == State.Attack || _target != null;
+    }
+
+    private bool ShouldSyncAnimatorThisFrame()
+    {
+        if (_state == State.Chase || _state == State.Attack || _state == State.Evade)
+            return true;
+
+        if ((Time.frameCount + GetInstanceID()) % 2 == 0)
+            return true;
+
+        Transform player = ResolveScenePlayerTransform();
+        if (player == null)
+            return true;
+
+        return (player.position - transform.position).sqrMagnitude < 900f;
     }
 
     private void TryGlobalAiTransitions()
@@ -793,7 +867,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             _state != State.Attack)          // ← let the swing anim run freely
         {
             if (_cachedPlayer == null)
-                _cachedPlayer = Object.FindObjectOfType<PlayerController>(false);
+                _cachedPlayer = ResolveScenePlayer();
 
             // ── POSITION: pin the weapon pivot to the hand bone + grip offset ──
             // This ensures the handle is physically inside the palm regardless
@@ -851,7 +925,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             _state                != State.Attack)
         {
             if (_cachedPlayer == null)
-                _cachedPlayer = Object.FindObjectOfType<PlayerController>(false);
+                _cachedPlayer = ResolveScenePlayer();
 
             if (_cachedPlayer != null && _cachedPlayer.equippedWeaponObject != null)
             {
@@ -1086,6 +1160,14 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_target == null || !IsAgentReady())
             return;
 
+        Vector3 dest = ClampChaseDestination(_target.position);
+        if (!_agent.pathPending && _agent.hasPath && _agent.pathStatus != NavMeshPathStatus.PathInvalid)
+        {
+            float destDelta = (_agent.destination - dest).sqrMagnitude;
+            if (destDelta < 2.25f && (_agent.remainingDistance > 0.35f || _agent.velocity.sqrMagnitude > 0.04f))
+                return;
+        }
+
         if (useFlowFieldNavigation && FlowFieldManager.Instance != null)
         {
             _flowFieldSteerTimer = 0f;
@@ -1096,7 +1178,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
 
             if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
-                _agent.SetDestination(ClampChaseDestination(_target.position));
+                _agent.SetDestination(dest);
             else
             {
                 RepositionOnInvalidPath();
@@ -1253,6 +1335,17 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (EndMatchCinematic.GameplayLocked)
             return;
+
+        Transform player = ResolveScenePlayerTransform();
+        if (player != null)
+        {
+            float distSqr = (player.position - transform.position).sqrMagnitude;
+            int phase = Time.frameCount + GetInstanceID();
+            if (distSqr > 900f && phase % 4 != 0)
+                return;
+            if (distSqr > 2500f && phase % 2 != 0)
+                return;
+        }
 
         if (!IsAgentReady() || !_agent.isOnNavMesh || _agent.isStopped)
             return;
@@ -2523,9 +2616,15 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (d > maxRange)
             return false;
 
+        if (_chaseGateTarget == t && Time.time < _chaseGateTimer)
+            return _chaseGateResult;
+
         NavMesh.CalculatePath(transform.position, t.position, NavMesh.AllAreas, _pathScratch);
-        return _pathScratch.status == NavMeshPathStatus.PathComplete
+        _chaseGateTarget = t;
+        _chaseGateTimer = Time.time + ChaseGateRecheckInterval;
+        _chaseGateResult = _pathScratch.status == NavMeshPathStatus.PathComplete
             || _pathScratch.status == NavMeshPathStatus.PathPartial;
+        return _chaseGateResult;
     }
 
     /// <summary>
@@ -2583,11 +2682,19 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_target == null || !IsAgentReady())
             return;
 
+        Vector3 dest = ClampChaseDestination(_target.position);
+        if (!_agent.pathPending && _agent.hasPath && _agent.pathStatus != NavMeshPathStatus.PathInvalid)
+        {
+            float destDelta = (_agent.destination - dest).sqrMagnitude;
+            if (destDelta < 2.25f)
+                return;
+        }
+
         NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
 
         if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
         {
-            _agent.SetDestination(ClampChaseDestination(_target.position));
+            _agent.SetDestination(dest);
             return;
         }
 
@@ -2939,17 +3046,25 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// range, preferring visible targets (LoS) and excluding self.
     /// Both the player and other enemies are fair game.
     /// </summary>
+    private static readonly Collider[] _targetScanBuffer = new Collider[32];
+    private static readonly HashSet<int> _ffaEvaluatedRoots = new HashSet<int>();
+
     private Transform FindFfaTarget(float radius)
     {
-        Collider[] hits = Physics.OverlapSphere(
-            transform.position, radius, detectionMask, QueryTriggerInteraction.Ignore);
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            transform.position,
+            radius,
+            _targetScanBuffer,
+            detectionMask,
+            QueryTriggerInteraction.Ignore);
 
         Transform best      = null;
         float     bestScore = float.MaxValue;
-        var       evaluated = new HashSet<int>();
+        _ffaEvaluatedRoots.Clear();
 
-        foreach (Collider hit in hits)
+        for (int h = 0; h < hitCount; h++)
         {
+            Collider hit = _targetScanBuffer[h];
             if (hit == null || hit.transform == transform) continue;
 
             IDamageable dmg = hit.GetComponentInParent<IDamageable>();
@@ -2957,7 +3072,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (dmg.gameObject == gameObject) continue;
 
             int id = dmg.gameObject.GetInstanceID();
-            if (!evaluated.Add(id)) continue;
+            if (!_ffaEvaluatedRoots.Add(id)) continue;
 
             Transform t  = dmg.transform;
             float     d2 = (t.position - transform.position).sqrMagnitude;
@@ -2976,7 +3091,11 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private Transform FindPlayerTarget()
     {
-        PlayerHealth player = Object.FindFirstObjectByType<PlayerHealth>();
+        PlayerController pc = ResolveScenePlayer();
+        if (pc == null)
+            return null;
+
+        PlayerHealth player = pc.GetComponent<PlayerHealth>();
         if (player == null)
             return null;
 
@@ -3023,19 +3142,20 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private Transform FindNearestLivingEnemy()
     {
-        EnemyController[] allEnemies = Object.FindObjectsByType<EnemyController>(FindObjectsSortMode.None);
         Transform nearest = null;
-        float nearestDistance = float.MaxValue;
+        float nearestDistanceSqr = float.MaxValue;
+        Vector3 pos = transform.position;
 
-        foreach (EnemyController otherEnemy in allEnemies)
+        for (int i = 0; i < s_aliveEnemies.Count; i++)
         {
+            EnemyController otherEnemy = s_aliveEnemies[i];
             if (otherEnemy == null || otherEnemy == this || !otherEnemy.IsAlive)
                 continue;
 
-            float dist = Vector3.Distance(transform.position, otherEnemy.transform.position);
-            if (dist < nearestDistance)
+            float distSqr = (otherEnemy.transform.position - pos).sqrMagnitude;
+            if (distSqr < nearestDistanceSqr)
             {
-                nearestDistance = dist;
+                nearestDistanceSqr = distSqr;
                 nearest = otherEnemy.transform;
             }
         }
