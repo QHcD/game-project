@@ -76,7 +76,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     [Tooltip("Gravity acceleration (negative value). Stronger gravity = snappier, less floaty landings.")]
     public float gravity = -28f;
 
-    [Tooltip("Maximum jump height in units. Tuned to a natural human-scale hop.")]
+    [Tooltip("Maximum jump height in units.")]
     public float jumpHeight = 1.2f;
 
     [Header("Movement Input Debug")]
@@ -330,6 +330,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private Quaternion firstPersonLocalRot;
     private Camera runtimeThirdPersonCamera;
     private bool isThirdPersonActive;
+    private bool _bodyFeetAligned;          // true once feet have been snapped to ground
+    private Animator _bodyAnimatorCached;   // cached animator from thirdPersonBody
+    private GameObject _lastThirdPersonBodyRef; // tracks when to invalidate the cache
     private float nextMovementInputDebugLogTime;
 
     // Head bob
@@ -740,6 +743,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (controller == null)
             return;
+
+        // ── ONE-TIME feet alignment (runs every frame until successful) ────────
+        if (!_bodyFeetAligned && thirdPersonBody != null)
+            _bodyFeetAligned = TryAlignBodyFeet();
+
         if (IsRemoteNetworkPlayer())
         {
             DisableRemotePlayerLocalSystems();
@@ -870,6 +878,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         }
         else if (isProne || isSliding)
             FlushLowProfileGroundSnap(forceZeroMove: false);
+
+        // ── Final feet correction: runs LAST so nothing overrides it ──────────
+        // Measures actual foot bone position vs ground and closes any remaining
+        // gap after AlignStandingVisualToCapsule and all other positioning are done.
+        CorrectFeetToGround();
     }
 
     private void NormalizeThirdPersonBodyLocalRotation()
@@ -1005,13 +1018,25 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void ReadInput()
     {
-        // Deselect UI when cursor is locked so arrow keys reach movement input
-        // instead of being consumed by the EventSystem's UI navigation.
-        if (Cursor.lockState == CursorLockMode.Locked &&
-            EventSystem.current != null &&
-            EventSystem.current.currentSelectedGameObject != null)
+        // Deselect ALL UI while the cursor is locked so that Space / arrows /
+        // Enter are never consumed by the EventSystem as "Submit" or navigation
+        // inputs.  Without this, pressing Space jumps the UI (scrolls panels or
+        // clicks buttons) instead of triggering the player's jump action.
+        if (Cursor.lockState == CursorLockMode.Locked && EventSystem.current != null)
         {
-            EventSystem.current.SetSelectedGameObject(null);
+            // Force-clear the selected object every frame — the EventSystem can
+            // re-select UI between frames via pointer-enter events.
+            if (EventSystem.current.currentSelectedGameObject != null)
+                EventSystem.current.SetSelectedGameObject(null);
+
+            // Also disable the EventSystem's keyboard-navigation processing
+            // while in gameplay so it cannot intercept Space, Enter, arrows.
+            EventSystem.current.sendNavigationEvents = false;
+        }
+        else if (EventSystem.current != null)
+        {
+            // Re-enable UI navigation when cursor is NOT locked (menus, etc.).
+            EventSystem.current.sendNavigationEvents = true;
         }
 
         if (Keyboard.current != null && Keyboard.current.f9Key.wasPressedThisFrame)
@@ -3773,6 +3798,221 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         float scale = targetHeight / b.size.y;
         body.transform.localScale = Vector3.one * scale;
+    }
+
+    /// <summary>
+    /// Updates the cached base local position used by all body-offset logic.
+    /// </summary>
+    public void UpdateBodyBasePosition()
+    {
+        if (thirdPersonBody != null)
+            thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
+    }
+
+    /// <summary>
+    /// Runs every frame in Update until it succeeds.
+    /// Measures actual foot bone positions vs physics ground and shifts
+    /// thirdPersonBody so feet are flush — no floating gap.
+    /// </summary>
+    private bool TryAlignBodyFeet()
+    {
+        if (thirdPersonBody == null) return false;
+
+        Animator bodyAnim = thirdPersonBody.GetComponentInChildren<Animator>(true);
+        if (bodyAnim == null || !bodyAnim.isInitialized) return false;
+
+        // ── 1. Find lowest foot world-Y ───────────────────────────────────────
+        float feetWorldY = float.MaxValue;
+        bool  hasFeet    = false;
+
+        if (bodyAnim.isHuman)
+        {
+            Transform lf = bodyAnim.GetBoneTransform(HumanBodyBones.LeftFoot);
+            Transform rf = bodyAnim.GetBoneTransform(HumanBodyBones.RightFoot);
+            if (lf != null) { feetWorldY = Mathf.Min(feetWorldY, lf.position.y); hasFeet = true; }
+            if (rf != null) { feetWorldY = Mathf.Min(feetWorldY, rf.position.y); hasFeet = true; }
+        }
+
+        // Fallback: lowest renderer bound if no humanoid bones
+        if (!hasFeet)
+        {
+            foreach (Renderer r in thirdPersonBody.GetComponentsInChildren<Renderer>(true))
+            { feetWorldY = Mathf.Min(feetWorldY, r.bounds.min.y); hasFeet = true; }
+        }
+
+        if (!hasFeet || feetWorldY >= 9999f) return false;
+
+        // ── 2. Find physics ground Y ──────────────────────────────────────────
+        float groundY = transform.position.y;   // CC root = capsule bottom = ground
+        Vector3 ray = transform.position + Vector3.up * 0.3f;
+        if (Physics.Raycast(ray, Vector3.down, out RaycastHit hit, 2f, ~0, QueryTriggerInteraction.Ignore))
+            groundY = hit.point.y;
+
+        // ── 3. Shift body so SOLE of foot (not ankle bone) lands on ground ────
+        // The foot bone sits at the ankle, ~8 cm above the shoe sole.
+        // We keep that offset so the sole (not the bone) touches the ground.
+        const float ankleToSole = 0.08f;   // metres from foot bone to bottom of shoe
+
+        float gap = (feetWorldY - ankleToSole) - groundY;
+        if (Mathf.Abs(gap) >= 0.003f)
+        {
+            Vector3 lp = thirdPersonBody.transform.localPosition;
+            lp.y -= gap;
+            thirdPersonBody.transform.localPosition = lp;
+        }
+
+        // Lock as the new base — all crouch/prone/slide offsets build on this.
+        thirdPersonBodyBaseLocalPosition = thirdPersonBody.transform.localPosition;
+        Debug.Log($"[PlayerController] Feet aligned: gap={gap:+0.000;-0.000} m (ankleToSole={ankleToSole} m).");
+        return true;
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  PER-FRAME FEET → GROUND CORRECTION  (runs at end of LateUpdate)
+    // ════════════════════════════════════════════════════════════════════════
+    /// <summary>
+    /// Called at the very end of LateUpdate — AFTER AlignStandingVisualToCapsule
+    /// and all other body-position methods — so it is never overridden.
+    ///
+    /// Two-stage fix:
+    ///   Stage A: If the CHARACTER ROOT (capsule) itself is floating above the
+    ///            physics ground, push it down immediately (works on all maps,
+    ///            bridges, multi-level areas).
+    ///   Stage B: Measure the actual foot-bone-to-ground gap and shift
+    ///            thirdPersonBody to close it.  Updates thirdPersonBodyBaseLocalPosition
+    ///            so AlignStandingVisualToCapsule targets the corrected height
+    ///            next frame (prevents oscillation).
+    /// </summary>
+    private void CorrectFeetToGround()
+    {
+        if (thirdPersonBody == null || controller == null) return;
+
+        // Prone / slide / tactical animations handle their own ground clamping.
+        if (isProne || isSliding) return;
+        if (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive) return;
+        if (isMantling) return;
+
+        int  groundMask  = BuildGroundCheckMask();
+        bool localPlayer = !IsRemoteNetworkPlayer();
+
+        // ── STAGE A: Push the character ROOT down (LOCAL player only) ─────────
+        // Remote players' positions are driven by the network — never push them
+        // down locally or it fights Photon position updates and causes jitter.
+        //
+        // All built-in snap functions only LIFT — none push the root DOWN.
+        // If the root is floating (NavMesh baked above visual mesh, multi-level
+        // map, bridge offset, etc.) gravity alone may be slow to close the gap.
+        // We detect the physics surface and hard-snap the root onto it.
+        //
+        // SKIP during a jump (verticalVelocity.y > 0.05) so we never cancel
+        // upward launch velocity.
+        if (localPlayer && verticalVelocity.y <= 0.05f)
+        {
+            Vector3 probeA = transform.position + Vector3.up * (controller.center.y + 0.05f);
+            float   castA  = controller.height + 0.5f;
+            if (Physics.Raycast(probeA, Vector3.down, out RaycastHit rootHit, castA,
+                                groundMask, QueryTriggerInteraction.Ignore)
+                && !rootHit.collider.transform.IsChildOf(transform))
+            {
+                // Capsule bottom = transform.position.y  (center.y == height * 0.5)
+                float capsuleBottom = transform.position.y
+                                    + controller.center.y - controller.height * 0.5f;
+                float floorY = rootHit.point.y;
+
+                // Push DOWN only when floating MORE than one skinWidth above floor
+                if (capsuleBottom > floorY + controller.skinWidth + 0.005f)
+                {
+                    float pushDown = capsuleBottom - (floorY + controller.skinWidth);
+                    controller.enabled = false;
+                    transform.position = new Vector3(transform.position.x,
+                                                     transform.position.y - pushDown,
+                                                     transform.position.z);
+                    controller.enabled = true;
+                    verticalVelocity.y = -2f;   // re-anchor downward velocity
+                }
+            }
+        }
+
+        // ── STAGE B: Close the VISUAL foot-to-ground gap ─────────────────────
+        // CRITICAL: Skip while airborne (jumping / falling).
+        //   When the player jumps, the CC root moves UP — the camera (which
+        //   follows the root) rises with it ("screen jumps").  If Stage B runs
+        //   during a jump it measures a huge gap between the now-elevated foot
+        //   bones and the ground and shoves the visual body back DOWN every
+        //   frame, so the character VISUALLY never leaves the ground even though
+        //   the camera moves.  Skipping Stage B while airborne lets the body
+        //   travel with the root naturally during a jump.
+        bool airborne = !isGrounded && !IsGroundedForJump();
+        if (airborne) return;
+
+        // Cache animator (re-fetch when body prefab variant is swapped)
+        if (_lastThirdPersonBodyRef != thirdPersonBody)
+        {
+            _bodyAnimatorCached     = thirdPersonBody.GetComponentInChildren<Animator>(true);
+            _lastThirdPersonBodyRef = thirdPersonBody;
+        }
+
+        // ── 1. Lowest foot world-Y (humanoid bone or renderer bounds fallback) ─
+        float feetY      = float.MaxValue;
+        bool  hasFeet    = false;
+        bool  usingBones = false;   // true = foot BONE (ankle), false = renderer sole
+
+        if (_bodyAnimatorCached != null && _bodyAnimatorCached.isInitialized && _bodyAnimatorCached.isHuman)
+        {
+            Transform lf = _bodyAnimatorCached.GetBoneTransform(HumanBodyBones.LeftFoot);
+            Transform rf = _bodyAnimatorCached.GetBoneTransform(HumanBodyBones.RightFoot);
+            if (lf != null) { feetY = Mathf.Min(feetY, lf.position.y); hasFeet = true; }
+            if (rf != null) { feetY = Mathf.Min(feetY, rf.position.y); hasFeet = true; }
+            usingBones = hasFeet;
+        }
+
+        // Fallback: lowest renderer bound (works for non-humanoid rigs too)
+        if (!hasFeet)
+        {
+            foreach (Renderer r in thirdPersonBody.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r.bounds.size.sqrMagnitude < 0.001f) continue;   // skip uninitialized
+                feetY   = Mathf.Min(feetY, r.bounds.min.y);
+                hasFeet = true;
+            }
+            // bounds.min.y is already at sole level — no bone offset needed
+        }
+
+        if (!hasFeet || feetY >= 9999f) return;
+
+        // ── 2. Physics ground Y directly below character ──────────────────────
+        float groundY  = transform.position.y;   // safe fallback = capsule bottom
+        Vector3 probeB = transform.position + Vector3.up * 0.3f;
+        if (Physics.Raycast(probeB, Vector3.down, out RaycastHit gHit,
+                            2f, groundMask, QueryTriggerInteraction.Ignore)
+            && !gHit.collider.transform.IsChildOf(transform))
+            groundY = gHit.point.y;
+
+        // ── 3. Gap = sole Y - ground Y ───────────────────────────────────────
+        // Humanoid foot BONE is at the ankle (~8 cm above shoe sole).
+        // Renderer bounds.min.y is already the sole — no offset needed.
+        const float ankleToSole = 0.08f;
+        float soleY = usingBones ? (feetY - ankleToSole) : feetY;
+        float gap   = soleY - groundY;
+
+        if (Mathf.Abs(gap) < 0.002f) return;   // already flush — nothing to do
+
+        // ── 4. Shift visual body to close the gap ────────────────────────────
+        Vector3 lp = thirdPersonBody.transform.localPosition;
+        lp.y -= gap;
+        thirdPersonBody.transform.localPosition = lp;
+
+        // ── 5. Update base so AlignStandingVisualToCapsule won't undo this ───
+        // AlignStandingVisualToCapsule sets body to (base + effectiveYOff).
+        // Setting base = corrected_y - effectiveYOff means next frame the
+        // "desired" value equals exactly corrected_y → no oscillation.
+        float effectiveYOff = isCrouching
+            ? Mathf.Max(standingVisualFootLift, crouchBodyYOffset)
+            : standingVisualFootLift;
+        thirdPersonBodyBaseLocalPosition = new Vector3(
+            thirdPersonBodyBaseLocalPosition.x,
+            lp.y - effectiveYOff,
+            thirdPersonBodyBaseLocalPosition.z);
     }
 
     private void EnsureAnimationEventSink(GameObject root)
