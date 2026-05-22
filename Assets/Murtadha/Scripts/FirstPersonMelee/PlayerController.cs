@@ -74,10 +74,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     public float sprintMultiplier = 2f;
 
     [Tooltip("Gravity acceleration (negative value). Stronger gravity = snappier, less floaty landings.")]
-    public float gravity = -28f;
+    public float gravity = -24f;
 
-    [Tooltip("Maximum jump height in units.")]
-    public float jumpHeight = 1.2f;
+    public float maxJumpApexHeight = 1.75f;
+    public float thrusterApexHeight = 2.15f;
 
     [Header("Movement Input Debug")]
     [Tooltip("Left stick input below this magnitude is ignored so controller drift cannot bias movement.")]
@@ -120,7 +120,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     public float mantleUpHeight = 1.1f;
     public float mantleForwardDistance = 1.0f;
     public float mantleDuration = 0.25f;
-    public float thrusterJumpHeight = 2.8f;
+    public float thrusterApexHeightOverride = 0f;
     public float thrusterForwardBoost = 5.8f;
     public float thrusterCooldown = 0.8f;
     public float crouchBodyYOffset = -0.28f;
@@ -254,8 +254,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     public float maxSeparationPushPerFrame = 0.08f;
 
     [Header("Jump")]
-    [Tooltip("Extra downward ray distance beyond step/skin width so Space still registers as grounded when the CharacterController flag flickers.")]
-    public float jumpGroundProbeExtra = 0.14f;
+    public float jumpGroundProbeExtra = 0.22f;
+    public float coyoteTime = 0.16f;
+    public float jumpBufferTime = 0.14f;
+    public float ascentGravityMultiplier = 0.78f;
+    public float descentGravityMultiplier = 1.62f;
+    public float jumpCutGravityMultiplier = 1.15f;
+    public float jumpCutReleaseSpeed = 2.35f;
+    public float maxFallSpeed = 48f;
 
     [Header("Safe Spawn")]
     [Tooltip("Extra clearance around the player capsule when validating spawn points against walls/buildings/obstacles.")]
@@ -286,7 +292,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private bool isGrounded;
     private bool isSprinting;
     private bool wasMoving;
-    private bool jumpRequested;
+    private float coyoteTimeCounter;
+    private float jumpBufferCounter;
+    private float activeJumpApexHeight;
 
     // ── F9 movement debug overlay ─────────────────────────────────────────────
     private bool    _overlayEnabled;
@@ -924,7 +932,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void EnforceFloorClamp()
     {
-        if (isMantling) return; // Mantle owns transform during the lerp.
+        if (isMantling) return;
+        if (verticalVelocity.y > 0.12f) return;
         // NOTE: intentionally runs during tactical moves so any sink condition
         // (capsule bottom below floor) is fixed immediately.
 
@@ -970,6 +979,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (controller == null || !controller.enabled) return;
         if (EndMatchCinematic.GameplayLocked) return;
+        if (verticalVelocity.y > 0.08f) return;
         bool lowProfile = isProne || isSliding
             || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive);
         if (!isGrounded && !IsGroundedForJump() && !lowProfile)
@@ -1000,6 +1010,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             return;
 
         if (isProne || isSliding || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive))
+            return;
+        if (IsAscendingJump())
             return;
 
         float yOff = standingVisualFootLift;
@@ -1092,6 +1104,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         moveInputSmoothed = Vector2.zero;
         horizontalVelocity = Vector3.zero;
         actualHorizontalVelocity = Vector3.zero;
+        jumpBufferCounter = 0f;
+        coyoteTimeCounter = 0f;
     }
 
     private void HandleActionInput()
@@ -1099,7 +1113,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (Keyboard.current != null)
         {
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
-                TryThrusterJumpOrQueueNormalJump();
+                HandleJumpPress();
 
             // Tactical layout (matches enemy / RobustThirdPersonMovement): Z = JumpOver, X = Slide, C = Prone.
             if (Keyboard.current.zKey.wasPressedThisFrame)
@@ -1124,7 +1138,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         }
 
         if (Gamepad.current != null && Gamepad.current.buttonSouth.wasPressedThisFrame)
-            TryThrusterJumpOrQueueNormalJump();
+            HandleJumpPress();
 
         if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
         {
@@ -1323,10 +1337,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         top    = worldCenter + Vector3.up * halfHeight;
     }
 
-    /// <summary>
-    /// True if we should allow a jump: CharacterController ground flag and/or a short foot ray.
-    /// Prevents Space from being consumed while airborne and fixes flicker when CC briefly reports not grounded.
-    /// </summary>
     private bool IsGroundedForJump()
     {
         if (controller == null) return false;
@@ -1334,9 +1344,141 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         float reach = Mathf.Max(controller.stepOffset, controller.skinWidth) + jumpGroundProbeExtra;
         GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 _);
-        Vector3 origin = bottom + Vector3.up * 0.06f;
-        return Physics.Raycast(origin, Vector3.down, out _, reach + 0.06f,
+        float probeRadius = Mathf.Max(0.08f, controller.radius * 0.82f);
+        Vector3 origin = bottom + Vector3.up * (probeRadius + 0.04f);
+        return Physics.SphereCast(origin, probeRadius, Vector3.down, out _, reach + probeRadius,
             BuildGroundCheckMask(), QueryTriggerInteraction.Ignore);
+    }
+
+    private bool IsAscendingJump()
+    {
+        return verticalVelocity.y > 0.06f;
+    }
+
+    private bool IsJumpHeld()
+    {
+        bool kb = Keyboard.current != null && Keyboard.current.spaceKey.isPressed;
+        bool pad = Gamepad.current != null && Gamepad.current.buttonSouth.isPressed;
+        return kb || pad;
+    }
+
+    private void UpdateJumpCoyoteTimers()
+    {
+        if (IsGroundedForJump())
+            coyoteTimeCounter = coyoteTime;
+        else
+            coyoteTimeCounter -= Time.deltaTime;
+
+        jumpBufferCounter -= Time.deltaTime;
+    }
+
+    private float GetAscentGravityMagnitude()
+    {
+        return Mathf.Abs(gravity) * Mathf.Max(0.01f, ascentGravityMultiplier);
+    }
+
+    private float GetDescentGravityMagnitude()
+    {
+        return Mathf.Abs(gravity) * Mathf.Max(0.01f, descentGravityMultiplier);
+    }
+
+    private float ComputeLaunchSpeedForApex(float apexHeight)
+    {
+        return Mathf.Sqrt(2f * GetAscentGravityMagnitude() * Mathf.Max(0f, apexHeight));
+    }
+
+    private float ResolveThrusterApexHeight()
+    {
+        if (thrusterApexHeightOverride > 0.01f)
+            return thrusterApexHeightOverride;
+        return thrusterApexHeight;
+    }
+
+    private float ResolveJumpLaunchSpeed()
+    {
+        return ComputeLaunchSpeedForApex(maxJumpApexHeight);
+    }
+
+    private float ResolveJumpCutReleaseSpeed()
+    {
+        return Mathf.Max(0.5f, ComputeLaunchSpeedForApex(maxJumpApexHeight) * 0.38f);
+    }
+
+    private bool CanPerformJump()
+    {
+        if (isProne || isSliding || isMantling || isFlipping)
+            return false;
+        if (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive)
+            return false;
+        return coyoteTimeCounter > 0f;
+    }
+
+    private void ConstrainAscentToActiveApex()
+    {
+        if (verticalVelocity.y <= 0f) return;
+        float cap = ComputeLaunchSpeedForApex(activeJumpApexHeight) * 1.01f;
+        if (verticalVelocity.y > cap)
+            verticalVelocity.y = cap;
+    }
+
+    private void LaunchJump(float apexHeight)
+    {
+        activeJumpApexHeight = Mathf.Max(0.1f, apexHeight);
+        verticalVelocity.y = ComputeLaunchSpeedForApex(activeJumpApexHeight);
+        coyoteTimeCounter = 0f;
+        jumpBufferCounter = 0f;
+        isGrounded = false;
+        if (PlayerSfx.Instance != null)
+            PlayerSfx.Instance.NotifyJump();
+    }
+
+    private bool TryConsumeBufferedJump()
+    {
+        if (jumpBufferCounter <= 0f || !CanPerformJump())
+            return false;
+        LaunchJump(maxJumpApexHeight);
+        return true;
+    }
+
+    private float EvaluateAirborneGravity(bool jumpHeld)
+    {
+        if (verticalVelocity.y > 0f)
+        {
+            if (!jumpHeld && verticalVelocity.y < ResolveJumpCutReleaseSpeed())
+                return gravity * jumpCutGravityMultiplier;
+            return gravity * ascentGravityMultiplier;
+        }
+
+        if (verticalVelocity.y < 0f)
+            return gravity * descentGravityMultiplier;
+
+        return gravity;
+    }
+
+    private void HandleJumpPress()
+    {
+        if (isProne || isSliding || isMantling || isFlipping)
+            return;
+        if (_tacticalActions != null && _tacticalActions.IsActionLocked)
+            return;
+
+        if (IsGroundedForJump())
+            coyoteTimeCounter = coyoteTime;
+
+        bool wantsThruster = Keyboard.current != null
+            && Keyboard.current.leftShiftKey.isPressed
+            && moveInputSmoothed.sqrMagnitude > 0.05f;
+
+        if (Gamepad.current != null
+            && (Gamepad.current.leftShoulder.isPressed || Gamepad.current.leftTrigger.ReadValue() > 0.45f)
+            && Gamepad.current.leftStick.ReadValue().sqrMagnitude > 0.05f)
+            wantsThruster = true;
+
+        if (wantsThruster && TryStartThrusterJump())
+            return;
+
+        jumpBufferCounter = jumpBufferTime;
+        TryConsumeBufferedJump();
     }
 
     /// <summary>
@@ -1345,6 +1487,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// </summary>
     private Vector3 DampHorizontalVelocityIntoWalls(Vector3 worldHorizontalVelocity)
     {
+        if (IsAscendingJump()) return worldHorizontalVelocity;
         if (controller == null || staticObstacleMask.value == 0) return worldHorizontalVelocity;
         worldHorizontalVelocity.y = 0f;
         float mag = worldHorizontalVelocity.magnitude;
@@ -1373,6 +1516,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// </summary>
     private Vector3 ClampHorizontalMoveAgainstStatics(Vector3 horizontalDelta)
     {
+        if (IsAscendingJump()) return horizontalDelta;
         if (horizontalDelta.sqrMagnitude < 1e-12f || controller == null)
             return horizontalDelta;
 
@@ -1478,7 +1622,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
             float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
             horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, targetVelocity, rate * Time.deltaTime);
-            horizontalVelocity = DampHorizontalVelocityIntoWalls(horizontalVelocity);
+            if (!IsAscendingJump())
+                horizontalVelocity = DampHorizontalVelocityIntoWalls(horizontalVelocity);
 
             // Facing is driven by RAW input, not the smoothed move vector.
             // The smoothed vector decays slowly on release, and its
@@ -1506,32 +1651,39 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         Vector3 horizontalDelta = horizontalVelocity * Time.deltaTime;
         horizontalDelta.y = 0f;
-        if (staticObstacleMask.value != 0)
+        if (staticObstacleMask.value != 0 && !IsAscendingJump())
             horizontalDelta = ClampHorizontalMoveAgainstStatics(horizontalDelta);
+
+        UpdateJumpCoyoteTimers();
+        TryConsumeBufferedJump();
 
         bool jumpFeetGrounded = IsGroundedForJump();
         bool tacticalAnim = _tacticalActions != null && _tacticalActions.IsTacticalAnimActive;
-        if (isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f))
-        {
-            verticalVelocity.y = -2f;
-            if (tacticalAnim && jumpFeetGrounded)
-                verticalVelocity.y = Mathf.Max(verticalVelocity.y, -2f);
+        bool onGroundContact = isGrounded || (jumpFeetGrounded && verticalVelocity.y <= 0f);
 
-            if (jumpRequested && !isProne && !isSliding && !isFlipping && !tacticalAnim && jumpFeetGrounded)
-            {
-                verticalVelocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
-                isGrounded = false;
-            }
+        if (onGroundContact)
+        {
+            if (!IsAscendingJump())
+                verticalVelocity.y = -2f;
+            if (tacticalAnim && jumpFeetGrounded && !IsAscendingJump())
+                verticalVelocity.y = Mathf.Max(verticalVelocity.y, -2f);
         }
         else
         {
-            verticalVelocity.y += gravity * Time.deltaTime;
-            verticalVelocity.y  = Mathf.Max(verticalVelocity.y, -40f);
+            float appliedGravity = EvaluateAirborneGravity(IsJumpHeld());
+            verticalVelocity.y += appliedGravity * Time.deltaTime;
+            ConstrainAscentToActiveApex();
+            verticalVelocity.y = Mathf.Max(verticalVelocity.y, -maxFallSpeed);
         }
 
-        jumpRequested = false;
         Vector3 verticalDelta = new Vector3(0f, verticalVelocity.y * Time.deltaTime, 0f);
-        controller.Move(horizontalDelta + verticalDelta);
+        if (IsAscendingJump())
+        {
+            controller.Move(verticalDelta);
+            controller.Move(horizontalDelta);
+        }
+        else
+            controller.Move(horizontalDelta + verticalDelta);
 
         UpdateTacticalManeuverState();
         UpdateStanceCollider();
@@ -1955,8 +2107,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private System.Collections.IEnumerator DodgeRollRoutine(Vector3 worldForward)
     {
         isFlipping = true;
-        jumpRequested = false;
-
         // Reference axis to rotate around for the roll body pose.
         // We rotate the body's local X axis through 360 degrees over the duration.
         Quaternion baseLocal = thirdPersonBodyBaseLocalRotation;
@@ -2077,32 +2227,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             EnterLowProfileStance();
     }
 
-    private void TryThrusterJumpOrQueueNormalJump()
-    {
-        if (isProne || isSliding || isMantling || isFlipping
-            || (_tacticalActions != null && _tacticalActions.IsActionLocked))
-            return;
-
-        // Thruster = Shift + movement (keyboard) or shoulder/trigger + stick (gamepad).
-        // Do NOT treat "any stick movement" as thruster — that blocked normal Space jumps when a pad was connected.
-        bool wantsThruster = Keyboard.current != null
-            && Keyboard.current.leftShiftKey.isPressed
-            && moveInputSmoothed.sqrMagnitude > 0.05f;
-
-        if (Gamepad.current != null
-            && (Gamepad.current.leftShoulder.isPressed || Gamepad.current.leftTrigger.ReadValue() > 0.45f)
-            && Gamepad.current.leftStick.ReadValue().sqrMagnitude > 0.05f)
-            wantsThruster = true;
-
-        if (wantsThruster && TryStartThrusterJump())
-            return;
-
-        if (!IsGroundedForJump())
-            return;
-
-        jumpRequested = true;
-    }
-
     private bool TryStartThrusterJump()
     {
         if (!IsGroundedForJump() || thrusterCooldownTimer > 0f)
@@ -2116,11 +2240,15 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (thrustDirection.sqrMagnitude < 0.001f)
             thrustDirection = transform.forward;
 
-        verticalVelocity.y = Mathf.Sqrt(thrusterJumpHeight * -2f * gravity);
+        activeJumpApexHeight = ResolveThrusterApexHeight();
+        verticalVelocity.y = ComputeLaunchSpeedForApex(activeJumpApexHeight);
         horizontalVelocity += thrustDirection.normalized * thrusterForwardBoost;
         thrusterCooldownTimer = thrusterCooldown;
         isGrounded = false;
-        jumpRequested = false;
+        coyoteTimeCounter = 0f;
+        jumpBufferCounter = 0f;
+        if (PlayerSfx.Instance != null)
+            PlayerSfx.Instance.NotifyJump();
         isCrouching = false;
         return true;
     }
@@ -2151,8 +2279,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         isMantling = true;
         isSliding = false;
-        jumpRequested = false;
-
         Vector3 start = transform.position;
         float t = 0f;
         float duration = Mathf.Max(0.05f, mantleDuration);
@@ -3886,8 +4012,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private void CorrectFeetToGround()
     {
         if (thirdPersonBody == null || controller == null) return;
+        if (verticalVelocity.y > 0.05f) return;
 
-        // Prone / slide / tactical animations handle their own ground clamping.
         if (isProne || isSliding) return;
         if (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive) return;
         if (isMantling) return;
@@ -3942,8 +4068,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         //   frame, so the character VISUALLY never leaves the ground even though
         //   the camera moves.  Skipping Stage B while airborne lets the body
         //   travel with the root naturally during a jump.
-        bool airborne = !isGrounded && !IsGroundedForJump();
-        if (airborne) return;
+        if (verticalVelocity.y > 0.05f) return;
+        if (!isGrounded && !IsGroundedForJump()) return;
 
         // Cache animator (re-fetch when body prefab variant is swapped)
         if (_lastThirdPersonBodyRef != thirdPersonBody)

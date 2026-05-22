@@ -222,6 +222,8 @@ public class ArenaVisualBounds : MonoBehaviour
     {
         if (fbxMapRoot == null) return;
 
+        EnvironmentGroundAnchor.Install(fbxMapRoot, debugVisualBounds);
+
         GameObject foundationRoot = new GameObject(FoundationRootName);
         foundationRoot.transform.SetParent(transform, false);
 
@@ -238,17 +240,20 @@ public class ArenaVisualBounds : MonoBehaviour
             if (!LooksLikeFloatingCandidate(n)) continue;
 
             Bounds b = rend.bounds;
-            if (b.min.y > 0.55f && b.size.y > 2f)
+            if (!EnvironmentGroundAnchor.TrySampleGroundAt(b, rend.transform, out float groundY))
+                continue;
+
+            float gap = b.min.y - groundY;
+            if (gap > 0.55f && b.size.y > 2f)
             {
-                AddFoundationSkirt(foundationRoot.transform, rend.transform, b);
+                AddFoundationSkirt(foundationRoot.transform, rend.transform, b, groundY);
                 skirtsAdded++;
                 continue;
             }
 
-            // Thin floating pad: bottom clearly above ground but not a full building.
-            if (b.min.y > 0.25f && b.min.y < 1.2f && (b.size.x > 4f || b.size.z > 4f))
+            if (gap > 0.45f && gap < 1.2f && (b.size.x > 4f || b.size.z > 4f))
             {
-                AddFoundationSkirt(foundationRoot.transform, rend.transform, b);
+                AddFoundationSkirt(foundationRoot.transform, rend.transform, b, groundY);
                 skirtsAdded++;
             }
         }
@@ -269,12 +274,12 @@ public class ArenaVisualBounds : MonoBehaviour
 
         return lowerName.Contains("building") || lowerName.Contains("hangar") || lowerName.Contains("warehouse")
             || lowerName.Contains("container") || lowerName.Contains("office") || lowerName.Contains("structure")
-            || lowerName.Contains("wall") || lowerName.Contains("shed") || lowerName.Contains("hall");
+            || lowerName.Contains("wall") || lowerName.Contains("shed") || lowerName.Contains("hall")
+            || lowerName.Contains("silo") || lowerName.Contains("tank") || lowerName.Contains("storage");
     }
 
-    private static void AddFoundationSkirt(Transform parent, Transform anchor, Bounds worldBounds)
+    private static void AddFoundationSkirt(Transform parent, Transform anchor, Bounds worldBounds, float groundY)
     {
-        float groundY = 0.04f;
         float bottomY = worldBounds.min.y;
         float skirtHeight = Mathf.Max(0.35f, bottomY - groundY);
         if (skirtHeight < 0.2f) return;
