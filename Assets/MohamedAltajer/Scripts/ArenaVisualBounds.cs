@@ -11,6 +11,7 @@ public class ArenaVisualBounds : MonoBehaviour
     private const string FloorName = "ArenaFloor_Backfill";
     private const string PerimeterRootName = "ArenaPerimeterWalls";
     private const string FoundationRootName = "ArenaBuildingFoundations";
+    private const string PlatformEdgeRootName = "RaisedPlatformEdgeFascia";
 
     [Header("Sizing")]
     public float arenaHalfSize = 80f;
@@ -26,9 +27,11 @@ public class ArenaVisualBounds : MonoBehaviour
     private static Material _concreteWallMaterial;
     private static Material _containerMaterial;
     private static Material _foundationMaterialTemplate;
+    private static Material _platformEdgeMaterial;
     private static bool _loggedInstall;
     private const float FoundationMetersPerTile = 1.4f;
     private static readonly Color FoundationTint = new Color(0.15f, 0.16f, 0.18f, 1f);
+    private static readonly Color PlatformEdgeTint = new Color(0.02f, 0.02f, 0.02f, 1f);
 
     public static ArenaVisualBounds Instance { get; private set; }
 
@@ -70,6 +73,7 @@ public class ArenaVisualBounds : MonoBehaviour
         BuildFloorBackfill();
         BuildPerimeterEnclosure();
         SealFloatingStructures(fbxMapRoot);
+        BuildRaisedPlatformEdges(fbxMapRoot);
 
         if (debugVisualBounds)
             Debug.Log($"[ArenaVisualBounds] Rebuild complete on {name}", this);
@@ -100,6 +104,25 @@ public class ArenaVisualBounds : MonoBehaviour
 
         if (_foundationMaterialTemplate == null)
             _foundationMaterialTemplate = LoadFoundationMaterialTemplate();
+
+        if (_platformEdgeMaterial == null)
+            _platformEdgeMaterial = CreateSolidColorMaterial(PlatformEdgeTint, "PlatformEdge_Black");
+    }
+
+    private static Material CreateSolidColorMaterial(Color color, string materialName)
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+        Material mat = new Material(shader);
+        mat.name = materialName;
+        if (mat.HasProperty("_BaseColor"))
+            mat.SetColor("_BaseColor", color);
+        else
+            mat.color = color;
+        if (mat.HasProperty("_Smoothness"))
+            mat.SetFloat("_Smoothness", 0.04f);
+        if (mat.HasProperty("_Metallic"))
+            mat.SetFloat("_Metallic", 0f);
+        return mat;
     }
 
     private static Material LoadFoundationMaterialTemplate()
@@ -363,6 +386,125 @@ public class ArenaVisualBounds : MonoBehaviour
 
         if (debugVisualBounds && skirtsAdded > 0)
             Debug.Log($"[ArenaVisualBounds] Added {skirtsAdded} foundation skirt(s).");
+    }
+
+    /// <summary>
+    /// Paints raised platform sides black so level changes (stairs, walkways, container pads)
+    /// read clearly against the lower road.
+    /// </summary>
+    private void BuildRaisedPlatformEdges(Transform fbxMapRoot)
+    {
+        if (fbxMapRoot == null) return;
+
+        EnsureMaterials();
+
+        GameObject edgeRoot = new GameObject(PlatformEdgeRootName);
+        edgeRoot.transform.SetParent(transform, false);
+
+        Renderer[] renderers = fbxMapRoot.GetComponentsInChildren<Renderer>(true);
+        int edgesAdded = 0;
+        const int maxEdges = 256;
+        const float minRise = 0.32f;
+        const float maxRise = 7.5f;
+        const float edgeThickness = 0.14f;
+        const float edgeInset = 0.08f;
+
+        for (int i = 0; i < renderers.Length && edgesAdded < maxEdges; i++)
+        {
+            Renderer rend = renderers[i];
+            if (rend == null || !rend.enabled) continue;
+
+            Bounds b = rend.bounds;
+            string lowerName = rend.gameObject.name.ToLowerInvariant();
+            if (!LooksLikeRaisedPlatformCandidate(lowerName, b))
+                continue;
+
+            if (!EnvironmentGroundAnchor.TrySampleGroundAt(b, rend.transform, out float groundY))
+                continue;
+
+            float rise = b.min.y - groundY;
+            if (rise < minRise || rise > maxRise)
+                continue;
+
+            float height = Mathf.Max(0.25f, rise);
+            float centerY = groundY + height * 0.5f;
+            float spanX = Mathf.Max(1.2f, b.size.x + edgeInset * 2f);
+            float spanZ = Mathf.Max(1.2f, b.size.z + edgeInset * 2f);
+            float posX = b.center.x;
+            float posZ = b.center.z;
+            float minX = b.min.x;
+            float maxX = b.max.x;
+            float minZ = b.min.z;
+            float maxZ = b.max.z;
+
+            AddPlatformEdgeBlock(edgeRoot.transform, $"{rend.name}_Edge_W",
+                new Vector3(minX - edgeThickness * 0.5f, centerY, posZ),
+                new Vector3(edgeThickness, height, spanZ));
+            edgesAdded++;
+
+            if (edgesAdded >= maxEdges) break;
+            AddPlatformEdgeBlock(edgeRoot.transform, $"{rend.name}_Edge_E",
+                new Vector3(maxX + edgeThickness * 0.5f, centerY, posZ),
+                new Vector3(edgeThickness, height, spanZ));
+            edgesAdded++;
+
+            if (edgesAdded >= maxEdges) break;
+            AddPlatformEdgeBlock(edgeRoot.transform, $"{rend.name}_Edge_N",
+                new Vector3(posX, centerY, maxZ + edgeThickness * 0.5f),
+                new Vector3(spanX, height, edgeThickness));
+            edgesAdded++;
+
+            if (edgesAdded >= maxEdges) break;
+            AddPlatformEdgeBlock(edgeRoot.transform, $"{rend.name}_Edge_S",
+                new Vector3(posX, centerY, minZ - edgeThickness * 0.5f),
+                new Vector3(spanX, height, edgeThickness));
+            edgesAdded++;
+        }
+
+        if (debugVisualBounds && edgesAdded > 0)
+            Debug.Log($"[ArenaVisualBounds] Added {edgesAdded} raised-platform edge block(s).");
+    }
+
+    private static bool LooksLikeRaisedPlatformCandidate(string lowerName, Bounds bounds)
+    {
+        if (string.IsNullOrEmpty(lowerName)) return false;
+        if (bounds.size.y > 2.2f) return false;
+        if (bounds.size.x < 1.2f && bounds.size.z < 1.2f) return false;
+
+        if (lowerName.Contains("container") || lowerName.Contains("building") || lowerName.Contains("hangar")
+            || lowerName.Contains("warehouse") || lowerName.Contains("door") || lowerName.Contains("fence")
+            || lowerName.Contains("barrel") || lowerName.Contains("lamp") || lowerName.Contains("wire")
+            || lowerName.Contains("pipe") || lowerName.Contains("sky") || lowerName.Contains("sign"))
+            return false;
+
+        return lowerName.Contains("floor") || lowerName.Contains("platform") || lowerName.Contains("pavement")
+            || lowerName.Contains("road_up") || lowerName.Contains("road_set") || lowerName.Contains("walkway")
+            || lowerName.Contains("tile") || lowerName.Contains("asphalt") || lowerName.Contains("ramp")
+            || lowerName.Contains("stairs") || lowerName.Contains("stair");
+    }
+
+    private static void AddPlatformEdgeBlock(Transform parent, string blockName, Vector3 worldCenter, Vector3 worldScale)
+    {
+        GameObject block = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        block.name = blockName;
+        block.transform.SetParent(parent, true);
+        block.transform.position = worldCenter;
+        block.transform.localScale = worldScale;
+        block.transform.rotation = Quaternion.identity;
+
+        Renderer rend = block.GetComponent<Renderer>();
+        if (rend != null)
+        {
+            rend.sharedMaterial = _platformEdgeMaterial;
+            rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+            rend.receiveShadows = true;
+        }
+
+        Collider col = block.GetComponent<Collider>();
+        if (col != null)
+            Object.Destroy(col);
+
+        TagAndLayer(block, "Map");
     }
 
     private static bool LooksLikeFloatingCandidate(string lowerName)
