@@ -25,7 +25,10 @@ public class ArenaVisualBounds : MonoBehaviour
     private static Material _asphaltMaterial;
     private static Material _concreteWallMaterial;
     private static Material _containerMaterial;
+    private static Material _foundationMaterialTemplate;
     private static bool _loggedInstall;
+    private const float FoundationMetersPerTile = 1.4f;
+    private static readonly Color FoundationTint = new Color(0.15f, 0.16f, 0.18f, 1f);
 
     public static ArenaVisualBounds Instance { get; private set; }
 
@@ -94,13 +97,52 @@ public class ArenaVisualBounds : MonoBehaviour
             _containerMaterial = LoadArenaMaterial(
                 "Maps/IndustrialMap/Materials/Cargo_container_v1_URP",
                 new Color(0.32f, 0.34f, 0.36f, 1f));
+
+        if (_foundationMaterialTemplate == null)
+            _foundationMaterialTemplate = LoadFoundationMaterialTemplate();
+    }
+
+    private static Material LoadFoundationMaterialTemplate()
+    {
+        string[] paths =
+        {
+            "Maps/IndustrialMap/Materials/Concrete_fence_v1_URP",
+            "Maps/IndustrialMap/Materials/Concrete_fence_v2_URP",
+            "Maps/IndustrialMap/Materials/Road_block_v1_URP",
+            "Maps/IndustrialMap/Materials/UNIConcrete_wall_v1_URP",
+            "Maps/IndustrialMap/Materials/Road_with_pavements_v1_URP"
+        };
+
+        for (int i = 0; i < paths.Length; i++)
+        {
+            Material source = Resources.Load<Material>(paths[i]);
+            if (source == null) continue;
+            if (!MaterialHasTexture(source)) continue;
+            Material dup = Object.Instantiate(source);
+            dup.name = source.name + "_Foundation";
+            return dup;
+        }
+
+        return LoadArenaMaterial(paths[3], FoundationTint);
+    }
+
+    private static bool MaterialHasTexture(Material mat)
+    {
+        if (mat == null) return false;
+        if (mat.HasProperty("_BaseMap") && mat.GetTexture("_BaseMap") != null) return true;
+        if (mat.HasProperty("_MainTex") && mat.GetTexture("_MainTex") != null) return true;
+        return false;
     }
 
     private static Material LoadArenaMaterial(string resourcesPath, Color fallbackColor)
     {
         Material source = Resources.Load<Material>(resourcesPath);
         if (source != null)
-            return new Material(source);
+        {
+            Material dup = Object.Instantiate(source);
+            dup.name = source.name + "_Runtime";
+            return dup;
+        }
 
         Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
         Material mat = new Material(shader);
@@ -109,6 +151,65 @@ public class ArenaVisualBounds : MonoBehaviour
         else
             mat.color = fallbackColor;
         return mat;
+    }
+
+    private static Material CreateTiledFoundationMaterial(Vector3 worldDimensions)
+    {
+        EnsureMaterials();
+        Material template = _foundationMaterialTemplate != null
+            ? _foundationMaterialTemplate
+            : _concreteWallMaterial;
+
+        Material instance = template != null ? Object.Instantiate(template) : null;
+        if (instance == null)
+            return template;
+
+        float footprint = Mathf.Max(worldDimensions.x, worldDimensions.z);
+        float tileU = Mathf.Max(1f, footprint / FoundationMetersPerTile);
+        float tileV = Mathf.Max(0.5f, worldDimensions.y / FoundationMetersPerTile);
+        Vector2 scale = new Vector2(tileU, tileV);
+
+        if (instance.HasProperty("_BaseMap"))
+        {
+            instance.SetTextureScale("_BaseMap", scale);
+            instance.SetTextureOffset("_BaseMap", Vector2.zero);
+        }
+        if (instance.HasProperty("_MainTex"))
+        {
+            instance.SetTextureScale("_MainTex", scale);
+            instance.SetTextureOffset("_MainTex", Vector2.zero);
+        }
+
+        if (instance.HasProperty("_BaseColor"))
+            instance.SetColor("_BaseColor", FoundationTint);
+        else
+            instance.color = FoundationTint;
+
+        if (instance.HasProperty("_Smoothness"))
+            instance.SetFloat("_Smoothness", 0.06f);
+        if (instance.HasProperty("_Metallic"))
+            instance.SetFloat("_Metallic", 0f);
+
+        return instance;
+    }
+
+    private static void ApplyFoundationSurface(GameObject go, Vector3 worldDimensions)
+    {
+        Renderer rend = go.GetComponent<Renderer>();
+        if (rend == null) return;
+
+        rend.material = CreateTiledFoundationMaterial(worldDimensions);
+        rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+        rend.receiveShadows = true;
+
+        Collider col = go.GetComponent<Collider>();
+        if (col != null)
+        {
+            col.enabled = true;
+            col.isTrigger = false;
+        }
+
+        TagAndLayer(go, "Map");
     }
 
     private void BuildFloorBackfill()
@@ -222,7 +323,9 @@ public class ArenaVisualBounds : MonoBehaviour
     {
         if (fbxMapRoot == null) return;
 
+        MapAttachedPropsPreserver.Capture(fbxMapRoot);
         EnvironmentGroundAnchor.Install(fbxMapRoot, debugVisualBounds);
+        MapAttachedPropsPreserver.Restore(fbxMapRoot);
 
         GameObject foundationRoot = new GameObject(FoundationRootName);
         foundationRoot.transform.SetParent(transform, false);
@@ -295,8 +398,11 @@ public class ArenaVisualBounds : MonoBehaviour
         skirt.transform.SetParent(parent, true);
         skirt.transform.position = center;
         skirt.transform.localScale = scale;
-        ApplyArenaSurface(skirt, _concreteWallMaterial, receiveShadows: true);
-        TagAndLayer(skirt, "Map");
+        Vector3 worldDimensions = new Vector3(
+            Mathf.Abs(skirt.transform.lossyScale.x),
+            Mathf.Abs(skirt.transform.lossyScale.y),
+            Mathf.Abs(skirt.transform.lossyScale.z));
+        ApplyFoundationSurface(skirt, worldDimensions);
     }
 
     private static void ApplyArenaSurface(GameObject go, Material mat, bool receiveShadows)
