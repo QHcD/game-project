@@ -73,7 +73,6 @@ public class ArenaVisualBounds : MonoBehaviour
         BuildFloorBackfill();
         BuildPerimeterEnclosure();
         SealFloatingStructures(fbxMapRoot);
-        BuildRaisedPlatformEdges(fbxMapRoot);
 
         if (debugVisualBounds)
             Debug.Log($"[ArenaVisualBounds] Rebuild complete on {name}", this);
