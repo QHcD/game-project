@@ -29,6 +29,7 @@ using Photon.Pun;
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(Camera))]
+[DefaultExecutionOrder(-50)]
 public class ThirdPersonOrbitCamera : MonoBehaviour
 {
     // ── Singleton ─────────────────────────────────────────────────────────────
@@ -153,6 +154,8 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
     private Vector3 _smoothedPivot;
     private Vector3 _pivotVelocity;
     private bool    _pivotInitialized;
+    private Vector3 _physicsPivot;
+    private bool    _physicsPivotValid;
 
     // SmoothDamp state for collision distance
     private float _currentDistance;
@@ -291,18 +294,21 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
             ApplyCursorLock(hasFocus);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PER-FRAME UPDATE  (LateUpdate runs after all physics / animation Updates)
-    // ─────────────────────────────────────────────────────────────────────────
+    private void FixedUpdate()
+    {
+        if (target == null)
+            return;
+
+        ReadMouseInput();
+        _physicsPivot = GetRawPivot();
+        _physicsPivotValid = true;
+        FeedPlayerControllerYaw();
+    }
 
     private void LateUpdate()
     {
         if (target == null) return;
 
-        // Step 1: Read mouse and update orbit angles
-        ReadMouseInput();
-
-        // Step 2: Smoothly follow the player pivot
         UpdateSmoothedPivot();
 
         // Step 3: Compute desired camera position from pivot + orbit rotation
@@ -315,11 +321,7 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
         // Step 5: Apply position and orientation
         transform.position = finalPos;
-        transform.LookAt(_smoothedPivot + Vector3.up * 0f);  // Look at the pivot centre
-
-        // Step 6: Feed yaw / pitch back to PlayerController if it exists on the target.
-        // This keeps the existing PlayerController movement code working without changes.
-        FeedPlayerControllerYaw();
+        transform.LookAt(_smoothedPivot + Vector3.up * 0f);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -353,7 +355,7 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     private void UpdateSmoothedPivot()
     {
-        Vector3 rawPivot = GetRawPivot();
+        Vector3 rawPivot = _physicsPivotValid ? _physicsPivot : GetRawPivot();
 
         if (!_pivotInitialized)
         {
@@ -362,12 +364,35 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
             return;
         }
 
-        // SmoothDamp — framerate-independent, guaranteed no overshooting.
+        float planarSpeed = 0f;
+        if (target != null)
+        {
+            PlayerController pc = target.GetComponent<PlayerController>();
+            if (pc != null)
+                planarSpeed = pc.PlanarSpeed;
+        }
+
+        float smoothTime = Mathf.Max(0.001f, pivotSmoothTime);
+        if (planarSpeed > 5f)
+            smoothTime *= 0.4f;
+        else if (planarSpeed > 2f)
+            smoothTime *= 0.65f;
+
+        float delta = Mathf.Abs(rawPivot.x - _smoothedPivot.x)
+                    + Mathf.Abs(rawPivot.y - _smoothedPivot.y)
+                    + Mathf.Abs(rawPivot.z - _smoothedPivot.z);
+        if (delta < 0.02f)
+        {
+            _smoothedPivot = rawPivot;
+            _pivotVelocity = Vector3.zero;
+            return;
+        }
+
         _smoothedPivot = Vector3.SmoothDamp(
             _smoothedPivot,
             rawPivot,
             ref _pivotVelocity,
-            Mathf.Max(0.001f, pivotSmoothTime));
+            smoothTime);
     }
 
     /// <summary>
