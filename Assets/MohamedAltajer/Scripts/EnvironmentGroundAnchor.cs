@@ -53,7 +53,6 @@ public static class EnvironmentGroundAnchor
     private static int RunSnapPass(Transform mapRoot, Renderer[] allRenderers, List<Renderer> groundRenderers, int groundMask)
     {
         var shifts = new Dictionary<Transform, float>(128);
-        int evaluated = 0;
 
         for (int i = 0; i < allRenderers.Length; i++)
         {
@@ -63,9 +62,9 @@ public static class EnvironmentGroundAnchor
 
             Bounds bounds = rend.bounds;
             if (bounds.size.sqrMagnitude < 0.01f) continue;
+            if (IsUnderPreservedPropHierarchy(rend.transform, mapRoot)) continue;
             if (!ShouldAnchorRenderer(bounds, rend.gameObject.name)) continue;
 
-            evaluated++;
             Transform snapTarget = ResolveSnapTransform(rend.transform, mapRoot);
             if (snapTarget == null) continue;
 
@@ -201,10 +200,23 @@ public static class EnvironmentGroundAnchor
         return false;
     }
 
+    private static bool IsUnderPreservedPropHierarchy(Transform t, Transform mapRoot)
+    {
+        while (t != null && t != mapRoot)
+        {
+            if (MapAttachedPropsPreserver.IsPreservedPropName(t.name))
+                return true;
+            t = t.parent;
+        }
+
+        return false;
+    }
+
     private static bool ShouldAnchorRenderer(Bounds bounds, string objectName)
     {
         if (IsGroundLikeName(objectName)) return false;
         if (IsExcludedName(objectName)) return false;
+        if (MapAttachedPropsPreserver.IsPreservedPropName(objectName)) return false;
         if (IsStructureName(objectName)) return true;
         return IsLargeFloatingVolume(bounds);
     }
@@ -262,7 +274,7 @@ public static class EnvironmentGroundAnchor
             || n.Contains("container") || n.Contains("cargo") || n.Contains("office")
             || n.Contains("structure") || n.Contains("hall") || n.Contains("shed")
             || n.Contains("tower") || n.Contains("chimney") || n.Contains("factory")
-            || n.Contains("plant") || n.Contains("pipe") || n.Contains("dome")
+            || n.Contains("plant") || n.Contains("dome")
             || n.Contains("refinery") || n.Contains("boiler") || n.Contains("garage")
             || n.Contains("depot") || n.Contains("industrial");
     }
@@ -296,7 +308,9 @@ public static class EnvironmentGroundAnchor
             || lower.Contains("invisible") || lower.Contains("volume") || lower.Contains("trigger")
             || lower.Contains("fence") || lower.Contains("wire") || lower.Contains("lamp")
             || lower.Contains("light") || lower.Contains("sign") || lower.Contains("car")
-            || lower.Contains("vehicle");
+            || lower.Contains("vehicle") || lower.Contains("pipes_set") || lower.Contains("pipe_set")
+            || lower.Contains("h_set") || lower.Contains("v_set") || lower.Contains("vent_")
+            || lower.Contains("ladder") || lower.Contains("cable");
     }
 }
 
