@@ -190,7 +190,8 @@ public class RobustThirdPersonMovement : MonoBehaviour
 
         if (MoveDirection.sqrMagnitude > 0.001f && !_isSliding)
         {
-            Quaternion targetRotation = Quaternion.LookRotation(MoveDirection, Vector3.up);
+            Vector3 faceDirection = GetFacingDirection(input);
+            Quaternion targetRotation = Quaternion.LookRotation(faceDirection, Vector3.up);
             // Slerp t = rotationSpeed * deltaTime clamped to 1 keeps it frame-rate
             // independent while producing a smooth organic turn feel.
             float t = Mathf.Clamp01(rotationSpeed / 720f * Time.deltaTime * 10f);
@@ -455,6 +456,25 @@ public class RobustThirdPersonMovement : MonoBehaviour
         Vector3 center = _controller.center;
         center.y = Mathf.Lerp(center.y, targetCenterY, speed * Time.deltaTime);
         _controller.center = center;
+    }
+
+    /// <summary>
+    /// Yaw target for rotation. Pure backward input walks backward without a 180° turn.
+    /// </summary>
+    private Vector3 GetFacingDirection(Vector2 input)
+    {
+        Vector2 facingInput = input;
+        if (facingInput.y < -0.01f)
+            facingInput.y = 0f;
+
+        if (facingInput.sqrMagnitude < 0.0001f)
+            facingInput = Vector2.up;
+
+        Vector3 dir = new Vector3(facingInput.x, 0f, facingInput.y);
+        if (cameraTransform != null && dir.sqrMagnitude > 0.0001f)
+            dir = Quaternion.Euler(0f, cameraTransform.eulerAngles.y, 0f) * dir;
+
+        return dir.sqrMagnitude > 0.0001f ? dir.normalized : transform.forward;
     }
 
     private static Vector2 ReadMoveInput()

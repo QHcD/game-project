@@ -1582,6 +1582,8 @@ MonoBehaviour:
   floorSnapSpeed: 14
   maxFloorSnapDistance: 0.45
   standingVisualFootLift: 0.045
+  groundedStickVelocity: 5
+  minWalkableSurfaceNormalY: 0.58
   staticObstacleMask:
     serializedVersion: 2
     m_Bits: 0

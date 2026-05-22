@@ -71,8 +71,20 @@ public class PlayerMovement : MonoBehaviour
         // ── STEP 4: Rotation + Movement (only when there is input) ───────────
         if (direction.magnitude >= 0.1f)
         {
-            RotateTowards(direction);
-            MoveForward();
+            // Backward (S / down) moves without a 180° turn; strafe while backing
+            // still updates yaw from the lateral axis only.
+            if (vertical < -0.01f)
+            {
+                Vector3 lateralFace = new Vector3(horizontal, 0f, 0f);
+                if (lateralFace.sqrMagnitude >= 0.01f)
+                    RotateTowards(lateralFace.normalized);
+            }
+            else
+                RotateTowards(direction);
+
+            Vector3 moveDir = direction * moveSpeed;
+            moveDir.y = _verticalVelocity;
+            _controller.Move(moveDir * Time.deltaTime);
         }
         else
         {
@@ -110,19 +122,6 @@ public class PlayerMovement : MonoBehaviour
 
         // Apply only yaw rotation; X and Z stay at 0 so the model stays upright.
         transform.rotation = Quaternion.Euler(0f, smoothedAngle, 0f);
-    }
-
-    /// <summary>
-    /// Moves the character forward along its own facing direction.
-    /// Because we rotate BEFORE moving in the same frame, the direction
-    /// the character walks always matches the direction it is looking.
-    /// </summary>
-    private void MoveForward()
-    {
-        // transform.forward is updated by RotateTowards() just before this call.
-        Vector3 moveDir = transform.forward * moveSpeed;
-        moveDir.y = _verticalVelocity; // merge gravity into the move vector
-        _controller.Move(moveDir * Time.deltaTime);
     }
 
     /// <summary>
