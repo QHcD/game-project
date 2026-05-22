@@ -2646,6 +2646,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         _agent.avoidancePriority     = Random.Range(30, 70);
         _agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
         _agent.radius                = 0.45f;
+        _agent.baseOffset            = 0f;   // FIX: zero so enemy root sits on NavMesh, not above it
         _agent.autoBraking           = false;
         _agent.autoRepath            = true;
         _agent.updatePosition        = true;
