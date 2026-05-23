@@ -1217,38 +1217,6 @@ public class LevelBuilder : MonoBehaviour
         return (candidate.y - playerNavPos.y) > MaxSpawnYAbovePlayer;
     }
 
-    /// <summary>
-    /// Rejects spawns intersecting geometry, lacking ground support, or with no headroom.
-    /// </summary>
-    private static bool HasSpawnGroundAndClearance(Vector3 candidate, float requiredHeight = 1.95f)
-    {
-        int mask = Physics.DefaultRaycastLayers;
-        int playerLayer = LayerMask.NameToLayer("Player");
-        int characterLayer = LayerMask.NameToLayer("Character");
-        int hittableLayer = LayerMask.NameToLayer("Hittable");
-        if (playerLayer >= 0) mask &= ~(1 << playerLayer);
-        if (characterLayer >= 0) mask &= ~(1 << characterLayer);
-        if (hittableLayer >= 0) mask &= ~(1 << hittableLayer);
-
-        Vector3 feetProbe = candidate + Vector3.up * 0.35f;
-        if (!Physics.Raycast(feetProbe, Vector3.down, out RaycastHit ground, 2.5f, mask, QueryTriggerInteraction.Ignore))
-            return false;
-
-        if (candidate.y < ground.point.y - 0.35f)
-            return false;
-
-        if (Physics.Raycast(candidate + Vector3.up * 0.12f, Vector3.up, requiredHeight + 0.25f, mask,
-                QueryTriggerInteraction.Ignore))
-            return false;
-
-        float bodyRadius = 0.45f;
-        Vector3 bodyCenter = candidate + Vector3.up * (requiredHeight * 0.5f);
-        if (Physics.CheckSphere(bodyCenter, bodyRadius, mask, QueryTriggerInteraction.Ignore))
-            return false;
-
-        return true;
-    }
-
     private bool TryEvaluateEnemySpawnCandidate(
         Vector3 playerNavPos,
         Vector3 cand,
@@ -1267,7 +1235,7 @@ public class LevelBuilder : MonoBehaviour
                 Debug.Log($"[LevelBuilder] Rejected rooftop spawn cand={cand} dy={(cand.y - playerNavPos.y):F2}");
             return false;
         }
-        if (!HasSpawnGroundAndClearance(cand))
+        if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: false))
         {
             if (debugSpawnValidation || debugEnemySpawnDistribution)
                 Debug.Log($"[LevelBuilder] Rejected spawn (ground/clearance) cand={cand}");
@@ -1418,6 +1386,8 @@ public class LevelBuilder : MonoBehaviour
                     continue;
                 if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
                     continue;
+                if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: true))
+                    continue;
                 if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
                     continue;
 
@@ -1442,6 +1412,8 @@ public class LevelBuilder : MonoBehaviour
                 continue;
             if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
                 continue;
+            if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: true))
+                continue;
             if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
                 continue;
 
@@ -1458,6 +1430,8 @@ public class LevelBuilder : MonoBehaviour
                     continue;
                 if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
                     continue;
+                if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: true))
+                    continue;
 
                 usedZone = "AnchorSnap_Emergency";
                 Debug.LogWarning(
@@ -1468,10 +1442,16 @@ public class LevelBuilder : MonoBehaviour
         }
 
         Vector3 last = SafeFallbackSpawn;
-        if (flatAnchors != null && flatAnchors.Count > 0 &&
-            TrySampleNavMeshPreservingAnchor(flatAnchors[enemyIndex % flatAnchors.Count],
-                MaxNavSnapHorizontalDrift * 2f, out Vector3 snapped))
-            last = snapped;
+        if (flatAnchors != null && flatAnchors.Count > 0)
+        {
+            Vector3 anchor = flatAnchors[enemyIndex % flatAnchors.Count];
+            if (EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(anchor, playerNavPos, MaxNavSnapHorizontalDrift * 2f,
+                    out Vector3 validated))
+                last = validated;
+            else if (TrySampleNavMeshPreservingAnchor(anchor, MaxNavSnapHorizontalDrift * 2f, out Vector3 snapped) &&
+                     EnemySpawnGeometry.IsValidOutdoorSpawn(snapped, playerNavPos, rejectRooftops: true))
+                last = snapped;
+        }
 
         Debug.LogWarning(
             $"[LevelBuilder] Enemy spawn LAST-RESORT fallback index={enemyIndex} pos={last}",
@@ -1625,7 +1605,8 @@ public class LevelBuilder : MonoBehaviour
             // Snap the agent onto the nearest NavMesh position before it begins moving.
             enemyObject.transform.position = agentSpawn;
             agent.enabled = true;
-            PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn, agentSpawn);
+            PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn, agentSpawn, playerNavPos);
+            CorrectEnemySpawnPlacement(enemyObject.transform, agent, playerNavPos);
 
             Vector3 finalPos = enemyObject.transform.position;
             float distanceToNearest = DistanceToNearestPlaced(finalPos, placedPositions);
@@ -1667,6 +1648,16 @@ public class LevelBuilder : MonoBehaviour
         // player can never reach it; relocate it to a candidate point that is
         // reachable, on the NavMesh, and clear of other enemies.
         ValidateEnemyReachability(spawnedEnemies, playerPos, arenaAnchors, spawnZones);
+
+        for (int si = 0; si < spawnedEnemies.Count; si++)
+        {
+            GameObject spawned = spawnedEnemies[si];
+            if (spawned == null)
+                continue;
+
+            NavMeshAgent spawnedAgent = spawned.GetComponent<NavMeshAgent>();
+            CorrectEnemySpawnPlacement(spawned.transform, spawnedAgent, playerNavPos);
+        }
 
         // ── Issue #5: register the authoritative count with GameManager ──────
         // InitializeEnemyCount() sets BOTH enemiesRemaining AND totalEnemiesSpawned
@@ -1720,7 +1711,8 @@ public class LevelBuilder : MonoBehaviour
             }
 
             NavMeshAgent agent = enemy.GetComponent<NavMeshAgent>();
-            PlaceAgentOnNavMesh(agent, enemy.transform, newPos, enemyPos);
+            PlaceAgentOnNavMesh(agent, enemy.transform, newPos, enemyPos, fromPos);
+            CorrectEnemySpawnPlacement(enemy.transform, agent, fromPos);
             if (debugEnemySpawnDistribution)
             {
                 Debug.Log(
@@ -1805,6 +1797,8 @@ public class LevelBuilder : MonoBehaviour
 
             if (!NavMesh.CalculatePath(fromPos, p, NavMesh.AllAreas, path)) continue;
             if (path.status != NavMeshPathStatus.PathComplete) continue;
+            if (!EnemySpawnGeometry.IsValidOutdoorSpawn(p, fromPos, rejectRooftops: true))
+                continue;
 
             result = p;
             return true;
@@ -2126,9 +2120,16 @@ public class LevelBuilder : MonoBehaviour
         // Assign the Hittable layer so deterministic melee never scans scenery.
         SetLayerRecursive(playerController.gameObject, ResolveHittableLayer());
 
-        // ── CharacterController must be DISABLED to set transform.position ──
-        // Handled cleanly by PlayerController.TeleportTo
         CharacterController cc = playerController.GetComponent<CharacterController>();
+
+        // Match runtime capsule before computing spawn — resizing after TeleportTo
+        // was leaving the feet underground until the player jumped.
+        if (cc != null)
+        {
+            cc.center = new Vector3(0f, 1f, 0f);
+            cc.height = 2f;
+            cc.radius = 0.4f;
+        }
 
         // ── Find safe spawn on OPEN ground (not inside buildings) ──────────
         // Try many candidate positions spread across the arena. For each one,
@@ -2143,16 +2144,8 @@ public class LevelBuilder : MonoBehaviour
 
         playerController.TeleportTo(safeSpawn);
         playerController.transform.rotation = Quaternion.identity;
+        playerController.SnapCapsuleToWalkableGround();
         Physics.SyncTransforms();
-
-        // ── Configure CharacterController dimensions ────────
-        if (cc != null)
-        {
-            cc.center = new Vector3(0f, 1f, 0f);
-            cc.height = 2f;
-            cc.radius = 0.4f;
-            // cc.enabled is already toggled safely inside TeleportTo
-        }
 
         EnsureComponent<PlayerHealth>(playerController.gameObject);
         MeleeBodyTargeting.EnsureMeleeBodyCollider(playerController.transform);
@@ -2842,22 +2835,8 @@ public class LevelBuilder : MonoBehaviour
             return false;
 
         Vector3 feetPos = hit.position + Vector3.up * 0.1f;
-        if (!HasSpawnGroundAndClearance(feetPos))
+        if (!EnemySpawnGeometry.IsValidOutdoorSpawn(feetPos, default, rejectRooftops: false))
             return false;
-
-        // 2) Check open sky — raycast upward from the spawn point. If it hits
-        //    something within 4m, we're inside a building.
-        if (Physics.Raycast(feetPos + Vector3.up * 0.5f, Vector3.up, 4f))
-            return false;
-
-        // 3) Check horizontal clearance — no walls within 1m in cardinal directions
-        Vector3 chestHeight = feetPos + Vector3.up * 1f;
-        Vector3[] dirs = { Vector3.forward, Vector3.back, Vector3.left, Vector3.right };
-        foreach (Vector3 dir in dirs)
-        {
-            if (Physics.Raycast(chestHeight, dir, 1f))
-                return false; // too close to a wall
-        }
 
         groundPos = feetPos;
         return true;
@@ -2921,9 +2900,13 @@ public class LevelBuilder : MonoBehaviour
     }
 
     private static void PlaceAgentOnNavMesh(NavMeshAgent agent, Transform target, Vector3 spawnPosition,
-        Vector3 snapAnchor = default)
+        Vector3 snapAnchor = default, Vector3 playerNavPos = default)
     {
         if (target == null) return;
+
+        Vector3 anchor = snapAnchor == default ? spawnPosition : snapAnchor;
+        if (EnemySpawnGeometry.TryPlaceAgentOnValidNavMesh(agent, target, anchor, playerNavPos))
+            return;
 
         if (agent == null)
         {
@@ -2934,16 +2917,34 @@ public class LevelBuilder : MonoBehaviour
         agent.enabled = false;
         target.position = spawnPosition;
 
-        Vector3 anchor = snapAnchor == default ? spawnPosition : snapAnchor;
         if (TrySampleNavMeshPreservingAnchor(anchor, MaxNavSnapHorizontalDrift, out Vector3 snapped))
         {
             target.position = snapped;
             agent.enabled = true;
+            if (agent.isOnNavMesh)
+                agent.Warp(snapped);
             return;
         }
 
         Debug.LogWarning($"[LevelBuilder] Could not snap enemy to NavMesh near {spawnPosition}. " +
                          "Agent left disabled; EnemyController will retry at runtime.");
+    }
+
+    private static void CorrectEnemySpawnPlacement(Transform target, NavMeshAgent agent, Vector3 playerNavPos)
+    {
+        if (target == null)
+            return;
+
+        Vector3 pos = target.position;
+        if (EnemySpawnGeometry.IsValidOutdoorSpawn(pos, playerNavPos, rejectRooftops: true))
+            return;
+
+        if (EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(pos, playerNavPos, MaxNavSnapHorizontalDrift, out Vector3 corrected))
+        {
+            target.position = corrected;
+            if (agent != null && agent.enabled && agent.isOnNavMesh)
+                agent.Warp(corrected);
+        }
     }
 
 #if UNITY_EDITOR

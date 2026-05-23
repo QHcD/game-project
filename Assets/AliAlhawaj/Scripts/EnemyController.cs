@@ -259,6 +259,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _partialPathSinceTime = -1f;
     private float _idleMotionSinceTime = -1f;
     private float _lastRecoveryWarpTime = -999f;
+    private Vector3 _lastValidNavPosition;
+    private bool _hasLastValidNavPosition;
     private float _navValidateTimer;
     private Vector3 _watchdogLastPosition;
 
@@ -567,6 +569,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         _spawnTime = Time.time;
         _spawnY = transform.position.y;
         _watchdogLastPosition = transform.position;
+        _lastValidNavPosition = transform.position;
+        _hasLastValidNavPosition = true;
         ConfigureAgent();
         ApplyAggressionTuning();
 
@@ -646,7 +650,16 @@ public class EnemyController : MonoBehaviour, IDamageable
             searchRadius = Mathf.Max(4f, Mathf.Abs(transform.position.y - _spawnY) + 2f);
             searchRadius = Mathf.Min(searchRadius, 8f);
         }
-        if (NavMesh.SamplePosition(searchOrigin, out NavMeshHit hit, searchRadius, NavMesh.AllAreas))
+        Vector3 playerNav = GetCachedPlayerTransform() != null
+            ? GetCachedPlayerTransform().position
+            : searchOrigin;
+        if (EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(searchOrigin, playerNav, 8f, out Vector3 valid))
+        {
+            transform.position = valid;
+            _agent.Warp(valid);
+            _spawnY = valid.y;
+        }
+        else if (NavMesh.SamplePosition(searchOrigin, out NavMeshHit hit, searchRadius, NavMesh.AllAreas))
         {
             transform.position = hit.position;
             _agent.Warp(hit.position);
@@ -854,6 +867,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void FixedUpdate()
     {
         ApplyFlockingSteering();
+        EnforceStaticGeometryConstraint();
     }
 
     private void LateUpdate()
@@ -1568,7 +1582,62 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (flock.sqrMagnitude < 1e-10f)
             return;
 
-        _agent.Move(flock * Time.fixedDeltaTime);
+        Vector3 delta = flock * Time.fixedDeltaTime;
+        delta = ClampAgentMoveAgainstStatics(delta);
+        if (delta.sqrMagnitude < 1e-10f)
+            return;
+
+        _agent.Move(delta);
+    }
+
+    private Vector3 ClampAgentMoveAgainstStatics(Vector3 delta)
+    {
+        delta.y = 0f;
+        if (delta.sqrMagnitude < 1e-8f)
+            return delta;
+
+        float radius = _agent != null ? Mathf.Max(0.3f, _agent.radius) : 0.45f;
+        float height = _agent != null ? Mathf.Max(1.6f, _agent.height) : 2f;
+        Vector3 origin = transform.position;
+        Vector3 dir = delta.normalized;
+        float dist = delta.magnitude + 0.05f;
+
+        if (!Physics.CapsuleCast(
+                origin + Vector3.up * radius,
+                origin + Vector3.up * (height - radius),
+                radius * 0.9f,
+                dir,
+                out RaycastHit hit,
+                dist,
+                EnemySpawnGeometry.StaticGeometryMask,
+                QueryTriggerInteraction.Ignore))
+            return delta;
+
+        float allowed = Mathf.Max(0f, hit.distance - 0.06f);
+        return dir * Mathf.Min(delta.magnitude, allowed);
+    }
+
+    private void EnforceStaticGeometryConstraint()
+    {
+        if (_state == State.Dead || _state == State.Jumping)
+            return;
+        if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh)
+            return;
+
+        float radius = Mathf.Max(0.3f, _agent.radius);
+        float height = Mathf.Max(1.6f, _agent.height);
+        if (!EnemySpawnGeometry.IsCapsuleInsideStaticGeometry(transform.position, radius, height))
+        {
+            if (_hasLastValidNavPosition)
+            {
+                _agent.Warp(_lastValidNavPosition);
+                _agent.ResetPath();
+            }
+            return;
+        }
+
+        _lastValidNavPosition = transform.position;
+        _hasLastValidNavPosition = true;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1622,15 +1691,19 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_stuckTimer < stuckTime) return;
         _stuckTimer = 0f;
 
-        // Is there a VERTICAL wall obstacle in front (not a slope/ramp)?
+        // Vertical walls: do not vault with physics jumps — that clips through building meshes.
         Vector3 origin = transform.position + Vector3.up * 0.6f;
-        if (Physics.Raycast(origin, transform.forward, out RaycastHit wallHit, obstacleCheckDist))
+        if (Physics.Raycast(origin, transform.forward, out RaycastHit wallHit, obstacleCheckDist,
+                EnemySpawnGeometry.StaticGeometryMask, QueryTriggerInteraction.Ignore))
         {
-            // Only jump if the hit surface faces mostly horizontal (wall), not upward (slope/ramp)
-            // A surface normal with Y > 0.5 means it slopes upward — treat as ground, not a wall
             if (wallHit.normal.y < 0.5f)
             {
-                TryJump();
+                _stuckTimer = 0f;
+                if (_state == State.Chase || _state == State.Approach)
+                {
+                    _agent.ResetPath();
+                    TrySetChaseDestinationValidated();
+                }
                 return;
             }
         }
@@ -1698,6 +1771,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void TryJump()
     {
         if (!_isGrounded) return;
+        if (IsStaticWallAhead(1.75f))
+            return;
 
         _preJumpState = _state;
         _jumpTimer = MaxJumpDuration;
@@ -1763,13 +1838,22 @@ public class EnemyController : MonoBehaviour, IDamageable
         else if (dist < 9f && Random.value < 0.6f)
             DoManeuverSlide();  // Mid range → slide-close
         else
-            TryJump();          // Long range → combat hop forward
+            DoManeuverSlide();  // Long range → slide (no wall-vault jumps)
+    }
+
+    private bool IsStaticWallAhead(float distance)
+    {
+        Vector3 origin = transform.position + Vector3.up * 0.75f;
+        return Physics.Raycast(origin, transform.forward, distance, EnemySpawnGeometry.StaticGeometryMask,
+            QueryTriggerInteraction.Ignore);
     }
 
     private void DoManeuverSlide()
     {
         if (_target == null || _rb == null) return;
         if (!_isGrounded) return;
+        if (IsStaticWallAhead(1.25f))
+            return;
 
         Vector3 dir = (_target.position - transform.position);
         dir.y = 0f;
@@ -1793,6 +1877,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         if (_rb == null) return;
         if (!_isGrounded) return;
+        if (IsStaticWallAhead(1.25f))
+            return;
 
         Vector3 dir = transform.forward;
         if (_target != null)
@@ -1883,10 +1969,19 @@ public class EnemyController : MonoBehaviour, IDamageable
                 Vector3 snapOrigin = hitGround
                     ? groundHit.point + Vector3.up * 0.05f
                     : new Vector3(transform.position.x, _spawnY, transform.position.z);
-                if (NavMesh.SamplePosition(snapOrigin, out NavMeshHit landHit, 4f, NavMesh.AllAreas))
+                Vector3 playerNav = GetCachedPlayerTransform() != null
+                    ? GetCachedPlayerTransform().position
+                    : snapOrigin;
+                if (EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(snapOrigin, playerNav, 6f, out Vector3 valid))
+                {
+                    _agent.Warp(valid);
+                    _spawnY = valid.y;
+                }
+                else if (NavMesh.SamplePosition(snapOrigin, out NavMeshHit landHit, 4f, NavMesh.AllAreas) &&
+                         EnemySpawnGeometry.IsValidOutdoorSpawn(landHit.position, playerNav, rejectRooftops: true))
                 {
                     _agent.Warp(landHit.position);
-                    _spawnY = landHit.position.y; // update spawn reference to new level
+                    _spawnY = landHit.position.y;
                 }
             }
             // NOTE: do NOT re-enable _controller — it would fight the agent
@@ -2875,13 +2970,29 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (now - _lastRecoveryWarpTime < recoveryWarpCooldown)
             return false;
 
-        if (!NavMesh.SamplePosition(desired, out NavMeshHit hit, sampleRadius, NavMesh.AllAreas))
+        Vector3 playerNav = GetCachedPlayerTransform() != null
+            ? GetCachedPlayerTransform().position
+            : desired;
+        Vector3 warpPos = desired;
+        if (EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(desired, playerNav, sampleRadius, out Vector3 valid))
+        {
+            warpPos = valid;
+        }
+        else if (!NavMesh.SamplePosition(desired, out NavMeshHit hit, sampleRadius, NavMesh.AllAreas))
             return false;
+        else
+        {
+            if (!float.IsNaN(_spawnY) && (hit.position.y - _spawnY) > watchdogMaxYAboveSpawn + 0.5f)
+                return false;
 
-        if (!float.IsNaN(_spawnY) && (hit.position.y - _spawnY) > watchdogMaxYAboveSpawn + 0.5f)
-            return false;
+            if (!EnemySpawnGeometry.IsValidOutdoorSpawn(hit.position, playerNav, rejectRooftops: true))
+                return false;
 
-        _agent.Warp(hit.position);
+            warpPos = hit.position;
+        }
+
+        _agent.Warp(warpPos);
+        _spawnY = warpPos.y;
         _agent.ResetPath();
         _lastRecoveryWarpTime = now;
         _highSinceTime = -1f;
@@ -2889,7 +3000,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         _partialPathSinceTime = -1f;
 
         if (debugWatchdog || debugAI)
-            Debug.Log($"[EnemyWatchdog] {name} recovery warp ({reason}) -> {hit.position}");
+            Debug.Log($"[EnemyWatchdog] {name} recovery warp ({reason}) -> {warpPos}");
 
         return true;
     }
@@ -3056,6 +3167,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
         {
+            if (NavMesh.Raycast(transform.position, dest, out NavMeshHit edgeHit, NavMesh.AllAreas))
+                dest = edgeHit.position;
+
             _agent.SetDestination(dest);
             return;
         }
@@ -3090,10 +3204,14 @@ public class EnemyController : MonoBehaviour, IDamageable
         Vector3 probe = transform.position + Random.insideUnitSphere * 5f;
         probe.y = float.IsNaN(_spawnY) ? transform.position.y : _spawnY;
 
-        if (NavMesh.SamplePosition(probe, out NavMeshHit hit, 10f, NavMesh.AllAreas))
+        Vector3 playerNav = GetCachedPlayerTransform() != null
+            ? GetCachedPlayerTransform().position
+            : transform.position;
+        if (EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(probe, playerNav, 10f, out Vector3 valid))
         {
             _agent.ResetPath();
-            _agent.SetDestination(hit.position);
+            _agent.Warp(valid);
+            _spawnY = valid.y;
             return;
         }
 
