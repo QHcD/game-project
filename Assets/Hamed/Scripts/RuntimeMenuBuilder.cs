@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem.UI;
 using UnityEngine.SceneManagement;
@@ -357,12 +358,43 @@ public class RuntimeMenuBuilder : MonoBehaviour
         launcher.statusText = status;
 
         // ── Buttons (neon gradient tiers + rim glow hover) ─────────────────────
-        Button connectBtn = MakeMultiplayerNeonButton(panelObj.transform, "CONNECT / PLAY ONLINE",
+        // Capture the button reference up-front so the open-level-selector
+        // callback can mutate its label text after the user picks a level.
+        Button selectLevelBtn = null;
+        TextMeshProUGUI selectLevelBtnLabel = null;
+
+        System.Func<int, string> buildLevelButtonText = (lvl) =>
+        {
+            int safe = Mathf.Clamp(lvl, 1, GameManager.TotalLevels);
+            string weapon = GameManager.Instance != null
+                ? GameManager.Instance.GetWeaponNameForLevel(safe)
+                : (safe == 2 ? "Razor Katana" : "Tactical Knife");
+            return $"SELECT LEVEL  ({safe} - {weapon.ToUpperInvariant()})";
+        };
+
+        // MakeMultiplayerNeonButton expects UnityAction (UnityEngine.Events),
+        // not System.Action — must declare the local as UnityAction.
+        UnityAction openLevelSelector = () =>
+        {
+            BuildMultiplayerLevelSelectOverlay(overlayObj.transform, () =>
+            {
+                int curr = Mathf.Clamp(MultiplayerRuntimeConfig.MultiplayerSelectedLevel, 1, GameManager.TotalLevels);
+                string weapon = GameManager.Instance != null
+                    ? GameManager.Instance.GetWeaponNameForLevel(curr)
+                    : (curr == 2 ? "Razor Katana" : "Tactical Knife");
+                if (selectLevelBtnLabel != null)
+                    selectLevelBtnLabel.text = buildLevelButtonText(curr);
+                Debug.Log($"[MPMenu] selected level = {curr} weapon = {weapon}");
+            });
+        };
+
+        selectLevelBtn = MakeMultiplayerNeonButton(panelObj.transform, buildLevelButtonText(MultiplayerRuntimeConfig.MultiplayerSelectedLevel),
             new Vector2(0.15f, 0.465f), new Vector2(0.85f, 0.535f),
-            launcher.ConnectAndPlayOnline, 28f, true,
+            openLevelSelector, 24f, true,
             new Color(0.05f, 0.38f, 0.95f, 1f), new Color(0.10f, 0.55f, 1f, 1f),
             new Color(0.35f, 0.85f, 1f, 1f),
             new Color(0.25f, 0.72f, 1f, 0.95f), new Color(0.55f, 0.95f, 1f, 1f));
+        selectLevelBtnLabel = selectLevelBtn.GetComponentInChildren<TextMeshProUGUI>();
 
         Button createBtn = MakeMultiplayerNeonButton(panelObj.transform, "CREATE ROOM",
             new Vector2(0.15f, 0.375f), new Vector2(0.85f, 0.445f),
@@ -380,12 +412,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Color(0.22f, 0.62f, 0.98f, 1f),
             new Color(0.18f, 0.58f, 0.92f, 0.55f), new Color(0.42f, 0.78f, 1f, 0.95f));
 
-        Button joinBtn = MakeMultiplayerNeonButton(panelObj.transform, "JOIN RANDOM ROOM",
-            new Vector2(0.15f, 0.195f), new Vector2(0.85f, 0.265f),
-            launcher.JoinRandomRoom, 28f, true,
-            new Color(0.05f, 0.24f, 0.68f, 1f), new Color(0.08f, 0.36f, 0.88f, 1f),
-            new Color(0.22f, 0.62f, 0.98f, 1f),
-            new Color(0.18f, 0.58f, 0.92f, 0.55f), new Color(0.42f, 0.78f, 1f, 0.95f));
+        // JOIN RANDOM ROOM button intentionally removed (host-pick-level flow).
 
         Button backBtn = MakePanelButton(panelObj.transform, "BACK",
             new Vector2(0.38f, 0.038f), new Vector2(0.62f, 0.108f),
@@ -395,30 +422,147 @@ public class RuntimeMenuBuilder : MonoBehaviour
                 SetMainMenuElementsVisible(root, true);
             }, 30f, false, true);
 
-        launcher.connectButton = connectBtn;
-        launcher.joinRandomButton = joinBtn;
+        launcher.connectButton = selectLevelBtn;
+        launcher.joinRandomButton = null;
         launcher.createRoomButton = createBtn;
         launcher.roomCodeInput = roomCodeInput;
         launcher.joinByCodeButton = joinCodeBtn;
 
-        // Animated dots: watch connectBtn — when it goes non-interactable
-        // (i.e. Photon is working) the dots start cycling automatically.
+        // Animated dots: watch the CREATE button now (the Connect/Play-Online
+        // button was repurposed into SELECT LEVEL, which doesn't talk to
+        // Photon). Dots cycle when Create Room becomes non-interactable.
         MultiplayerLoadingDots dots = launcherObj.AddComponent<MultiplayerLoadingDots>();
         dots.dotsLabel = dotsLabel;
-        dots.watchButton = connectBtn;
+        dots.watchButton = createBtn;
 
         var nav = new System.Collections.Generic.List<Selectable>(10);
         nav.Add(nameInput);
         nav.Add(modeCoopBtn);
         nav.Add(modeChaosBtn);
         nav.Add(modePvpBtn);
-        nav.Add(connectBtn);
+        nav.Add(selectLevelBtn);
         nav.Add(createBtn);
         nav.Add(roomCodeInput);
         nav.Add(joinCodeBtn);
-        nav.Add(joinBtn);
         nav.Add(backBtn);
         MenuNavigationManager.AttachLinear(overlayObj, nav);
+    }
+
+    // ─── Multiplayer Level Selector overlay ───────────────────────────────────
+    // Builds a scrollable list of Level 1..16 with the weapon name from
+    // GameManager. Selecting a row writes
+    // MultiplayerRuntimeConfig.MultiplayerSelectedLevel, fires the supplied
+    // callback (which refreshes the SELECT LEVEL button label), and closes
+    // the overlay. Pure UI — no Photon / matchmaking changes.
+    void BuildMultiplayerLevelSelectOverlay(Transform parent, System.Action onSelected)
+    {
+        // Replace any prior selector so re-opening doesn't stack overlays.
+        Transform existing = parent.Find("MpLevelSelectOverlay");
+        if (existing != null) Destroy(existing.gameObject);
+
+        GameObject overlayObj = new GameObject("MpLevelSelectOverlay");
+        overlayObj.transform.SetParent(parent, false);
+        Image dim = overlayObj.AddComponent<Image>();
+        Stretch(dim.rectTransform);
+        dim.color = new Color(0.01f, 0.02f, 0.05f, 0.78f);
+        // Close on dim click for quick dismiss.
+        Button dimBtn = overlayObj.AddComponent<Button>();
+        dimBtn.targetGraphic = dim;
+        dimBtn.transition = Selectable.Transition.None;
+        dimBtn.onClick.AddListener(() => Destroy(overlayObj));
+
+        GameObject panel = new GameObject("MpLevelSelectPanel");
+        panel.transform.SetParent(overlayObj.transform, false);
+        Image panelImg = panel.AddComponent<Image>();
+        panelImg.color = new Color(0.06f, 0.10f, 0.22f, 0.98f);
+        Outline panelOutline = panel.AddComponent<Outline>();
+        panelOutline.effectColor = new Color(0.30f, 0.55f, 1f, 0.90f);
+        panelOutline.effectDistance = new Vector2(3f, -3f);
+        SetCenteredRect(panel.GetComponent<RectTransform>(), new Vector2(720f, 700f), Vector2.zero);
+
+        MakeText(panel.transform, "SELECT MULTIPLAYER LEVEL", 36f, new Color(0.94f, 0.96f, 1f, 1f),
+            new Vector2(0.06f, 0.88f), new Vector2(0.94f, 0.97f), true);
+
+        // ScrollRect content (vertical).
+        GameObject viewportObj = new GameObject("Viewport", typeof(RectTransform), typeof(CanvasRenderer));
+        viewportObj.transform.SetParent(panel.transform, false);
+        Image viewportImg = viewportObj.AddComponent<Image>();
+        viewportImg.color = new Color(0.02f, 0.04f, 0.10f, 0.40f);
+        viewportObj.AddComponent<RectMask2D>();
+        ScrollRect scroll = viewportObj.AddComponent<ScrollRect>();
+        RectTransform vpRect = viewportObj.GetComponent<RectTransform>();
+        vpRect.anchorMin = new Vector2(0.06f, 0.14f);
+        vpRect.anchorMax = new Vector2(0.94f, 0.85f);
+        vpRect.offsetMin = vpRect.offsetMax = Vector2.zero;
+
+        GameObject content = new GameObject("Content", typeof(RectTransform));
+        content.transform.SetParent(viewportObj.transform, false);
+        RectTransform contentRect = content.GetComponent<RectTransform>();
+        contentRect.anchorMin = new Vector2(0f, 1f);
+        contentRect.anchorMax = new Vector2(1f, 1f);
+        contentRect.pivot = new Vector2(0.5f, 1f);
+        contentRect.anchoredPosition = Vector2.zero;
+        contentRect.sizeDelta = new Vector2(0f, 0f);
+        VerticalLayoutGroup vlg = content.AddComponent<VerticalLayoutGroup>();
+        vlg.padding = new RectOffset(14, 14, 12, 12);
+        vlg.spacing = 8f;
+        vlg.childAlignment = TextAnchor.UpperCenter;
+        vlg.childForceExpandWidth = true;
+        vlg.childForceExpandHeight = false;
+        vlg.childControlWidth = true;
+        vlg.childControlHeight = false;
+        ContentSizeFitter fitter = content.AddComponent<ContentSizeFitter>();
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        scroll.content = contentRect;
+        scroll.viewport = vpRect;
+        scroll.vertical = true;
+        scroll.horizontal = false;
+        scroll.movementType = ScrollRect.MovementType.Clamped;
+        scroll.scrollSensitivity = 30f;
+
+        int currentSelected = Mathf.Clamp(MultiplayerRuntimeConfig.MultiplayerSelectedLevel, 1, GameManager.TotalLevels);
+
+        for (int i = 1; i <= GameManager.TotalLevels; i++)
+        {
+            int captured = i;
+            string weapon = GameManager.Instance != null
+                ? GameManager.Instance.GetWeaponNameForLevel(i)
+                : (i == 2 ? "Razor Katana" : "Tactical Knife");
+            string rowLabel = $"LEVEL {i} - {weapon.ToUpperInvariant()}";
+
+            GameObject row = new GameObject($"LvlRow_{i}");
+            row.transform.SetParent(content.transform, false);
+            Image rowImg = row.AddComponent<Image>();
+            bool isSelected = i == currentSelected;
+            rowImg.color = isSelected
+                ? new Color(0.18f, 0.48f, 1f, 0.85f)
+                : new Color(0.04f, 0.08f, 0.18f, 0.85f);
+            Outline rowOutline = row.AddComponent<Outline>();
+            rowOutline.effectColor = isSelected
+                ? new Color(0.55f, 0.95f, 1f, 0.95f)
+                : new Color(0.25f, 0.45f, 0.85f, 0.45f);
+            rowOutline.effectDistance = new Vector2(1.5f, -1.5f);
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = 58f;
+            le.minHeight = 54f;
+
+            TextMeshProUGUI rowText = CreateCenteredLabel(row.transform, rowLabel, 24f, Color.white, true);
+            rowText.alignment = TextAlignmentOptions.Center;
+
+            Button rowBtn = row.AddComponent<Button>();
+            rowBtn.targetGraphic = rowImg;
+            rowBtn.onClick.AddListener(() =>
+            {
+                MultiplayerRuntimeConfig.MultiplayerSelectedLevel = captured;
+                onSelected?.Invoke();
+                Destroy(overlayObj);
+            });
+        }
+
+        Button closeBtn = MakePanelButton(panel.transform, "CLOSE",
+            new Vector2(0.35f, 0.03f), new Vector2(0.65f, 0.12f),
+            () => Destroy(overlayObj), 26f, false, true);
     }
 
     Button MakeGameModeButton(Transform parent, string label, Vector2 anchorMin, Vector2 anchorMax, System.Action action, out Image bgImage, out Outline outline, out TextMeshProUGUI textComp)
@@ -462,9 +606,11 @@ public class RuntimeMenuBuilder : MonoBehaviour
         outline.effectDistance = new Vector2(1.5f, -1.5f);
 
         RectTransform rect = inputObj.GetComponent<RectTransform>();
-        // ~68px tall on 820px panel (0.083), centered under subtitle; tighter horizontal margins.
-        rect.anchorMin = new Vector2(0.16f, 0.68f);
-        rect.anchorMax = new Vector2(0.84f, 0.76f);
+        // Narrower name field — was 0.16–0.84 which felt visually too wide on
+        // the 1040 px panel. Centred, only slightly wider than the inner
+        // button column for a cleaner look.
+        rect.anchorMin = new Vector2(0.30f, 0.68f);
+        rect.anchorMax = new Vector2(0.70f, 0.76f);
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
         TMP_InputField input = inputObj.AddComponent<TMP_InputField>();

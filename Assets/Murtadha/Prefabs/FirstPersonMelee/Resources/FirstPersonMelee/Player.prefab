@@ -1738,6 +1738,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   remoteLerpSpeed: 14
+  remoteSnapDistance: 6
 --- !u!114 &6732002936709566490
 MonoBehaviour:
   m_ObjectHideFlags: 0

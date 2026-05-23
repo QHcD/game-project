@@ -45,6 +45,11 @@ public class NetworkPlayerSpawner : MonoBehaviour
         if (scene.name != MultiplayerMode.MultiplayerSceneName)
             return;
 
+        // Each fresh entry into the multiplayer scene must reset match
+        // stats again; otherwise leaderboards carry over from a previous
+        // match (re-joining after returning to menu).
+        statsResetForCurrentMultiplayerScene = false;
+
         if (FindFirstObjectByType<NetworkPlayerSpawner>() != null)
             return;
 
@@ -54,6 +59,21 @@ public class NetworkPlayerSpawner : MonoBehaviour
     private void Start()
     {
         MultiplayerMode.SetMultiplayer();
+        Application.runInBackground = true;
+
+        // Defensive: if we somehow loaded the MP scene without joining a room
+        // (e.g. coming from a broken state) bail out to MainMenu instead of
+        // spawning a half-networked player.
+#if PUN_2_OR_NEWER
+        if (!PhotonNetwork.InRoom)
+        {
+            Debug.LogWarning("[NetworkPlayerSpawner] Multiplayer scene loaded without an active Photon room. Returning to MainMenu.");
+            MultiplayerMode.SetSinglePlayer();
+            UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+            return;
+        }
+#endif
+
         if (!statsResetForCurrentMultiplayerScene && MatchStatsManager.Instance != null)
         {
             MatchStatsManager.Instance.ResetMatch();
@@ -74,8 +94,10 @@ public class NetworkPlayerSpawner : MonoBehaviour
             RegisterPhotonPlayersForLeaderboard();
             SpawnLocalPlayer();
 
-            // Master client owns the match lifecycle and bot director.
-            if (PhotonNetwork.IsMasterClient)
+            // Master client owns the match lifecycle and bot director — but
+            // only when match rules are enabled. Stable-test mode skips this
+            // entirely so no countdown / no winner / no auto end ever fires.
+            if (PhotonNetwork.IsMasterClient && MpMatchRules.Enabled)
                 MpMatchController.EnsureExists();
         }
 #else
@@ -101,7 +123,11 @@ public class NetworkPlayerSpawner : MonoBehaviour
         if (FindOwnedPlayer() != null)
             return;
 
-        if (MpRoomConfig.ReadMatchState() >= 2)
+        // Spectator gate depends on KeyMatchState driven by MpMatchController;
+        // in stable-test mode that state never moves past 0, so we'd never
+        // hit spectator anyway. Skip the check entirely while rules are off
+        // so late joiners simply spawn and play.
+        if (MpMatchRules.Enabled && MpRoomConfig.ReadMatchState() >= 2)
         {
             Debug.Log("[Spectator] Match already in progress (State >= 2). Entering spectator mode.");
             SpawnAsSpectator();
@@ -194,6 +220,7 @@ public class NetworkPlayerSpawner : MonoBehaviour
 
     private void EnsureLocalNicknameFallback()
     {
+        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
         if (PhotonNetwork.LocalPlayer != null && string.IsNullOrWhiteSpace(PhotonNetwork.NickName))
             PhotonNetwork.NickName = $"Player_{PhotonNetwork.LocalPlayer.ActorNumber}";
     }

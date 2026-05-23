@@ -49,6 +49,14 @@ public class PhotonLauncher : MonoBehaviour
 
     private void Awake()
     {
+        // Photon will drop us with DisconnectByServerTimeout / AppOutOfFocus
+        // if the app pauses (alt-tab, window losing focus). These flags keep
+        // the heartbeat going across scene loads and lost focus.
+        Application.runInBackground = true;
+#if PUN_2_OR_NEWER
+        PhotonNetwork.KeepAliveInBackground = 60f;
+#endif
+
         PlayerProfile.Reload();
         if (playerNameInput != null && string.IsNullOrWhiteSpace(playerNameInput.text))
             playerNameInput.text = PlayerProfile.HasUsername ? PlayerProfile.Username : "Player";
@@ -214,7 +222,11 @@ public class PhotonLauncher : MonoBehaviour
         options.CustomRoomProperties = new ExitGames.Client.Photon.Hashtable
         {
             { MpRoomConfig.KeyMode, (byte)MultiplayerMode.ActiveMode },
-            { MpRoomConfig.KeyLevel, GameManager.Instance != null ? GameManager.Instance.currentLevel : 1 },
+            // Multiplayer rooms always start on the canonical level/loadout
+            // (Level 1 Tactical Knife). Never read GameManager.currentLevel
+            // here — that is the single-player Continue level and used to
+            // place every joiner on the host's saved SP loadout (e.g. L8).
+            { MpRoomConfig.KeyLevel, MultiplayerRuntimeConfig.MultiplayerSelectedLevel },
             { MpRoomConfig.KeyBotCount, roomBotCount },
             { MpRoomConfig.KeyBotsEnabled, roomBotsEnabled },
             { MpRoomConfig.KeyFriendlyFire, roomFriendlyFire },
@@ -237,6 +249,7 @@ public class PhotonLauncher : MonoBehaviour
         };
         SetStatus($"Creating room {roomName}...");
         pendingCreateRoom = false;
+        Debug.Log($"[MPMenu] create room with level = {MultiplayerRuntimeConfig.MultiplayerSelectedLevel}");
         PhotonNetwork.CreateRoom(roomName, options, TypedLobby.Default);
 #else
         SetStatus("Photon PUN 2 is not imported.");
@@ -303,7 +316,11 @@ public class PhotonLauncher : MonoBehaviour
         options.CustomRoomProperties = new ExitGames.Client.Photon.Hashtable
         {
             { MpRoomConfig.KeyMode, (byte)MultiplayerMode.ActiveMode },
-            { MpRoomConfig.KeyLevel, GameManager.Instance != null ? GameManager.Instance.currentLevel : 1 },
+            // Multiplayer rooms always start on the canonical level/loadout
+            // (Level 1 Tactical Knife). Never read GameManager.currentLevel
+            // here — that is the single-player Continue level and used to
+            // place every joiner on the host's saved SP loadout (e.g. L8).
+            { MpRoomConfig.KeyLevel, MultiplayerRuntimeConfig.MultiplayerSelectedLevel },
             { MpRoomConfig.KeyBotCount, roomBotCount },
             { MpRoomConfig.KeyBotsEnabled, roomBotsEnabled },
             { MpRoomConfig.KeyFriendlyFire, roomFriendlyFire },
@@ -326,6 +343,7 @@ public class PhotonLauncher : MonoBehaviour
         };
         SetStatus($"Creating room {roomCode}...");
         pendingCreateRoom = false;
+        Debug.Log($"[MPMenu] create room with level = {MultiplayerRuntimeConfig.MultiplayerSelectedLevel}");
         PhotonNetwork.CreateRoom(roomCode, options, TypedLobby.Default);
 #else
         SetStatus("Photon PUN 2 is not imported.");
@@ -453,8 +471,20 @@ public class PhotonLauncher : MonoBehaviour
         SetStatus($"Joined room: {PhotonNetwork.CurrentRoom.Name}");
 
         MpRoomConfig.ApplyToLocalState();
+        // If we just joined via Join-By-Code (not the host who set the prop),
+        // log the host's level so the join-side log is visible without
+        // duplicating the master's [MPMenu] create log.
+        if (!PhotonNetwork.IsMasterClient)
+        {
+            int hostLevel = MultiplayerRuntimeConfig.GetSelectedLevel();
+            Debug.Log($"[MPMenu] join room, using host level = {hostLevel}");
+        }
 
-        SetReadyState(false);
+        // Quick-play (non-lobby) flow has no Ready button; MpMatchController
+        // would otherwise hang in ReadyCheck and the InMatch timer would
+        // never start (visible to the user as "timer stuck at 300").
+        // Auto-mark the local player ready so the master can advance.
+        SetReadyState(useLobbyFlow ? false : true);
 
         if (useLobbyFlow)
         {
@@ -467,9 +497,22 @@ public class PhotonLauncher : MonoBehaviour
             // block input until the scene finishes loading.
             HideLauncherCanvas();
 
+            // Show the loading screen on every client during the LoadLevel
+            // → spawn → HUD-bind window. HUDManager.InitForMultiplayerLocalPlayer
+            // destroys it once the local player is ready.
+            ShowMultiplayerLoadingScreen();
+
             if (PhotonNetwork.IsMasterClient)
                 PhotonNetwork.LoadLevel(multiplayerSceneName);
         }
+    }
+
+    private void ShowMultiplayerLoadingScreen()
+    {
+        // Strict timed overlay: shows "LOADING..." for exactly 5 seconds,
+        // locks combat/AI for that window, then auto-destroys. No Photon /
+        // HUD callbacks involved.
+        LoadingScreenUI.ShowTimedForMultiplayer(5f);
     }
 
     private void HideLauncherCanvas()
@@ -874,6 +917,7 @@ public class PhotonLauncher : MonoBehaviour
 
     private void SetReadyState(bool ready)
     {
+        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
         ExitGames.Client.Photon.Hashtable props = new ExitGames.Client.Photon.Hashtable();
         props["rd"] = ready;
         PhotonNetwork.LocalPlayer.SetCustomProperties(props);
@@ -883,13 +927,18 @@ public class PhotonLauncher : MonoBehaviour
     {
         if (PhotonNetwork.IsMasterClient)
         {
-            PhotonNetwork.CurrentRoom.IsOpen = false;
-            PhotonNetwork.CurrentRoom.IsVisible = false;
+            // IsOpen / IsVisible setters are property writes — guard for leave.
+            if (MultiplayerShutdownGuard.CanWriteProperties())
+            {
+                PhotonNetwork.CurrentRoom.IsOpen = false;
+                PhotonNetwork.CurrentRoom.IsVisible = false;
+            }
             SetStatus("Starting match...");
             
             // Hide Lobby UI right before scene sync so there is no visual clutter
             HideLobbyUI();
             HideLauncherCanvas();
+            ShowMultiplayerLoadingScreen();
 
             PhotonNetwork.LoadLevel(multiplayerSceneName);
         }
@@ -929,7 +978,11 @@ public class PhotonLauncher : MonoBehaviour
         PlayerProfile.SetUsername(playerName);
         PlayerProfile.Reload();
 #if PUN_2_OR_NEWER
-        PhotonNetwork.NickName = PlayerProfile.Username;
+        // NickName setter calls Photon's internal SetPlayerCustomProperties —
+        // guarded for shutdown so a late ApplyPlayerName (menu rebuild after
+        // QUIT) doesn't trip "client state: Leaving".
+        if (MultiplayerShutdownGuard.CanWriteProperties() || !PhotonNetwork.InRoom)
+            PhotonNetwork.NickName = PlayerProfile.Username;
 #endif
     }
 

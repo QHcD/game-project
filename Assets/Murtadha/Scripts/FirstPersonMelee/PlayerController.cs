@@ -796,7 +796,13 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         AssignMaterial();
         ApplyPlayerBodyBlackTint();
 
-        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        // In multiplayer the canonical level comes from the room's custom
+        // properties (defaulting to Level 1 / Tactical Knife). Using
+        // GameManager.currentLevel here used to spawn each client with the
+        // host's single-player Continue level (often L8 Hammer).
+        int level = MultiplayerMode.IsMultiplayer
+            ? MpRoomConfig.ReadLevel()
+            : (GameManager.Instance != null ? GameManager.Instance.currentLevel : 1);
         EquipWeaponForLevel(level);
     }
 
@@ -2550,7 +2556,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 controller.center = Vector3.Lerp(controller.center, targetControllerCenter, stanceTransitionSpeed * Time.deltaTime);
             }
 
-            controller.stepOffset = controller.height > 1.6f ? 0.5f : 0.05f;
+            float desiredStep = controller.height > 1.6f ? 0.5f : 0.05f;
+            float maxStep = Mathf.Max(0f, controller.height - 0.01f);
+            if (desiredStep > maxStep)
+            {
+                Debug.Log($"[Prone] clamped stepOffset because it exceeded controller height (desired={desiredStep} height={controller.height})");
+                desiredStep = maxStep;
+            }
+            controller.stepOffset = desiredStep;
         }
 
         if (_tacticalActions != null)
@@ -3264,13 +3277,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (!MultiplayerMode.IsMultiplayer)
             return;
 
-        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
-        level = Mathf.Clamp(level, 1, GameManager.TotalLevels);
-        string weaponName = GameManager.Instance != null
-            ? GameManager.Instance.GetWeaponNameForLevel(level)
-            : (level == 2 ? "Razor Katana" : "Tactical Knife");
+        // Source of truth: MultiplayerRuntimeConfig.GetSelectedLevel(). Reads
+        // the room's KeyLevel custom property, falls back to the configured
+        // default. Do NOT read GameManager.currentLevel — that is the SP
+        // Continue save and leaked into MP loadouts (HUD said L8 Hammer).
+        int level = MultiplayerRuntimeConfig.GetSelectedLevel();
+        string weaponName = MultiplayerRuntimeConfig.GetSelectedWeaponName();
 
-        Debug.Log($"[MPWeapon] equipping level={level} weapon={weaponName}");
+        int actor = -1;
+#if PUN_2_OR_NEWER
+        if (photonView != null && photonView.Owner != null) actor = photonView.Owner.ActorNumber;
+#endif
+        Debug.Log($"[MPWeapon] equipped level={level} weapon={weaponName} actor={actor} local=true");
 
         RefreshGameplayPreferences();
         EnsureThirdPersonBody();
