@@ -29,50 +29,71 @@ public class PauseMenuController : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void EnsureExistsInGameplayScene()
     {
-        UnityEngine.SceneManagement.SceneManager.sceneLoaded += (scene, mode) =>
+        SceneManager.sceneLoaded -= OnGameplaySceneLoaded;
+        SceneManager.sceneLoaded += OnGameplaySceneLoaded;
+        EnsureControllerForScene(SceneManager.GetActiveScene());
+    }
+
+    private static void OnGameplaySceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        EnsureControllerForScene(scene);
+    }
+
+    private static void EnsureControllerForScene(Scene scene)
+    {
+        if (!scene.IsValid() || !scene.isLoaded)
+            return;
+
+        if (scene.name == MultiplayerMode.MultiplayerSceneName)
+            Debug.Log("[MPPauseDiag] sceneLoaded MultiplayerGameScene");
+
+        if (scene.name != MultiplayerMode.SinglePlayerSceneName &&
+            scene.name != MultiplayerMode.MultiplayerSceneName)
+            return;
+
+        PauseMenuController[] all = FindObjectsByType<PauseMenuController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        PauseMenuController kept = null;
+        for (int i = 0; i < all.Length; i++)
         {
-            if (scene.name == MultiplayerMode.MultiplayerSceneName)
-                Debug.Log("[MPPauseDiag] sceneLoaded MultiplayerGameScene");
-
-            if (scene.name != MultiplayerMode.SinglePlayerSceneName &&
-                scene.name != MultiplayerMode.MultiplayerSceneName)
-                return;
-
-            // Find ALL controllers (including inactive ones) — a scene-placed
-            // PauseMenuController on a disabled GameObject was silently
-            // killing ESC in MP because FindFirstObjectByType(active-only)
-            // returned it, we believed one existed, and Update never ran.
-            PauseMenuController[] all = FindObjectsByType<PauseMenuController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            PauseMenuController kept = null;
-            for (int i = 0; i < all.Length; i++)
-            {
-                if (all[i] == null) continue;
-                if (kept == null) { kept = all[i]; continue; }
-                Destroy(all[i].gameObject);
-            }
+            PauseMenuController candidate = all[i];
+            if (candidate == null)
+                continue;
 
             if (kept == null)
             {
-                // Force-create a runtime controller. Use a clearly named GO so
-                // it stands out in the hierarchy vs any scene-placed instance.
-                GameObject go = new GameObject("PauseMenuController_Runtime");
-                kept = go.AddComponent<PauseMenuController>();
-                Debug.Log("[MPPauseDiag] forced runtime controller created");
+                kept = candidate;
+                continue;
             }
 
-            // Force the controller awake — re-activate GameObject and component
-            // so a previously-disabled scene instance can never starve Update.
-            if (!kept.gameObject.activeSelf) kept.gameObject.SetActive(true);
-            if (!kept.enabled) kept.enabled = true;
+            if (!kept.isActiveAndEnabled && candidate.isActiveAndEnabled)
+            {
+                Destroy(kept.gameObject);
+                kept = candidate;
+            }
+            else
+            {
+                Destroy(candidate.gameObject);
+            }
+        }
 
-            // One-shot diagnostic dump describing the live state.
-            string backend = DetectInputBackend();
-            Debug.Log("[MPPauseDiag] PauseMenuController exists = true");
-            Debug.Log("[MPPauseDiag] enabled = " + kept.enabled);
-            Debug.Log("[MPPauseDiag] GameObject active = " + kept.gameObject.activeInHierarchy);
-            Debug.Log("[MPPauseDiag] current scene = " + scene.name);
-            Debug.Log("[MPPauseDiag] input backend detected = " + backend);
-        };
+        if (kept == null)
+        {
+            GameObject go = new GameObject("PauseMenuController_Runtime");
+            kept = go.AddComponent<PauseMenuController>();
+            Debug.Log("[MPPauseDiag] forced runtime controller created");
+        }
+
+        if (!kept.gameObject.activeSelf)
+            kept.gameObject.SetActive(true);
+        if (!kept.enabled)
+            kept.enabled = true;
+
+        string backend = DetectInputBackend();
+        Debug.Log("[MPPauseDiag] PauseMenuController exists = true");
+        Debug.Log("[MPPauseDiag] enabled = " + kept.enabled);
+        Debug.Log("[MPPauseDiag] GameObject active = " + kept.gameObject.activeInHierarchy);
+        Debug.Log("[MPPauseDiag] current scene = " + scene.name);
+        Debug.Log("[MPPauseDiag] input backend detected = " + backend);
     }
 
     private static string DetectInputBackend()
@@ -102,8 +123,27 @@ public class PauseMenuController : MonoBehaviour
     }
 
     private float _aliveLogTimer;
+    private float _nextEscAllowedTime;
     private bool _firstUpdateLogged;
     private bool _firstKeyLogged;
+
+    private void OnEnable()
+    {
+        if (!Application.isPlaying)
+            return;
+
+        InputSystem.onAfterUpdate -= HandleEscapeAfterInput;
+        InputSystem.onAfterUpdate += HandleEscapeAfterInput;
+    }
+
+    private void OnDisable()
+    {
+        InputSystem.onAfterUpdate -= HandleEscapeAfterInput;
+
+        if (!MultiplayerMode.IsMultiplayer)
+            Time.timeScale = 1f;
+        isPaused = false;
+    }
 
     private void Update()
     {
@@ -122,90 +162,52 @@ public class PauseMenuController : MonoBehaviour
             Debug.Log("[MPPauseDiag] Update running");
         }
 
-        // Heartbeat — confirms the controller is alive and ticking in MP.
         _aliveLogTimer -= Time.unscaledDeltaTime;
         if (_aliveLogTimer <= 0f)
         {
             _aliveLogTimer = 5f;
             Debug.Log("[MPPauseDiag] controller alive");
         }
+    }
 
-        // Match-finished gate kept ONLY for SP — in MP we never want it to
-        // suppress pause (MpMatchRules.Enabled == false, IsMatchFinished
-        // should always be false, but be defensive).
+    private void HandleEscapeAfterInput()
+    {
+        if (!Application.isPlaying || !isActiveAndEnabled)
+            return;
+
+        bool isGameplayScene = SceneManager.GetActiveScene().name == MultiplayerMode.SinglePlayerSceneName ||
+                               SceneManager.GetActiveScene().name == MultiplayerMode.MultiplayerSceneName;
+        if (!isGameplayScene)
+            return;
+
+        if (isPaused)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+
         HUDManager hudManager = HUDManager.Instance;
         if (!MultiplayerMode.IsMultiplayer && hudManager != null && hudManager.IsMatchFinished)
             return;
 
-        // "Update is running" proof: log the first time we see ANY keyboard
-        // activity at all so we can tell apart "ESC not reaching us" from
-        // "Update not ticking" in the console.
         if (!_firstKeyLogged)
         {
-            try
+            Keyboard kb = Keyboard.current;
+            if (kb != null && kb.anyKey.wasPressedThisFrame)
             {
-                if (Input.anyKeyDown)
-                {
-                    _firstKeyLogged = true;
-                    Debug.Log("[MPPauseDiag] first key detected (legacy Input.anyKeyDown)");
-                }
-            }
-            catch { }
-            if (!_firstKeyLogged)
-            {
-                try
-                {
-                    Keyboard kb = Keyboard.current;
-                    if (kb != null && kb.anyKey.wasPressedThisFrame)
-                    {
-                        _firstKeyLogged = true;
-                        Debug.Log("[MPPauseDiag] first key detected (InputSystem Keyboard.current)");
-                    }
-                }
-                catch { }
+                _firstKeyLogged = true;
+                Debug.Log("[MPPauseDiag] first key detected (InputSystem Keyboard.current)");
             }
         }
 
-        // In multiplayer, HUDManager owns ESC detection (see
-        // HUDManager.HandleMultiplayerEscPause). Returning here prevents the
-        // double-toggle where both detectors fired on the same keypress and
-        // the menu instantly closed itself.
-        if (MultiplayerMode.IsMultiplayer)
+        if (Time.unscaledTime < _nextEscAllowedTime)
             return;
 
-        // Single-player: dual-input ESC detection — each backend in its own
-        // try so a disabled or not-yet-initialised backend can't kill the
-        // other.
-        bool escPressed = false;
-
-        try
-        {
-            if (Input.GetKeyDown(KeyCode.Escape))
-            {
-                escPressed = true;
-                Debug.Log("[MPPauseDiag] ESC detected by Legacy");
-            }
-        }
-        catch { }
-
-        if (!escPressed)
-        {
-            try
-            {
-                Keyboard kb = Keyboard.current;
-                if (kb != null && kb.escapeKey.wasPressedThisFrame)
-                {
-                    escPressed = true;
-                    Debug.Log("[MPPauseDiag] ESC detected by InputSystem");
-                }
-            }
-            catch { }
-        }
-
-        if (!escPressed)
+        if (!WasEscapePressedThisFrame())
             return;
 
-        // Close full map if open (MP only) before opening pause.
+        _nextEscAllowedTime = Time.unscaledTime + 0.2f;
+
         if (MultiplayerMode.IsMultiplayer && hudManager != null && hudManager.CloseFullMapFromEscape())
             return;
 
@@ -220,6 +222,18 @@ public class PauseMenuController : MonoBehaviour
             ShowPauseMenu();
             Debug.Log("[MPPauseDiag] normal pause menu visible = " + (pauseCanvas != null));
         }
+    }
+
+    private static bool WasEscapePressedThisFrame()
+    {
+        Keyboard kb = Keyboard.current;
+        if (kb != null && kb.escapeKey.wasPressedThisFrame)
+        {
+            Debug.Log("[MPPauseDiag] ESC detected by InputSystem");
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -933,13 +947,6 @@ public class PauseMenuController : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = Vector2.zero;
         rect.offsetMax = Vector2.zero;
-    }
-
-    private void OnDisable()
-    {
-        if (!MultiplayerMode.IsMultiplayer)
-            Time.timeScale = 1f;
-        isPaused = false;
     }
 }
 

@@ -315,6 +315,8 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        MeleeBodyTargeting.EnsureMeleeBodyCollider(transform);
+
         CombatVoiceSfx voice = CombatVoiceSfx.GetOrAdd(gameObject);
         voice.ApplyInspectorClips(hurtSounds, deathSounds);
 

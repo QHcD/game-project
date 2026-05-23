@@ -123,6 +123,34 @@ public class LevelBuilder : MonoBehaviour
     private static void OnEditorSceneOpened(Scene scene, OpenSceneMode mode)
     {
         QueueEditorPreviewBuild();
+        if (scene.IsValid() && scene.name == "MainMenu")
+            StripMainMenuAtmosphereInEditor();
+    }
+
+    private static void StripMainMenuAtmosphereInEditor()
+    {
+        if (Application.isPlaying)
+            return;
+
+        MainMenuMapPresenter.RunSetup();
+    }
+
+    [MenuItem("PRISM/Remove Dust And Smoke From Scene")]
+    private static void RemoveDustAndSmokeFromSceneMenu()
+    {
+        if (Application.isPlaying)
+            return;
+
+        if (SceneManager.GetActiveScene().name == "MainMenu")
+            MainMenuMapPresenter.RunSetup();
+        else
+        {
+            int removed = MapAtmosphereCleanup.RemoveFromActiveScene();
+            Debug.Log($"[LevelBuilder] Removed {removed} dust/smoke object(s) from the active scene.");
+        }
+
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+        SceneView.RepaintAll();
     }
 
     private static void OnEditorUpdate()
@@ -868,6 +896,7 @@ public class LevelBuilder : MonoBehaviour
             rend.enabled = true;
 
         RemoveUnwantedMapProps(mapInstance.transform);
+        MapAtmosphereCleanup.RemoveFromHierarchy(mapInstance.transform);
 
         // ── Remove cameras / audio listeners that compete with ours ────────
         foreach (Camera embeddedCam in mapInstance.GetComponentsInChildren<Camera>(true))
@@ -1591,7 +1620,7 @@ public class LevelBuilder : MonoBehaviour
             controller.maxHealth          = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
 
             agent.speed            = controller.chaseSpeed;
-            agent.stoppingDistance = Mathf.Max(0.08f, controller.attackRadius * 0.85f);
+            agent.stoppingDistance = Mathf.Max(0.05f, controller.meleeAttackRange * 0.08f);
 
             // Snap the agent onto the nearest NavMesh position before it begins moving.
             enemyObject.transform.position = agentSpawn;
@@ -2126,6 +2155,7 @@ public class LevelBuilder : MonoBehaviour
         }
 
         EnsureComponent<PlayerHealth>(playerController.gameObject);
+        MeleeBodyTargeting.EnsureMeleeBodyCollider(playerController.transform);
         playerController.RefreshGameplayPreferences();
 
         // ── Force the camera to snap to the new position immediately ────────
@@ -2151,16 +2181,35 @@ public class LevelBuilder : MonoBehaviour
     private NavMeshSurface EnsureNavMeshSurface()
     {
         NavMeshSurface navMeshSurface = Object.FindFirstObjectByType<NavMeshSurface>();
-        if (navMeshSurface != null)
+        if (navMeshSurface == null)
         {
-            navMeshSurface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
-            return navMeshSurface;
+            GameObject surfaceObject = new GameObject("NavMesh Surface");
+            navMeshSurface = surfaceObject.AddComponent<NavMeshSurface>();
+            navMeshSurface.collectObjects = CollectObjects.All;
         }
-        GameObject surfaceObject = new GameObject("NavMesh Surface");
-        navMeshSurface = surfaceObject.AddComponent<NavMeshSurface>();
-        navMeshSurface.collectObjects = CollectObjects.All;
-        navMeshSurface.useGeometry    = NavMeshCollectGeometry.PhysicsColliders;
+
+        navMeshSurface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
+        navMeshSurface.minRegionArea = 2.5f;
+        navMeshSurface.layerMask = BuildNavMeshLayerMask();
         return navMeshSurface;
+    }
+
+    private static LayerMask BuildNavMeshLayerMask()
+    {
+        int mask = Physics.DefaultRaycastLayers;
+        RemoveLayer(ref mask, "Player");
+        RemoveLayer(ref mask, "Enemy");
+        RemoveLayer(ref mask, "Enemies");
+        RemoveLayer(ref mask, "UI");
+        RemoveLayer(ref mask, "Ignore Raycast");
+        return mask;
+    }
+
+    private static void RemoveLayer(ref int mask, string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0)
+            mask &= ~(1 << layer);
     }
 
     private bool TryBuildNavMesh()
@@ -2171,6 +2220,7 @@ public class LevelBuilder : MonoBehaviour
             if (navMeshSurface == null)
                 return false;
 
+            MarkNavMeshWalkability();
             navMeshSurface.BuildNavMesh();
             return NavMesh.SamplePosition(SafeFallbackSpawn, out _, 6f, NavMesh.AllAreas);
         }
@@ -2179,6 +2229,159 @@ public class LevelBuilder : MonoBehaviour
             Debug.LogWarning($"[LevelBuilder] NavMesh build failed; continuing with fallback spawn. {e.GetType().Name}: {e.Message}");
             return false;
         }
+    }
+
+    private float GetNavMeshGroundReferenceY()
+    {
+        PlayerController pc = Object.FindFirstObjectByType<PlayerController>();
+        if (pc != null)
+            return pc.transform.position.y;
+
+        return SafeFallbackSpawn.y;
+    }
+
+    private Transform FindArenaRootForNavMesh()
+    {
+        Transform arena = GameObject.Find(ArenaRootName)?.transform;
+        if (arena == null)
+            arena = GameObject.Find(GameplayRootName)?.transform;
+        if (arena == null)
+            arena = GameObject.Find("IndustrialMap_v3")?.transform;
+        if (arena == null)
+            arena = GameObject.Find("IndustrialMap")?.transform;
+        if (arena == null)
+            arena = GameObject.Find("FbxMap")?.transform;
+        return arena;
+    }
+
+    private void MarkNavMeshWalkability()
+    {
+        float groundY = GetNavMeshGroundReferenceY();
+        Transform arena = FindArenaRootForNavMesh();
+        if (arena == null)
+            return;
+
+        Renderer[] renderers = arena.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (r == null || r is ParticleSystemRenderer)
+                continue;
+
+            bool walkable = ShouldIncludeInNavMesh(r, groundY);
+            NavMeshModifier modifier = r.gameObject.GetComponent<NavMeshModifier>();
+            if (!walkable)
+            {
+                if (modifier == null)
+                    modifier = r.gameObject.AddComponent<NavMeshModifier>();
+                modifier.ignoreFromBuild = true;
+            }
+            else if (modifier != null)
+            {
+                modifier.ignoreFromBuild = false;
+            }
+        }
+
+        Collider[] colliders = arena.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider c = colliders[i];
+            if (c == null || c.isTrigger || c.GetComponent<Renderer>() != null)
+                continue;
+
+            bool walkable = ShouldIncludeColliderInNavMesh(c, groundY);
+            NavMeshModifier modifier = c.gameObject.GetComponent<NavMeshModifier>();
+            if (!walkable)
+            {
+                if (modifier == null)
+                    modifier = c.gameObject.AddComponent<NavMeshModifier>();
+                modifier.ignoreFromBuild = true;
+            }
+            else if (modifier != null)
+            {
+                modifier.ignoreFromBuild = false;
+            }
+        }
+    }
+
+    private static bool ShouldIncludeInNavMesh(Renderer renderer, float groundY)
+    {
+        if (ShouldExcludeFromNavMesh(renderer, groundY))
+            return false;
+
+        if (IsRoadOrGroundMesh(renderer.gameObject.name))
+            return true;
+
+        Bounds b = renderer.bounds;
+        return IsLowFlatWalkSurface(b, groundY, 0.85f);
+    }
+
+    private static bool ShouldIncludeColliderInNavMesh(Collider collider, float groundY)
+    {
+        string n = collider.name.ToLowerInvariant();
+        if (IsNonWalkableColliderName(n))
+            return false;
+
+        if (IsRoadOrGroundMesh(collider.name))
+            return true;
+
+        return IsLowFlatWalkSurface(collider.bounds, groundY, 0.85f);
+    }
+
+    private static bool IsNonWalkableColliderName(string lowerName)
+    {
+        return lowerName.Contains("wall") || lowerName.Contains("roof") || lowerName.Contains("fence")
+            || lowerName.Contains("container") || lowerName.Contains("barrel") || lowerName.Contains("pipe")
+            || lowerName.Contains("ladder") || lowerName.Contains("door") || lowerName.Contains("pillar")
+            || lowerName.Contains("column") || lowerName.Contains("trigger") || lowerName.Contains("player")
+            || lowerName.Contains("enemy");
+    }
+
+    private static bool IsLowFlatWalkSurface(Bounds bounds, float groundY, float maxHeightAboveGround)
+    {
+        float horizontal = Mathf.Max(bounds.size.x, bounds.size.z);
+        if (horizontal < 0.75f)
+            return false;
+
+        if (bounds.max.y > groundY + maxHeightAboveGround)
+            return false;
+
+        if (bounds.size.y > 0.45f && bounds.size.y > horizontal * 0.22f)
+            return false;
+
+        return bounds.size.y <= 0.45f || bounds.size.y <= horizontal * 0.12f;
+    }
+
+    private static bool ShouldExcludeFromNavMesh(Renderer renderer, float groundY)
+    {
+        string n = renderer.name.ToLowerInvariant();
+        if (IsNonWalkableColliderName(n))
+            return true;
+
+        if (n.Contains("rooftop") || n.Contains("balcony") || n.Contains("catwalk")
+            || n.Contains("parapet") || n.Contains("terrace") || n.Contains("railing")
+            || n.Contains("antenna") || n.Contains("sign") || n.Contains("hangar")
+            || n.Contains("building") || n.Contains("container") || n.Contains("cargo")
+            || n.Contains("tank") || n.Contains("silo") || n.Contains("chimney")
+            || n.Contains("generator") || n.Contains("dumpster") || n.Contains("crate")
+            || n.Contains("barrier") || n.Contains("prop") || n.Contains("office")
+            || n.Contains("interior") || n.Contains("beam") || n.Contains("stair")
+            || n.Contains("step") || n.Contains("bridge") || n.Contains("overpass"))
+            return true;
+
+        Bounds b = renderer.bounds;
+        float horizontal = Mathf.Max(b.size.x, b.size.z);
+        if (b.size.y > 1.35f && b.size.y > horizontal * 0.55f)
+            return true;
+
+        bool flatSlab = b.size.y < 1.25f && b.size.x > 2.0f && b.size.z > 2.0f;
+        if (flatSlab && b.center.y > groundY + 2.0f)
+            return true;
+
+        if (!IsRoadOrGroundMesh(renderer.name) && b.max.y > groundY + 1.35f && horizontal < 6f)
+            return true;
+
+        return false;
     }
 
     private void TryInitializeOptionalAISystems()
@@ -2216,8 +2419,10 @@ public class LevelBuilder : MonoBehaviour
 
     private void EnsurePauseMenu()
     {
-        if (GetComponent<PauseMenuController>() == null)
-            gameObject.AddComponent<PauseMenuController>();
+        PauseMenuController pause = GetComponent<PauseMenuController>();
+        if (pause == null)
+            pause = gameObject.AddComponent<PauseMenuController>();
+        pause.enabled = true;
     }
 
     private void EnsureMinimapCamera()
@@ -2937,6 +3142,8 @@ public class LevelBuilder : MonoBehaviour
 
         // 3. Stabilise the floor across both procedural and tagged content.
         if (arena != null) StabilizeGround(arena);
+        MarkNavMeshWalkability();
+        MapAtmosphereCleanup.RemoveFromActiveScene();
 
         foreach (string tag in LevelContentTags)
         {
