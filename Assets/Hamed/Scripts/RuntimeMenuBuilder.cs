@@ -9,7 +9,14 @@ using UnityEngine.InputSystem.UI;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using UnityEngine.Networking;
+#if UNITY_EDITOR
+using UnityEditor;
+using UnityEditor.SceneManagement;
+#endif
 
+#if UNITY_EDITOR
+[ExecuteAlways]
+#endif
 public class RuntimeMenuBuilder : MonoBehaviour
 {
     public Sprite backgroundImage;
@@ -48,6 +55,116 @@ public class RuntimeMenuBuilder : MonoBehaviour
         BuildCurrentScreen();
     }
 
+#if UNITY_EDITOR
+    private static bool _editorPreviewQueued;
+
+    private void OnEnable()
+    {
+        if (!Application.isPlaying)
+            QueueEditorMenuPreview();
+    }
+
+    [InitializeOnLoadMethod]
+    private static void RegisterEditorMenuPreview()
+    {
+        EditorApplication.delayCall -= QueueGlobalEditorMenuPreview;
+        EditorApplication.delayCall += QueueGlobalEditorMenuPreview;
+        EditorSceneManager.sceneOpened -= OnEditorSceneOpenedForMenu;
+        EditorSceneManager.sceneOpened += OnEditorSceneOpenedForMenu;
+    }
+
+    private static void OnEditorSceneOpenedForMenu(Scene scene, OpenSceneMode mode)
+    {
+        if (Application.isPlaying || !scene.IsValid() || scene.name != "MainMenu")
+            return;
+
+        QueueGlobalEditorMenuPreview();
+    }
+
+    private static void QueueGlobalEditorMenuPreview()
+    {
+        if (Application.isPlaying)
+            return;
+
+        Scene scene = SceneManager.GetActiveScene();
+        if (!scene.IsValid() || scene.name != "MainMenu")
+            return;
+
+        RuntimeMenuBuilder builder = Object.FindFirstObjectByType<RuntimeMenuBuilder>();
+        if (builder != null)
+            builder.QueueEditorMenuPreview();
+    }
+
+    private void QueueEditorMenuPreview()
+    {
+        if (Application.isPlaying || _editorPreviewQueued)
+            return;
+
+        _editorPreviewQueued = true;
+        EditorApplication.delayCall += RunEditorMenuPreviewDeferred;
+    }
+
+    private void RunEditorMenuPreviewDeferred()
+    {
+        _editorPreviewQueued = false;
+        if (this == null || !isActiveAndEnabled || Application.isPlaying)
+            return;
+
+        Scene scene = SceneManager.GetActiveScene();
+        if (!scene.IsValid() || scene.name != "MainMenu")
+            return;
+
+        customFont = ResolveMenuFont();
+        EnsureEventSystem();
+        BuildCurrentScreen();
+        DisableLegacyEmptyCanvas();
+    }
+
+    private static void DisableLegacyEmptyCanvas()
+    {
+        GameObject canvas = GameObject.Find("Canvas");
+        if (canvas == null || canvas.name == "NeonCanvas")
+            return;
+
+        Canvas c = canvas.GetComponent<Canvas>();
+        if (c != null && canvas.transform.childCount == 0)
+            canvas.SetActive(false);
+    }
+
+    [MenuItem("PRISM/Rebuild Main Menu Preview")]
+    private static void RebuildMainMenuPreviewMenu()
+    {
+        if (Application.isPlaying)
+            return;
+
+        RuntimeMenuBuilder builder = Object.FindFirstObjectByType<RuntimeMenuBuilder>();
+        if (builder == null)
+        {
+            Debug.LogWarning("[RuntimeMenuBuilder] No RuntimeMenuBuilder found in the active scene.");
+            return;
+        }
+
+        builder.customFont = builder.ResolveMenuFont();
+        builder.EnsureEventSystem();
+        builder.BuildCurrentScreen();
+        DisableLegacyEmptyCanvas();
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+    }
+#endif
+
+    private void DestroyUiObject(Object obj)
+    {
+        if (obj == null)
+            return;
+
+#if UNITY_EDITOR
+        if (!Application.isPlaying)
+            DestroyImmediate(obj);
+        else
+#endif
+            Destroy(obj);
+    }
+
     void EnsureEventSystem()
     {
         EventSystem eventSystem = FindFirstObjectByType<EventSystem>();
@@ -60,7 +177,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject eventSystemObject = eventSystem.gameObject;
         StandaloneInputModule legacyModule = eventSystemObject.GetComponent<StandaloneInputModule>();
         if (legacyModule != null)
-            Destroy(legacyModule);
+            DestroyUiObject(legacyModule);
 
         InputSystemUIInputModule inputModule = eventSystemObject.GetComponent<InputSystemUIInputModule>();
         if (inputModule == null)
@@ -74,7 +191,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     {
         GameObject existingCanvas = GameObject.Find("NeonCanvas");
         if (existingCanvas != null)
-            Destroy(existingCanvas);
+            DestroyUiObject(existingCanvas);
 
         bool isMainMenu = (GameManager.Instance == null || GameManager.PendingMenuScreen == GameManager.MenuScreen.MainMenu);
         if (isMainMenu)
@@ -82,7 +199,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             RemoveLegacyCinematicStage();
             GameObject strayMenuAnim = GameObject.Find("BackgroundAnimationOverlay");
             if (strayMenuAnim != null)
-                Destroy(strayMenuAnim);
+                DestroyUiObject(strayMenuAnim);
         }
 
         GameObject canvasObj = new GameObject("NeonCanvas");
@@ -108,7 +225,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         }
 
         // ─── LOBBY MUSIC ─────────────────────────────────────────────────────
-        if (isMainMenu)
+        if (isMainMenu && Application.isPlaying)
         {
             SetupLobbyMusic();
         }
@@ -135,7 +252,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     {
         GameObject existing = GameObject.Find("CinematicStage");
         if (existing != null)
-            Destroy(existing);
+            DestroyUiObject(existing);
     }
 
     Sprite ResolveMainMenuBackground()

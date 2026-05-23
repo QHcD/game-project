@@ -29,6 +29,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private static PlayerController s_scenePlayer;
     private static float s_scenePlayerRefreshTime = -999f;
     private const float ChaseGateRecheckInterval = 0.65f;
+    private const float CombatStoppingDistance = 0.08f;
+    private const float StrictMeleeStrikeFactor = 0.88f;
 
     private const string PrefKeySicklePos = "Grip.Player.L13.Sickle.Pos";
     private const string PrefKeySickleEuler = "Grip.Player.L13.Sickle.Euler";
@@ -300,7 +302,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     // ── State ────────────────────────────────────────────────────────────────
   // ── State ────────────────────────────────────────────────────────────────
-    private enum State { Idle, Patrol, Chase, Attack, Evade, StuckRecovery, Flinch, Jumping, Dead }
+    private enum State { Idle, Patrol, Chase, Approach, Attack, Evade, StuckRecovery, Flinch, Jumping, Dead }
     private State _state = State.Idle;
 
     private NavMeshAgent _agent;
@@ -389,7 +391,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool _isTraversingOffMeshLink;
     private float _flowFieldSteerTimer;
     private Coroutine _attackHitboxRoutine;
+    private Coroutine _katanaAttackResolveRoutine;
     private WeaponHitbox _equippedWeaponHitbox;
+    private bool _attackInProgress;
+    private bool _attackSwingLanded;
     private float _repathTimer;
     private float _chaseGateTimer;
     private Transform _chaseGateTarget;
@@ -759,6 +764,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             case State.Idle:           UpdateIdle();           break;
             case State.Patrol:         UpdatePatrol();         break;
             case State.Chase:          UpdateChase();          break;
+            case State.Approach:       UpdateApproach();       break;
             case State.Attack:         UpdateAttack();         break;
             case State.Evade:          UpdateEvade();          break;
             case State.StuckRecovery:  UpdateStuckRecovery(); break;
@@ -1162,44 +1168,105 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        float dist = Vector3.Distance(transform.position, _target.position);
-        float engageDist = attackRadius + attackRangePadding;
-
-        if (dist <= engageDist && HasCombatVisionTo(_target) &&
-            IsFacingTarget(_target, attackFacingAngle))
+        if (CanBeginMeleeAttack() && !_attackInProgress)
         {
             TransitionTo(State.Attack);
             return;
         }
 
-        if (IsAgentReady())
+        float distSqr = GetTargetHorizontalDistanceSqr();
+        if (distSqr <= GetApproachEnterDistanceSqr())
         {
-            if (_agent.isStopped)
-                _agent.isStopped = false;
-
-            float targetSpeed = chaseSpeed;
-            PlayerController pc = _target != null
-                ? _target.GetComponentInParent<PlayerController>()
-                : null;
-            if (pc != null)
-            {
-                float playerTopSpeed = pc.moveSpeed * pc.sprintMultiplier;
-                float boosted = Mathf.Max(chaseSpeed, playerTopSpeed + 0.35f);
-                targetSpeed = Mathf.Min(sprintChaseSpeed, boosted);
-            }
-
-            _agent.speed = targetSpeed;
-            _agent.acceleration = agentAcceleration;
-            _agent.angularSpeed = agentAngularSpeed;
-            _agent.autoBraking = false;
-            _agent.stoppingDistance = Mathf.Max(0.08f, attackRadius * 0.85f);
-
-            TryRefreshChaseDestination();
+            TransitionTo(State.Approach);
+            return;
         }
 
+        DriveTargetPursuit(ResolveChaseSpeed(), CombatStoppingDistance);
         CheckAndJumpIfStuck();
         CheckNoPathLedgeDrop();
         TickCombatManeuver();
+    }
+
+    private void UpdateApproach()
+    {
+        if (HandleOffMeshLinkTraversal())
+            return;
+
+        if (!IsTargetValid(_target))
+        {
+            _target = null;
+            TransitionTo(State.Patrol);
+            return;
+        }
+
+        float distSqr = GetTargetHorizontalDistanceSqr();
+        if (distSqr > GetMeleeBreakDistanceSqr() || !HasCombatVisionTo(_target))
+        {
+            TransitionTo(State.Chase);
+            return;
+        }
+
+        if (CanBeginMeleeAttack() && !_attackInProgress)
+        {
+            TransitionTo(State.Attack);
+            return;
+        }
+
+        Vector3 toTarget = _target.position - transform.position;
+        toTarget.y = 0f;
+        if (toTarget.sqrMagnitude > 0.02f)
+            FaceDirection(toTarget);
+
+        DriveTargetPursuit(ResolveChaseSpeed(), CombatStoppingDistance);
+        CheckAndJumpIfStuck();
+        CheckNoPathLedgeDrop();
+    }
+
+    private void UpdateAttack()
+    {
+        if (HandleOffMeshLinkTraversal())
+            return;
+
+        if (!IsTargetValid(_target))
+        {
+            AbortActiveAttack();
+            _target = null;
+            TransitionTo(State.Patrol);
+            return;
+        }
+
+        float distSqr = GetTargetHorizontalDistanceSqr();
+        float strikeSqr = GetStrictMeleeStrikeRangeSqr();
+        if (distSqr > GetMeleeBreakDistanceSqr() || !HasCombatVisionTo(_target))
+        {
+            AbortActiveAttack();
+            TransitionTo(State.Chase);
+            return;
+        }
+
+        if (distSqr > strikeSqr)
+        {
+            AbortActiveAttack();
+            TransitionTo(State.Chase);
+            return;
+        }
+
+        if (IsAgentReady())
+        {
+            _agent.isStopped = true;
+            _agent.velocity = Vector3.zero;
+        }
+
+        Vector3 toTarget = _target.position - transform.position;
+        toTarget.y = 0f;
+        if (toTarget.sqrMagnitude > 0.02f)
+            FaceDirection(toTarget);
+
+        if (!_attackInProgress && _attackTimer <= 0f && CanBeginMeleeAttack())
+        {
+            _attackTimer = attackCooldown;
+            ExecuteAttack();
+        }
     }
 
     private float _noPathLedgeTimer;
@@ -1277,48 +1344,6 @@ public class EnemyController : MonoBehaviour, IDamageable
             RepositionOnInvalidPath();
             if (debugAI)
                 Debug.Log($"[EnemyAI] {name} flow chase goal unreachable ({_pathScratch.status}).", this);
-        }
-    }
-
-    private void UpdateAttack()
-    {
-        if (HandleOffMeshLinkTraversal())
-            return;
-
-        if (!IsTargetValid(_target))
-        {
-            _target = null;
-            TransitionTo(State.Patrol);
-            return;
-        }
-
-        if (IsAgentReady())
-        {
-            _agent.isStopped = true;
-            _agent.velocity = Vector3.zero;
-        }
-
-        Vector3 toTarget = _target.position - transform.position;
-        toTarget.y = 0f;
-        float dist = toTarget.magnitude;
-
-        float breakDist = attackRadius + attackRangePadding + breakAttackPadding;
-        if (dist > breakDist || !HasCombatVisionTo(_target))
-        {
-            TransitionTo(State.Chase);
-            return;
-        }
-
-        FaceDirection(toTarget);
-
-        float engageDist = attackRadius + attackRangePadding;
-        if (dist <= engageDist && IsFacingTarget(_target, attackFacingAngle) && HasCombatVisionTo(_target))
-        {
-            if (_attackTimer <= 0f)
-            {
-                _attackTimer = attackCooldown;
-                ExecuteAttack();
-            }
         }
     }
 
@@ -1874,22 +1899,157 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     // ── Combat ────────────────────────────────────────────────────────────────
+    public float GetStrictMeleeStrikeRange()
+    {
+        return Mathf.Max(0.65f, meleeAttackRange * StrictMeleeStrikeFactor);
+    }
+
+    private float GetStrictMeleeStrikeRangeSqr()
+    {
+        float strike = GetStrictMeleeStrikeRange();
+        return strike * strike;
+    }
+
+    private float GetTargetHorizontalDistanceSqr()
+    {
+        if (_target == null)
+            return float.MaxValue;
+
+        Vector3 delta = _target.position - transform.position;
+        delta.y = 0f;
+        return delta.sqrMagnitude;
+    }
+
+    private float GetApproachEnterDistanceSqr()
+    {
+        float enterDist = meleeAttackRange + Mathf.Max(0.15f, attackRangePadding * 0.5f);
+        return enterDist * enterDist;
+    }
+
+    private float GetMeleeBreakDistanceSqr()
+    {
+        float breakDist = meleeAttackRange + Mathf.Max(0.25f, breakAttackPadding * 0.5f);
+        return breakDist * breakDist;
+    }
+
+    private bool IsWithinMeleeAttackRange()
+    {
+        return GetTargetHorizontalDistanceSqr() <= GetStrictMeleeStrikeRangeSqr();
+    }
+
+    private bool CanBeginMeleeAttack()
+    {
+        return _target != null
+            && IsWithinMeleeAttackRange()
+            && HasCombatVisionTo(_target)
+            && IsFacingTarget(_target, attackFacingAngle);
+    }
+
+    private float ResolveChaseSpeed()
+    {
+        float targetSpeed = chaseSpeed;
+        PlayerController pc = _target != null ? _target.GetComponentInParent<PlayerController>() : null;
+        if (pc != null)
+        {
+            float playerTopSpeed = pc.moveSpeed * pc.sprintMultiplier;
+            float boosted = Mathf.Max(chaseSpeed, playerTopSpeed + 0.35f);
+            targetSpeed = Mathf.Min(sprintChaseSpeed, boosted);
+        }
+
+        return targetSpeed;
+    }
+
+    private void DriveTargetPursuit(float speed, float stoppingDistance)
+    {
+        if (!IsAgentReady())
+            return;
+
+        _agent.isStopped = false;
+        _agent.speed = speed;
+        _agent.acceleration = agentAcceleration;
+        _agent.angularSpeed = agentAngularSpeed;
+        _agent.autoBraking = false;
+        _agent.stoppingDistance = stoppingDistance;
+        TryRefreshChaseDestination();
+    }
+
+    public void RegisterMeleeHitLanded()
+    {
+        _attackSwingLanded = true;
+    }
+
+    public void NotifyMeleeAttackMissed()
+    {
+        if (_state != State.Attack && !_attackInProgress)
+            return;
+
+        AbortActiveAttack();
+        if (_target != null && IsTargetValid(_target))
+            TransitionTo(State.Chase);
+        else
+            TransitionTo(State.Patrol);
+    }
+
+    private void AbortActiveAttack()
+    {
+        if (_attackHitboxRoutine != null)
+        {
+            StopCoroutine(_attackHitboxRoutine);
+            _attackHitboxRoutine = null;
+        }
+
+        if (_katanaAttackResolveRoutine != null)
+        {
+            StopCoroutine(_katanaAttackResolveRoutine);
+            _katanaAttackResolveRoutine = null;
+        }
+
+        if (_equippedWeaponHitbox != null)
+            _equippedWeaponHitbox.DisableHitbox();
+
+        _attackInProgress = false;
+        _attackSwingLanded = false;
+    }
+
+    private void CompleteAttackSwing(bool resumeChaseOnMiss)
+    {
+        if (_equippedWeaponHitbox != null)
+            _equippedWeaponHitbox.DisableHitbox();
+
+        _attackInProgress = false;
+        _attackHitboxRoutine = null;
+
+        if (resumeChaseOnMiss && !_attackSwingLanded && _target != null && IsTargetValid(_target))
+            TransitionTo(State.Chase);
+
+        _attackSwingLanded = false;
+    }
+
     private void ExecuteAttack()
     {
-        float distToTarget = _target != null ? Vector3.Distance(transform.position, _target.position) : -1f;
-        Debug.Log($"[L9Combat] ATTACK_STARTED attacker={name} target={(_target != null ? _target.name : "null")} dist={distToTarget:F2} attackRadius={attackRadius:F2}");
+        if (!CanBeginMeleeAttack())
+        {
+            if (_target != null && IsTargetValid(_target))
+                TransitionTo(State.Chase);
+            return;
+        }
+
+        _attackInProgress = true;
+        _attackSwingLanded = false;
 
         if (CombatDebug.Enabled)
             CombatDebug.Log($"EnemyAttack started enemy={name}");
 
-        // KatanaCombatHandler owns the full attack pipeline for the katana level.
-        // It fires the animator trigger, casts the hit-box on the animation event,
-        // and routes damage through Photon RPC in multiplayer — so we return early
-        // and skip the WeaponHitbox coroutine entirely.
         KatanaCombatHandler katanaHandler = GetComponent<KatanaCombatHandler>();
         if (katanaHandler != null)
         {
-            katanaHandler.TriggerAttack();
+            if (!katanaHandler.TriggerAttack())
+            {
+                _attackInProgress = false;
+                return;
+            }
+
+            _katanaAttackResolveRoutine = StartCoroutine(KatanaAttackResolveRoutine());
             return;
         }
 
@@ -1903,11 +2063,17 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_equippedWeaponHitbox != null)
             _equippedWeaponHitbox.DisableHitbox();
 
-        // Damage fires only through the timed hitbox window so it aligns with
-        // the swing animation — the immediate strike was removed because it applied
-        // damage at animation start (before the weapon reaches the player), making
-        // enemies appear to hit from a distance.
         _attackHitboxRoutine = StartCoroutine(AttackHitboxWindowRoutine());
+    }
+
+    private IEnumerator KatanaAttackResolveRoutine()
+    {
+        float resolveTime = attackHitboxWindup + attackHitboxActiveTime + 0.05f;
+        if (resolveTime > 0f)
+            yield return new WaitForSeconds(resolveTime);
+
+        _katanaAttackResolveRoutine = null;
+        CompleteAttackSwing(resumeChaseOnMiss: true);
     }
 
     private void DriveChaseWithFlowField()
@@ -1939,45 +2105,37 @@ public class EnemyController : MonoBehaviour, IDamageable
     {
         if (_equippedWeaponHitbox == null)
         {
-            Debug.LogWarning($"[L9Combat] HITBOX_NULL — attacker={name} has no WeaponHitbox, attack will deal no damage.");
+            CompleteAttackSwing(resumeChaseOnMiss: true);
             yield break;
         }
 
         _equippedWeaponHitbox.DisableHitbox();
-        Debug.Log($"[L9Combat] HITBOX_DISABLED (pre-windup) attacker={name} windup={attackHitboxWindup:F2}s");
 
         if (attackHitboxWindup > 0f)
             yield return new WaitForSeconds(attackHitboxWindup);
 
-        // Post-windup distance gate: if the target moved out of melee range during
-        // the windup animation, cancel the swing before the hitbox becomes active.
         if (_target != null)
         {
-            float sqrDist  = (_target.position - transform.position).sqrMagnitude;
-            float sqrRange = meleeAttackRange * meleeAttackRange;
-            if (sqrDist > sqrRange)
+            Vector3 delta = _target.position - transform.position;
+            delta.y = 0f;
+            if (delta.sqrMagnitude > GetStrictMeleeStrikeRangeSqr() || !HasCombatVisionTo(_target))
             {
-                float actualDist = Mathf.Sqrt(sqrDist);
-                Debug.Log($"[MeleeGate] SWING_CANCELLED_POST_WINDUP — attacker={name} target={_target.name} " +
-                          $"dist={actualDist:F2} meleeAttackRange={meleeAttackRange:F2} (target left range during windup)");
-                _equippedWeaponHitbox.DisableHitbox();
-                _attackHitboxRoutine = null;
+                CompleteAttackSwing(resumeChaseOnMiss: true);
                 yield break;
             }
         }
 
         Physics.SyncTransforms();
-        _equippedWeaponHitbox.meleeAttackRange = meleeAttackRange;
+        _equippedWeaponHitbox.meleeAttackRange = GetStrictMeleeStrikeRange();
+        _equippedWeaponHitbox.maxAttackRange = GetStrictMeleeStrikeRange() + 0.35f;
         _equippedWeaponHitbox.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
+        _equippedWeaponHitbox.SetAttackTarget(_target);
         _equippedWeaponHitbox.EnableHitbox();
-        Debug.Log($"[L9Combat] HITBOX_ENABLED attacker={name} damage={_equippedWeaponHitbox.damage} activeWindow={attackHitboxActiveTime:F2}s meleeAttackRange={meleeAttackRange:F2}");
 
         if (attackHitboxActiveTime > 0f)
             yield return new WaitForSeconds(attackHitboxActiveTime);
 
-        _equippedWeaponHitbox.DisableHitbox();
-        Debug.Log($"[L9Combat] HITBOX_DISABLED (end of window) attacker={name}");
-        _attackHitboxRoutine = null;
+        CompleteAttackSwing(resumeChaseOnMiss: true);
     }
 
     public void TakeDamage(int amount, bool byPlayer = false)
@@ -2856,7 +3014,10 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        if (_state != State.Chase && _state != State.Attack && _state != State.Evade
+        if (_state == State.Attack || _state == State.Flinch)
+            return;
+
+        if (_state != State.Chase && _state != State.Approach && _state != State.Evade
             && _state != State.Jumping && _state != State.Flinch && _state != State.StuckRecovery)
             return;
 
@@ -2948,7 +3109,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_agent == null) return;
 
         _agent.speed                 = chaseSpeed;
-        _agent.stoppingDistance      = Mathf.Max(0.08f, attackRadius * 0.85f);
+        _agent.stoppingDistance      = CombatStoppingDistance;
         _agent.acceleration          = agentAcceleration;
         _agent.angularSpeed          = agentAngularSpeed;
         _agent.avoidancePriority     = Random.Range(30, 70);
@@ -2969,6 +3130,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (newState == State.StuckRecovery && prevState != State.StuckRecovery)
             _resumeAfterStuck = MapResumeAfterStuck(prevState);
 
+        if (prevState == State.Attack && newState != State.Attack)
+            AbortActiveAttack();
+
         _state = newState;
 
         if (debugAICombat)
@@ -2987,8 +3151,14 @@ public class EnemyController : MonoBehaviour, IDamageable
                 break;
 
             case State.Chase:
-                // Re-engage the agent and immediately seed a destination so
-                // there is never a frame where the agent reports no path.
+                _agent.isStopped = false;
+                _idleTimer = 0f;
+                _repathTimer = 0f;
+                if (IsTargetValid(_target))
+                    TrySetChaseDestinationValidated();
+                break;
+
+            case State.Approach:
                 _agent.isStopped = false;
                 _idleTimer = 0f;
                 _repathTimer = 0f;
@@ -2997,8 +3167,6 @@ public class EnemyController : MonoBehaviour, IDamageable
                 break;
 
             case State.Attack:
-                // Stop in place BUT keep the last path so we can resume
-                // chasing instantly on hysteresis break without a re-path delay.
                 _agent.isStopped = true;
                 _agent.velocity  = Vector3.zero;
                 break;
@@ -3030,6 +3198,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         switch (previous)
         {
             case State.Attack:
+            case State.Approach:
             case State.Flinch:
                 return State.Chase;
             default:
@@ -3420,18 +3589,10 @@ public class EnemyController : MonoBehaviour, IDamageable
                 WeaponHitbox wh = equippedWeaponObject.GetComponent<WeaponHitbox>();
                 if (wh == null) wh = equippedWeaponObject.AddComponent<WeaponHitbox>();
                 wh.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
-                wh.meleeAttackRange = meleeAttackRange;
+                wh.meleeAttackRange = GetStrictMeleeStrikeRange();
+                wh.maxAttackRange = GetStrictMeleeStrikeRange() + 0.35f;
                 if (level == 12)
-                {
                     wh.overlapRadius = 0.45f;
-                    float engageDist12 = attackRadius + attackRangePadding;
-                    float tipDist12    = Mathf.Clamp(engageDist12 * 0.55f, 0.6f, 2.5f);
-                    wh.maxAttackRange  = tipDist12 + wh.overlapRadius + 0.1f;
-                }
-                else
-                {
-                    wh.maxAttackRange = attackRadius + 1.0f;
-                }
                 _equippedWeaponHitbox = wh;
                 _equippedWeaponPrefab = weaponPrefab;
                 _equippedWeaponLevel = level;
@@ -3603,22 +3764,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         WeaponHitbox hitbox = equippedWeaponObject.GetComponent<WeaponHitbox>();
         if (hitbox == null) hitbox = equippedWeaponObject.AddComponent<WeaponHitbox>();
         hitbox.damage = (int)attackDamage;
+        hitbox.meleeAttackRange = GetStrictMeleeStrikeRange();
+        hitbox.maxAttackRange = GetStrictMeleeStrikeRange() + 0.35f;
         if (level == 12)
-        {
-            // Derive max range from the same formula WeaponHitbox uses to place
-            // the tip sphere (GetWeaponTipWorldPosition: tipDist = engageDist * 0.55,
-            // clamped 0.6–2.5). A hit is only valid if the target is within actual
-            // physical reach: tipDist + overlapRadius + a 0.1 m tolerance.
             hitbox.overlapRadius = 0.45f;
-            float engageDist = attackRadius + attackRangePadding;
-            float tipDist    = Mathf.Clamp(engageDist * 0.55f, 0.6f, 2.5f);
-            hitbox.maxAttackRange = tipDist + hitbox.overlapRadius + 0.1f;
-        }
-        else
-        {
-            hitbox.maxAttackRange = attackRadius + 1.0f;
-        }
-        hitbox.meleeAttackRange = meleeAttackRange;
         hitbox.DisableHitbox();
         _equippedWeaponHitbox = hitbox;
 

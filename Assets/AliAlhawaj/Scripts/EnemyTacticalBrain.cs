@@ -284,6 +284,14 @@ public class EnemyTacticalBrain : MonoBehaviour
         if (target == null) { _stance = Stance.Pressure; return; }
 
         float dist = Vector3.Distance(transform.position, target.position);
+        float strikeRange = _ctrl.meleeAttackRange;
+
+        if (dist > strikeRange)
+        {
+            _stance = Stance.Pressure;
+            return;
+        }
+
         float hpFrac = _ctrl.maxHealth > 0
             ? (float)_ctrl.CurrentHealth / _ctrl.maxHealth
             : 1f;
@@ -303,16 +311,6 @@ public class EnemyTacticalBrain : MonoBehaviour
             return;
         }
 
-        float engage = _personality != null ? _personality.preferredEngageDistance : 1.9f;
-        bool inMelee = dist <= engage + 1.2f;
-
-        if (!inMelee)
-        {
-            _stance = Stance.Pressure;
-            return;
-        }
-
-        // In melee: mix between strafe-circle and wait-punish based on personality.
         float roll = Random.value;
         if (roll < mobilityFactor * 0.7f)
         {
@@ -370,6 +368,17 @@ public class EnemyTacticalBrain : MonoBehaviour
             }
         }
         if (allyContacts > 0) antiStack /= allyContacts;
+
+        if (dist > _ctrl.meleeAttackRange)
+        {
+            if (antiStack.sqrMagnitude < 0.0001f)
+                return;
+
+            Vector3 pressureDest = _agent.destination + antiStack;
+            if (NavMesh.SamplePosition(pressureDest, out NavMeshHit pressureHit, 2.5f, NavMesh.AllAreas))
+                _agent.SetDestination(pressureHit.position);
+            return;
+        }
 
         Vector3 desired;
         switch (_stance)

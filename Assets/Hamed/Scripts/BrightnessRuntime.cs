@@ -13,12 +13,18 @@ public static class BrightnessRuntime
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void OnBoot()
     {
+        if (!Application.isPlaying)
+            return;
+
         float b = Mathf.Clamp01(PlayerPrefs.GetFloat(SettingsManager.BrightnessKey, 1f));
         ApplyNow(b);
     }
 
     public static void ApplyNow(float brightness01)
     {
+        if (!Application.isPlaying)
+            return;
+
         EnsureOverlay();
 
         // brightness01: 0 -> dimmest, 1 -> brightest
@@ -36,7 +42,8 @@ public static class BrightnessRuntime
         if (host == null)
         {
             host = new GameObject("__BrightnessOverlayCanvas");
-            Object.DontDestroyOnLoad(host);
+            if (Application.isPlaying)
+                Object.DontDestroyOnLoad(host);
         }
 
         _canvas = host.GetComponent<Canvas>();

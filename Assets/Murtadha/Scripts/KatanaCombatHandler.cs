@@ -179,52 +179,108 @@ public class KatanaCombatHandler : MonoBehaviour
     /// </summary>
     public void OnKatanaStrike()
     {
-        if (!IsLocallyOwned())      return; // remote copies: wait for the RPC
-        if (_hitRegisteredThisSwing) return; // one damage event per swing
+        if (!IsLocallyOwned())      return;
+        if (_hitRegisteredThisSwing) return;
 
         if (katanaGrip == null || katanaGrip.bladeCenter == null)
         {
-            Debug.LogWarning($"[KatanaCombatHandler] '{name}': OnKatanaStrike fired but " +
-                             "katanaGrip or bladeCenter is not assigned.  No hit registered.");
+            if (isAI)
+                NotifyEnemyKatanaMiss();
             return;
         }
 
-        _hitRegisteredThisSwing = true;
-
-        // ── Physics cast ────────────────────────────────────────────────────
-        Vector3    center      = katanaGrip.bladeCenter.position;
-        Quaternion orientation = katanaGrip.bladeCenter.rotation;
-        Vector3    halfExtents = katanaGrip.bladeBoxHalfExtents;
-
+        Vector3 bladePoint = katanaGrip.bladeCenter.position;
         Collider[] hits = Physics.OverlapBox(
-            center, halfExtents, orientation,
-            hitLayers, QueryTriggerInteraction.Ignore);
+            bladePoint,
+            katanaGrip.bladeBoxHalfExtents,
+            katanaGrip.bladeCenter.rotation,
+            hitLayers,
+            QueryTriggerInteraction.Ignore);
 
         if (CombatDebug.Enabled)
             CombatDebug.Log($"[KatanaCombatHandler] '{name}' OnKatanaStrike: {hits.Length} collider(s) in range.");
 
+        bool landedHit = false;
+        EnemyController enemyController = isAI ? GetComponent<EnemyController>() : null;
+        Transform aiTarget = enemyController != null ? enemyController.CurrentTarget : null;
+        float aiStrikeRange = enemyController != null ? enemyController.GetStrictMeleeStrikeRange() : 0f;
+
         foreach (Collider col in hits)
         {
-            // Never damage our own body.
             if (col.transform.IsChildOf(transform.root) || col.transform == transform.root)
                 continue;
 
-            // Find IDamageable walking up from the hit collider's root.
             IDamageable target = col.GetComponentInParent<IDamageable>()
                               ?? col.GetComponentInChildren<IDamageable>(true);
 
             if (target == null || !target.IsAlive) continue;
 
-            // Occlusion check: don't deal damage through solid geometry.
-            if (DamageOcclusion.IsBlockedFromPoint(gameObject,
-                    ((MonoBehaviour)target).gameObject, center))
+            GameObject targetRoot = ((MonoBehaviour)target).gameObject;
+
+            if (enemyController != null)
+            {
+                PlayerHealth player = targetRoot.GetComponentInParent<PlayerHealth>();
+                float reach = player != null
+                    ? MeleeBodyTargeting.GetClosestBodyDistance(bladePoint, player.transform)
+                    : HorizontalDistance(transform.position, targetRoot.transform.position);
+
+                if (reach > aiStrikeRange + 0.25f)
+                    continue;
+
+                if (DamageOcclusion.IsBlockedFromPoint(gameObject, targetRoot, bladePoint))
+                    continue;
+            }
+            else if (DamageOcclusion.IsBlockedFromPoint(gameObject, targetRoot, bladePoint))
+            {
                 continue;
+            }
 
             ApplyDamageToTarget(col.transform.root.gameObject, damage);
-
-            // One target per swing.  Remove 'break' for cleave / AoE.
+            landedHit = true;
             break;
         }
+
+        if (!landedHit && enemyController != null && aiTarget != null)
+        {
+            PlayerHealth player = aiTarget.GetComponentInParent<PlayerHealth>();
+            if (player != null && player.IsAlive)
+            {
+                float reach = MeleeBodyTargeting.GetClosestBodyDistance(bladePoint, player.transform);
+                if (reach <= aiStrikeRange + 0.25f
+                    && !DamageOcclusion.IsBlockedFromPoint(gameObject, player.gameObject, bladePoint))
+                {
+                    ApplyDamageToTarget(player.gameObject, damage);
+                    landedHit = true;
+                }
+            }
+        }
+
+        _hitRegisteredThisSwing = true;
+
+        if (isAI && enemyController != null)
+        {
+            if (landedHit)
+                enemyController.RegisterMeleeHitLanded();
+            else
+                enemyController.NotifyMeleeAttackMissed();
+        }
+    }
+
+    private void NotifyEnemyKatanaMiss()
+    {
+        if (!isAI)
+            return;
+
+        EnemyController ec = GetComponent<EnemyController>();
+        if (ec != null)
+            ec.NotifyMeleeAttackMissed();
+    }
+
+    private static float HorizontalDistance(Vector3 a, Vector3 b)
+    {
+        Vector3 delta = b - a;
+        delta.y = 0f;
+        return delta.magnitude;
     }
 
     // ── Damage routing ────────────────────────────────────────────────────────

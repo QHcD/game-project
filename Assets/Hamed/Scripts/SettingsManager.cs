@@ -23,6 +23,9 @@ public static class SettingsManager
 
     public static void ApplyDisplayPreferences()
     {
+        if (!Application.isPlaying)
+            return;
+
         int tier = Mathf.Clamp(PlayerPrefs.GetInt("GraphicsTier", 2), 0, 3);
         int maxQuality = Mathf.Max(0, QualitySettings.names.Length - 1);
         int qualityLevel = tier == 0 ? 0 :
