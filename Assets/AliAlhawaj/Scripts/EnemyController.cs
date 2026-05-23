@@ -371,6 +371,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _stuckTimer;
     private bool  _isGrounded = true;
     private State _preJumpState;
+    private float _jumpTimer;       // safety: max time allowed in Jumping state
+    private const float MaxJumpDuration = 2.5f;
 
     private HashSet<int> _animParameterHashes;
     private Transform _activeWeaponSocket;
@@ -628,7 +630,18 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_agent.isOnNavMesh)
             return;
 
-        if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 20f, NavMesh.AllAreas))
+        // Search downward first (same Y level ±4m) to avoid snapping to elevated
+        // surfaces (rooftops, bridges) that happen to be within a large radius.
+        Vector3 searchOrigin = transform.position;
+        float searchRadius = 4f;
+        if (!float.IsNaN(_spawnY))
+        {
+            // Bias toward spawn Y so the enemy returns to ground level, not a rooftop.
+            searchOrigin.y = _spawnY;
+            searchRadius = Mathf.Max(4f, Mathf.Abs(transform.position.y - _spawnY) + 2f);
+            searchRadius = Mathf.Min(searchRadius, 8f);
+        }
+        if (NavMesh.SamplePosition(searchOrigin, out NavMeshHit hit, searchRadius, NavMesh.AllAreas))
         {
             transform.position = hit.position;
             _agent.Warp(hit.position);
@@ -1008,6 +1021,48 @@ public class EnemyController : MonoBehaviour, IDamageable
                 * Quaternion.Inverse(Quaternion.Euler(-177.177f, -175.886f, 88.481f))
                 * new Vector3(-0.066f, -0.39f, 0.044f);
         }
+
+        // ── General carry-pose match (all levels except 2 & 12 already handled above) ──
+        //
+        // Goal: enemy weapon looks identical to the player's grip in every frame.
+        //
+        // Problem: Crosby (bip_hand_R) and Ronin (j_wrist_ri) have different local
+        // bone axes. Applying the same localEuler produces a different world-space
+        // blade direction on each rig.
+        //
+        // Fix: convert the player's weapon orientation into the player's character
+        // root space, then re-apply that same character-space rotation on the enemy.
+        // This is bone-axis-agnostic — it doesn't matter which skeleton either
+        // character uses. Position is pinned to the enemy's own hand bone so arm
+        // proportions are respected (Crosby's arm != Ronin's arm length).
+        //
+        // Excluded during Attack: the swing animation must run freely.
+        // Excluded for level 2 (katana) and 12 (saw): dedicated blocks above.
+        if (equippedWeaponObject  != null &&
+            _activeWeaponHandBone != null &&
+            _state                != State.Attack &&
+            _equippedWeaponLevel  == 1)
+        {
+            if (_cachedPlayer == null)
+                _cachedPlayer = ResolveScenePlayer();
+
+            if (_cachedPlayer != null && _cachedPlayer.equippedWeaponObject != null)
+            {
+                // Character-space weapon rotation from the player (rig-independent).
+                Quaternion playerCharSpaceRot =
+                    Quaternion.Inverse(_cachedPlayer.transform.rotation)
+                    * _cachedPlayer.equippedWeaponObject.transform.rotation;
+
+                equippedWeaponObject.transform.rotation =
+                    transform.rotation * playerCharSpaceRot;
+
+                // Pin to the enemy's hand bone in world space.
+                // Do NOT copy player's hand-relative position — skeletons differ in
+                // arm length and palm offset, so the weapon must sit at the enemy's
+                // own palm rather than at a position that makes sense only for Ronin.
+                equippedWeaponObject.transform.position = _activeWeaponHandBone.position;
+            }
+        }
     }
 
 
@@ -1143,7 +1198,34 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         CheckAndJumpIfStuck();
+        CheckNoPathLedgeDrop();
         TickCombatManeuver();
+    }
+
+    private float _noPathLedgeTimer;
+
+    // Called every chase frame: if the agent has no valid path at all and the
+    // target is below, try to drop off a ledge to reach the lower NavMesh island.
+    private void CheckNoPathLedgeDrop()
+    {
+        if (!_isGrounded) return;
+        if (_state == State.Jumping) return;
+        if (!IsAgentReady()) return;
+
+        // Only act when the agent genuinely has no path to the target
+        bool noPath = !_agent.hasPath
+                   || _agent.pathStatus == NavMeshPathStatus.PathPartial
+                   || _agent.pathStatus == NavMeshPathStatus.PathInvalid;
+        if (!noPath) return;
+
+        // Target must be meaningfully below us
+        if (_target == null || _target.position.y >= transform.position.y - 0.8f) return;
+
+        _noPathLedgeTimer -= Time.deltaTime;
+        if (_noPathLedgeTimer > 0f) return;
+        _noPathLedgeTimer = 1.2f; // throttle: check at most once per 1.2 s
+
+        TryLedgeDrop();
     }
 
     /// <summary>
@@ -1515,11 +1597,77 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_stuckTimer < stuckTime) return;
         _stuckTimer = 0f;
 
-        // Is there actually an obstacle in front?
+        // Is there a VERTICAL wall obstacle in front (not a slope/ramp)?
         Vector3 origin = transform.position + Vector3.up * 0.6f;
-        if (!Physics.Raycast(origin, transform.forward, obstacleCheckDist)) return;
+        if (Physics.Raycast(origin, transform.forward, out RaycastHit wallHit, obstacleCheckDist))
+        {
+            // Only jump if the hit surface faces mostly horizontal (wall), not upward (slope/ramp)
+            // A surface normal with Y > 0.5 means it slopes upward — treat as ground, not a wall
+            if (wallHit.normal.y < 0.5f)
+            {
+                TryJump();
+                return;
+            }
+        }
 
-        TryJump();
+        // No wall — check for a downward ledge drop (target is below, ground drops ahead)
+        TryLedgeDrop();
+    }
+
+    private void TryLedgeDrop()
+    {
+        if (!_isGrounded) return;
+
+        // Only drop when target is meaningfully below us
+        if (_target != null && _target.position.y >= transform.position.y - 0.8f) return;
+
+        // Determine the best drop direction: toward target (flattened) or forward
+        Vector3 dropDir = _target != null
+            ? (_target.position - transform.position)
+            : transform.forward;
+        dropDir.y = 0f;
+        if (dropDir.sqrMagnitude < 0.001f) dropDir = transform.forward;
+        dropDir.Normalize();
+
+        int groundMask = ~(1 << gameObject.layer);
+
+        // Probe several distances (0.8m, 1.5m, 2.5m) to find ground below the ledge edge
+        float[] probeDistances = { 0.8f, 1.5f, 2.5f };
+        RaycastHit dropHit = default;
+        bool foundDrop = false;
+        foreach (float probe in probeDistances)
+        {
+            Vector3 probePos = transform.position + dropDir * probe + Vector3.up * 0.5f;
+            if (Physics.Raycast(probePos, Vector3.down, out RaycastHit h, 8f, groundMask, QueryTriggerInteraction.Ignore))
+            {
+                float drop = (transform.position.y + 0.5f) - h.point.y;
+                if (drop >= 0.6f &&
+                    NavMesh.SamplePosition(h.point, out NavMeshHit nv, 2f, NavMesh.AllAreas) &&
+                    nv.position.y < transform.position.y - 0.5f)
+                {
+                    dropHit = h;
+                    foundDrop = true;
+                    break;
+                }
+            }
+        }
+
+        if (!foundDrop) return;
+
+        // Execute drop: disable NavMeshAgent, push forward, let gravity handle the fall
+        _preJumpState = _state;
+        _jumpTimer = MaxJumpDuration;
+        TransitionTo(State.Jumping);
+
+        if (_agent != null) _agent.enabled = false;
+        if (_controller != null) _controller.enabled = false;
+        _rb.isKinematic = false;
+
+        // Forward push only — slight downward nudge so the enemy leaves the ledge edge
+        _rb.linearVelocity = new Vector3(dropDir.x * chaseSpeed * 0.7f, -0.5f, dropDir.z * chaseSpeed * 0.7f);
+        _isGrounded = false;
+
+        SetAnimatorBool(HashGrounded, false);
     }
 
     private void TryJump()
@@ -1527,6 +1675,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (!_isGrounded) return;
 
         _preJumpState = _state;
+        _jumpTimer = MaxJumpDuration;
         TransitionTo(State.Jumping);
 
         // Hand movement over to physics
@@ -1604,6 +1753,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         // Use the off-mesh physics path so we don't fight the agent.
         _preJumpState = _state;
+        _jumpTimer = MaxJumpDuration;
         TransitionTo(State.Jumping);
         if (_agent != null) _agent.enabled = false;
         if (_controller != null) _controller.enabled = false;
@@ -1628,6 +1778,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         _preJumpState = _state;
+        _jumpTimer = MaxJumpDuration;
         TransitionTo(State.Jumping);
         if (_agent != null) _agent.enabled = false;
         if (_controller != null) _controller.enabled = false;
@@ -1639,22 +1790,60 @@ public class EnemyController : MonoBehaviour, IDamageable
         SetAnimatorBool(HashGrounded, false);
     }
 
+    private void ForceEndJump()
+    {
+        _isGrounded = true;
+        if (_rb != null)
+        {
+            _rb.linearVelocity = Vector3.zero;
+            _rb.isKinematic    = true;
+        }
+        if (_agent != null)
+        {
+            _agent.enabled = true;
+            Vector3 snapOrigin = float.IsNaN(_spawnY)
+                ? transform.position
+                : new Vector3(transform.position.x, _spawnY, transform.position.z);
+            if (NavMesh.SamplePosition(snapOrigin, out NavMeshHit landHit, 6f, NavMesh.AllAreas))
+                _agent.Warp(landHit.position);
+        }
+        SetAnimatorBool(HashGrounded, true);
+        TransitionTo(_target != null ? _preJumpState : State.Idle);
+    }
+
     private void UpdateJumping()
     {
+        // Safety timeout: if landing detection fails (sloped terrain, missed raycast),
+        // force-end the jump after MaxJumpDuration to prevent permanent floating.
+        _jumpTimer -= Time.deltaTime;
+        if (_jumpTimer <= 0f)
+        {
+            ForceEndJump();
+            return;
+        }
+
         // Apply manual gravity to the Rigidbody while airborne so the arc
         // matches the Player's CharacterController behaviour.
         if (_rb != null && !_rb.isKinematic)
             _rb.linearVelocity += Vector3.up * gravity * Time.deltaTime;
 
-        // Landing check: raycast downward from the character's feet
+        // Landing check: raycast downward. Use 2m so sloped/uneven/ramp terrain
+        // is detected before the enemy overshoots. Exclude triggers; include all
+        // solid layers (environment, default, etc.).
+        int groundMask = ~(1 << gameObject.layer); // exclude own layer to avoid self-hit
         bool hitGround = Physics.Raycast(
-            transform.position + Vector3.up * 0.2f,
+            transform.position + Vector3.up * 0.3f,
             Vector3.down,
-            0.35f,
-            ~0,
+            out RaycastHit groundHit,
+            2f,
+            groundMask,
             QueryTriggerInteraction.Ignore);
 
-        if (hitGround && _rb != null && _rb.linearVelocity.y <= 0.1f)
+        // Also treat it as landed if we've somehow ended up below the spawn Y
+        // (fell through thin geometry on a downward slope).
+        bool fellThrough = !float.IsNaN(_spawnY) && transform.position.y < _spawnY - 0.5f;
+
+        if ((hitGround || fellThrough) && _rb != null && _rb.linearVelocity.y <= 0.15f)
         {
             _isGrounded = true;
             _rb.linearVelocity = Vector3.zero;
@@ -1662,7 +1851,19 @@ public class EnemyController : MonoBehaviour, IDamageable
 
             // Re-hand control back to NavMeshAgent (which owns movement)
             if (_agent != null)
+            {
                 _agent.enabled = true;
+                // Snap to the actual ground hit point (works for ramps & multi-level terrain).
+                // Fall back to _spawnY only when raycast missed (fellThrough case).
+                Vector3 snapOrigin = hitGround
+                    ? groundHit.point + Vector3.up * 0.05f
+                    : new Vector3(transform.position.x, _spawnY, transform.position.z);
+                if (NavMesh.SamplePosition(snapOrigin, out NavMeshHit landHit, 4f, NavMesh.AllAreas))
+                {
+                    _agent.Warp(landHit.position);
+                    _spawnY = landHit.position.y; // update spawn reference to new level
+                }
+            }
             // NOTE: do NOT re-enable _controller — it would fight the agent
             // (the same hybrid that caused the original sluggish/jitter bug).
             SetAnimatorBool(HashGrounded, true);
@@ -4050,5 +4251,55 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             _idleMotionSinceTime = -1f;
         }
+
+        // ── 5. Ground alignment ───────────────────────────────────────────────
+        // Handles the case where the NavMesh is baked at the wrong height in a
+        // section of the map (flat areas with terrain mismatches). The agent is
+        // "on" the NavMesh but floating visually because the baked surface sits
+        // above the actual terrain geometry.
+        //
+        // Runs every ~1.5 s per enemy (staggered by instance ID) — not every
+        // frame, so there is no per-frame raycast cost for a full squad.
+        CheckGroundAlignment();
+    }
+
+    private float _groundAlignTimer;
+
+    private void CheckGroundAlignment()
+    {
+        if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh) return;
+        if (_state == State.Dead || _state == State.Jumping || _state == State.Flinch) return;
+
+        // Stagger per instance so 20 enemies don't all raycast on the same frame.
+        _groundAlignTimer -= Time.deltaTime;
+        if (_groundAlignTimer > 0f) return;
+        _groundAlignTimer = 1.5f + (GetInstanceID() % 7) * 0.07f;
+
+        // Cast downward to find actual solid terrain geometry.
+        int groundMask = ~(1 << gameObject.layer); // exclude own colliders
+        Vector3 origin = transform.position + Vector3.up * 0.15f;
+
+        if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 8f, groundMask, QueryTriggerInteraction.Ignore))
+            return; // no solid ground found below — avoid warping over a pit
+
+        float floatHeight = hit.distance - 0.15f; // metres above actual ground
+
+        // Only act when visually floating more than half a metre.
+        if (floatHeight <= 0.5f) return;
+
+        // Try to find a NavMesh surface at or near the actual ground hit point.
+        Vector3 groundPos = hit.point + Vector3.up * 0.05f;
+        if (!NavMesh.SamplePosition(groundPos, out NavMeshHit navHit, 2f, NavMesh.AllAreas))
+            return;
+
+        // Only warp if the found surface is meaningfully lower than current position.
+        if (transform.position.y - navHit.position.y < 0.35f) return;
+
+        // Update _spawnY so the rooftop watchdog uses the corrected ground reference.
+        _spawnY = navHit.position.y;
+        _agent.Warp(navHit.position);
+
+        if (debugWatchdog)
+            Debug.Log($"[GroundAlign] {name} was floating {floatHeight:F2}m above terrain → warped to ground NavMesh at y={navHit.position.y:F2}", this);
     }
 }
