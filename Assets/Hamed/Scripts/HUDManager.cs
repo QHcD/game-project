@@ -68,6 +68,9 @@ public class HUDManager : MonoBehaviour
     private int localMultiplayerActorNumber = -1;
     private string localMultiplayerPlayerName = "Player";
     private bool singlePlayerInitComplete;
+    private bool _mpTimerStarted;
+    private bool _mpTimerZeroLogged;
+    private float _mpTimerLogAccum;
 
     // Kill counter (CoD-style)
     private TextMeshProUGUI killCountText;
@@ -133,22 +136,40 @@ public class HUDManager : MonoBehaviour
         if (GameManager.Instance == null)
             return;
 
-        int level = GameManager.Instance.currentLevel;
-        timeLimit = GameManager.Instance.LevelTimeLimitSeconds;
-        elapsed = 0f;
+        // CRITICAL: in multiplayer, do NOT read GameManager.currentLevel. That
+        // value is the single-player Continue save (PlayerPref "ContinueLevel")
+        // and used to make the MP HUD say "LEVEL 8 / HAMMER" while the actual
+        // equipped weapon was the L1 Tactical Knife.
+        int level;
+        string weaponName;
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            level = MultiplayerRuntimeConfig.GetSelectedLevel();
+            weaponName = MultiplayerRuntimeConfig.GetSelectedWeaponName();
+            timeLimit = 300f;
+            elapsed = 0f;
+        }
+        else
+        {
+            level = GameManager.Instance.currentLevel;
+            weaponName = playerController != null
+                ? playerController.equippedWeaponName
+                : GameManager.Instance.GetWeaponNameForLevel(level);
+            timeLimit = GameManager.Instance.LevelTimeLimitSeconds;
+            elapsed = 0f;
+        }
 
         if (levelText != null)
             levelText.text = "LEVEL " + level;
 
-        if (weaponText != null)
-        {
-            weaponText.text = playerController != null
-                ? playerController.equippedWeaponName.ToUpperInvariant()
-                : GameManager.Instance.GetWeaponNameForLevel(level).ToUpperInvariant();
-        }
+        if (weaponText != null && !string.IsNullOrWhiteSpace(weaponName))
+            weaponText.text = weaponName.ToUpperInvariant();
 
-        UpdateScore(GameManager.Instance.score);
-        UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
+        if (!MultiplayerMode.IsMultiplayer)
+        {
+            UpdateScore(GameManager.Instance.score);
+            UpdateEnemyCount(GameManager.Instance.enemiesRemaining);
+        }
     }
 
     /// <summary>
@@ -214,8 +235,30 @@ public class HUDManager : MonoBehaviour
         float remaining;
         if (MultiplayerMode.IsMultiplayer)
         {
-            remaining = MpRoomConfig.ReadTimerDuration();
-            elapsed = timeLimit - remaining;
+            // Local-only display countdown. Independent of MpMatchController so
+            // it ticks even with MpMatchRules.Enabled == false. NEVER triggers
+            // match end, victory, return-to-menu, or bot win — just clamps at 0.
+            if (!_mpTimerStarted)
+            {
+                _mpTimerStarted = true;
+                timeLimit = 300f;
+                elapsed = 0f;
+                Debug.Log("[MPTimer] started 300");
+            }
+            elapsed += Time.unscaledDeltaTime;
+            remaining = Mathf.Max(0f, timeLimit - elapsed);
+
+            _mpTimerLogAccum += Time.unscaledDeltaTime;
+            if (_mpTimerLogAccum >= 30f)
+            {
+                _mpTimerLogAccum = 0f;
+                Debug.Log("[MPTimer] tick " + Mathf.CeilToInt(remaining));
+            }
+            if (remaining <= 0f && !_mpTimerZeroLogged)
+            {
+                _mpTimerZeroLogged = true;
+                Debug.Log("[MPTimer] reached 0 no match end");
+            }
         }
         else
         {
@@ -224,9 +267,7 @@ public class HUDManager : MonoBehaviour
         }
 
         if (timerText != null)
-        {
             timerText.text = "TIME  " + Mathf.CeilToInt(remaining);
-        }
 
         if (GameManager.Instance != null && !MultiplayerMode.IsMultiplayer)
             GameManager.Instance.levelTime = elapsed;
@@ -247,6 +288,13 @@ public class HUDManager : MonoBehaviour
         if (!MultiplayerMode.IsMultiplayer && !singlePlayerInitComplete)
             InitializeSinglePlayerGameplay();
 
+        // MP self-heal: if InitForMultiplayerLocalPlayer never ran (race with
+        // NetworkPlayerSpawner / HUDManager Awake order), find the local
+        // Photon-owned player and bind HUD references here so HP text and
+        // weapon never stay blank.
+        if (MultiplayerMode.IsMultiplayer && (playerHealth == null || playerController == null))
+            TryAutoBindLocalMultiplayerPlayer();
+
         if (playerHealth != null)
         {
             UpdateHealth(
@@ -255,7 +303,29 @@ public class HUDManager : MonoBehaviour
                 MultiplayerMode.IsMultiplayer ? playerHealth : null);
         }
 
-        if (playerController != null && weaponText != null)
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            // Pin level + weapon text to the MP single source of truth on every
+            // frame. Cheap, idempotent, and self-healing — corrects any stale
+            // value left over from BindMatchHudFromGameManager / scene-authored
+            // text even if InitForMultiplayerLocalPlayer hasn't fired yet.
+            int lvl = MultiplayerRuntimeConfig.GetSelectedLevel();
+            string wpn = playerController != null && !string.IsNullOrWhiteSpace(playerController.equippedWeaponName)
+                ? playerController.equippedWeaponName
+                : MultiplayerRuntimeConfig.GetSelectedWeaponName();
+
+            if (levelText != null)
+            {
+                string desired = "LEVEL " + lvl;
+                if (levelText.text != desired) levelText.text = desired;
+            }
+            if (weaponText != null)
+            {
+                string desiredWpn = wpn.ToUpperInvariant();
+                if (weaponText.text != desiredWpn) weaponText.text = desiredWpn;
+            }
+        }
+        else if (playerController != null && weaponText != null)
         {
             weaponText.text = playerController.equippedWeaponName.ToUpperInvariant();
         }
@@ -263,6 +333,75 @@ public class HUDManager : MonoBehaviour
         HandleOverlayInput();
         UpdateMinimap();
         TryRefreshScoreboardPeriodic();
+
+        // ── Multiplayer ESC fallback ────────────────────────────────────────
+        // PauseMenuController's own ESC detection has been intermittent in
+        // the MP scene. HUDManager is confirmed running every frame in MP
+        // (we see [MPHUD]/[MPTimer]/[MPFlow] logs), so route ESC through it
+        // and call the SAME single-player PauseMenuController logic. No new
+        // pause UI is created — we drive the normal menu via the public
+        // TogglePauseExternal() hook on PauseMenuController.
+        if (MultiplayerMode.IsMultiplayer)
+            HandleMultiplayerEscPause();
+    }
+
+    private float _mpEscDebounce;
+
+    private void HandleMultiplayerEscPause()
+    {
+        if (_mpEscDebounce > 0f) _mpEscDebounce -= Time.unscaledDeltaTime;
+
+        bool esc = false;
+        try { if (UnityEngine.Input.GetKeyDown(KeyCode.Escape)) esc = true; } catch { }
+        if (!esc)
+        {
+            try
+            {
+                var kb = UnityEngine.InputSystem.Keyboard.current;
+                if (kb != null && kb.escapeKey.wasPressedThisFrame) esc = true;
+            }
+            catch { }
+        }
+
+        if (!esc || _mpEscDebounce > 0f) return;
+        _mpEscDebounce = 0.25f;
+        Debug.Log("[MPPauseHUD] ESC detected in HUDManager");
+
+        // Allow Tab full-map to close first if open (same precedence as the
+        // single-player ESC handler).
+        if (IsFullMapOpen)
+        {
+            CloseFullMapFromEscape();
+            return;
+        }
+
+        PauseMenuController controller = FindFirstObjectByType<PauseMenuController>();
+        if (controller == null)
+        {
+            GameObject go = new GameObject("PauseMenuController_RuntimeFromHUD");
+            controller = go.AddComponent<PauseMenuController>();
+            Debug.Log("[MPPauseHUD] PauseMenuController created");
+        }
+        else
+        {
+            if (!controller.gameObject.activeSelf) controller.gameObject.SetActive(true);
+            if (!controller.enabled) controller.enabled = true;
+            Debug.Log("[MPPauseHUD] PauseMenuController found");
+        }
+
+        bool nowOpen = controller.TogglePauseExternal();
+        if (nowOpen)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+            Debug.Log("[MPPauseHUD] normal pause menu opened");
+        }
+        else
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            Debug.Log("[MPPauseHUD] normal pause menu closed");
+        }
     }
 
     private void EnsureMinimapReferences()
@@ -793,46 +932,84 @@ public class HUDManager : MonoBehaviour
 
     private void EnsureMinimap(Transform canvasTransform)
     {
-        GameObject minimapRoot = CreateImage(canvasTransform, "MinimapRoot",
-            new Color(0.10f, 0.08f, 0.05f, 0.82f),
-            new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-130f, 128f), new Vector2(188f, 188f));
-        minimapRootRect = minimapRoot.GetComponent<RectTransform>();
-        Image minimapRootImage = minimapRoot.GetComponent<Image>();
-        minimapRootImage.sprite = GetOrCreateCircleSprite();
-        minimapRootImage.type = Image.Type.Simple;
-        minimapRootImage.preserveAspect = true;
-        if (minimapRoot.GetComponent<Mask>() == null)
+        // Hard-guard every step: a missing scene-authored child (or a child
+        // that has the wrong Graphic component) used to throw NRE here and
+        // abort the rest of HUD setup (health/timer/level/weapon never bound).
+        try
         {
-            minimapRoot.AddComponent<Mask>().showMaskGraphic = true;
-        }
+            if (canvasTransform == null)
+            {
+                Debug.Log("[MPHUD] EnsureMinimap skipped safely because canvasTransform missing");
+                return;
+            }
+            Debug.Log("[MPHUD] EnsureMinimap canvas found");
 
-        GameObject minimapContent = CreateImage(minimapRoot.transform, "MinimapContent",
-            Color.white,
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(172f, 172f));
-        Image minimapContentImage = minimapContent.GetComponent<Image>();
-        minimapContentImage.sprite = GetOrCreateCircleSprite();
-        minimapContentImage.color = Color.white;
+            GameObject minimapRoot = CreateImage(canvasTransform, "MinimapRoot",
+                new Color(0.10f, 0.08f, 0.05f, 0.82f),
+                new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-130f, 128f), new Vector2(188f, 188f));
+            if (minimapRoot == null)
+            {
+                Debug.Log("[MPHUD] EnsureMinimap skipped safely because MinimapRoot missing");
+                return;
+            }
+            minimapRootRect = minimapRoot.GetComponent<RectTransform>();
 
-        // Only one Graphic (Image OR RawImage) per GameObject — remove Image before adding RawImage.
-        minimapImage = minimapContent.GetComponent<RawImage>();
-        if (minimapImage == null)
-        {
+            Image minimapRootImage = minimapRoot.GetComponent<Image>() ?? minimapRoot.AddComponent<Image>();
+            minimapRootImage.sprite = GetOrCreateCircleSprite();
+            minimapRootImage.type = Image.Type.Simple;
+            minimapRootImage.preserveAspect = true;
+            if (minimapRoot.GetComponent<Mask>() == null)
+                minimapRoot.AddComponent<Mask>().showMaskGraphic = true;
+
+            GameObject minimapContent = CreateImage(minimapRoot.transform, "MinimapContent",
+                Color.white,
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(172f, 172f));
+            if (minimapContent == null)
+            {
+                Debug.Log("[MPHUD] EnsureMinimap skipped safely because MinimapContent missing");
+                return;
+            }
+
+            // Existing scene MinimapContent may already host a RawImage (Unity
+            // only allows one Graphic per GO). GetComponent<Image>() returns
+            // null in that case → NRE on .sprite. Be defensive.
+            Image minimapContentImage = minimapContent.GetComponent<Image>();
             if (minimapContentImage != null)
-                DestroyImmediate(minimapContentImage);
-            minimapImage = minimapContent.AddComponent<RawImage>();
-        }
-        minimapImage.color = Color.white;
+            {
+                minimapContentImage.sprite = GetOrCreateCircleSprite();
+                minimapContentImage.color = Color.white;
+            }
 
-        GameObject arrowObject = CreateImage(minimapRoot.transform, "PlayerArrow",
-            new Color(0.25f, 1f, 0.35f, 1f),
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(34f, 42f));
-        Image playerArrowImage = arrowObject.GetComponent<Image>();
-        playerArrowImage.sprite = GetOrCreateTriangleSprite();
-        playerArrowImage.color = new Color(0.25f, 1f, 0.35f, 1f);
-        minimapArrow = arrowObject.GetComponent<RectTransform>();
-        minimapArrow.sizeDelta = new Vector2(40f, 50f);
-        EnsureEnemyArrowPool(minimapRoot.transform, enemyMinimapArrows, "EnemyMiniArrow_", 24f);
-        EnsureMinimapReferences();
+            minimapImage = minimapContent.GetComponent<RawImage>();
+            if (minimapImage == null)
+            {
+                if (minimapContentImage != null)
+                    DestroyImmediate(minimapContentImage);
+                minimapImage = minimapContent.AddComponent<RawImage>();
+            }
+            minimapImage.color = Color.white;
+
+            GameObject arrowObject = CreateImage(minimapRoot.transform, "PlayerArrow",
+                new Color(0.25f, 1f, 0.35f, 1f),
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(34f, 42f));
+            if (arrowObject != null)
+            {
+                Image playerArrowImage = arrowObject.GetComponent<Image>() ?? arrowObject.AddComponent<Image>();
+                playerArrowImage.sprite = GetOrCreateTriangleSprite();
+                playerArrowImage.color = new Color(0.25f, 1f, 0.35f, 1f);
+                minimapArrow = arrowObject.GetComponent<RectTransform>();
+                if (minimapArrow != null)
+                    minimapArrow.sizeDelta = new Vector2(40f, 50f);
+            }
+
+            EnsureEnemyArrowPool(minimapRoot.transform, enemyMinimapArrows, "EnemyMiniArrow_", 24f);
+            EnsureMinimapReferences();
+            Debug.Log("[MPHUD] EnsureMinimap created/found minimap");
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning("[MPHUD] EnsureMinimap skipped safely because exception: " + ex.Message);
+        }
     }
 
     private void EnsureFullMapOverlay(Transform canvasTransform)
@@ -1161,6 +1338,21 @@ public class HUDManager : MonoBehaviour
         isFullMapVisible = visible;
         if (fullMapOverlay != null)
             fullMapOverlay.SetActive(isFullMapVisible);
+
+        // Hide the bottom-right minimap panel while the full map is open and
+        // restore it on release. Previously only the player-arrow was toggled,
+        // so the minimap circle stayed painted under the full map overlay.
+        if (minimapRootRect != null)
+            minimapRootRect.gameObject.SetActive(!isFullMapVisible);
+
+        // Tab in MP must only toggle the full map — make sure the CapsLock
+        // leaderboard isn't accidentally visible at the same time (users
+        // reported "leaderboard + full map overlay" together).
+        if (isFullMapVisible && scoreboardOverlay != null && scoreboardOverlay.activeSelf)
+        {
+            scoreboardOverlay.SetActive(false);
+            isScoreboardVisible = false;
+        }
 
         EnsureMinimapReferences();
         if (_cachedMinimap != null)
@@ -1675,15 +1867,146 @@ public class HUDManager : MonoBehaviour
             MatchStatsManager.Instance.StatsChanged += HandleMatchStatsChanged;
         }
 
-        if (pc != null && weaponText != null)
-            weaponText.text = pc.equippedWeaponName.ToUpperInvariant();
+        // Bind level + weapon HUD text from MultiplayerRuntimeConfig — the
+        // SAME source PlayerController.ForceEquipLevelWeaponForMultiplayer
+        // uses. Previously HUD read GameManager.currentLevel (SP Continue
+        // save) and the two diverged → "LEVEL 8 / HAMMER" with L1 knife.
+        int mpLevel = MultiplayerRuntimeConfig.GetSelectedLevel();
+        string mpWeapon = pc != null && !string.IsNullOrWhiteSpace(pc.equippedWeaponName)
+            ? pc.equippedWeaponName
+            : MultiplayerRuntimeConfig.GetSelectedWeaponName();
 
+        if (levelText != null)
+            levelText.text = "LEVEL " + mpLevel;
+        if (weaponText != null)
+            weaponText.text = mpWeapon.ToUpperInvariant();
+        Debug.Log($"[MPHUD] displaying level={mpLevel} weapon={mpWeapon}");
+
+        // Guarantee an HP text label exists. The scene-authored HUDCanvas may
+        // be missing HPText (only the green bar) — in that case build a fresh
+        // one over the bottom panel so the player always sees "HP 100 / 100".
+        EnsureMultiplayerHpText();
+        EnsureMultiplayerTopBarTexts();
         RefreshMultiplayerLocalHealth(ph);
+
+        int hpCur = ph != null ? Mathf.CeilToInt(ph.currentHealth) : 0;
+        int hpMax = ph != null ? Mathf.CeilToInt(ph.maxHealth) : 0;
+        Debug.Log($"[MPHUD] bound health to local actor={localMultiplayerActorNumber} hp={hpCur}/{hpMax}");
+
+        // Bind minimap follow target to the local Photon player. Without this
+        // the camera stayed in lockToArenaCenter mode (the default) and the
+        // minimap never followed.
+        EnsureMinimapReferences();
+        if (_cachedMinimap != null && pc != null)
+        {
+            _cachedMinimap.SetFullMapMode(false, pc.transform);
+            Debug.Log($"[MPMinimap] following local player actor={localMultiplayerActorNumber}");
+        }
 
         Debug.Log("[MPFlow] local player ready");
         Debug.Log("[MPFlow] gameplay state active");
         Debug.Log("[MPFlow] hiding match stats");
         Debug.Log("[MPFlow] input enabled");
+
+        // NOTE: the loading overlay is no longer destroyed here. It now
+        // auto-destroys after a fixed 5-second timer (LoadingScreenUI
+        // .ShowTimedForMultiplayer) so a slow HUD-bind / Photon callback
+        // can't strand the overlay for minutes.
+    }
+
+    /// <summary>
+    /// Guarantees a working HP text label in MP. If the scene's HUDCanvas
+    /// shipped without one (or the serialized ref was lost), we synthesize
+    /// one over the bottom-left health panel so the user is never stuck with
+    /// just a green bar and no numeric readout.
+    /// </summary>
+    private void TryAutoBindLocalMultiplayerPlayer()
+    {
+#if PUN_2_OR_NEWER
+        PhotonView[] views = FindObjectsByType<PhotonView>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        for (int i = 0; i < views.Length; i++)
+        {
+            PhotonView v = views[i];
+            if (v == null || !v.IsMine) continue;
+            PlayerController pc = v.GetComponent<PlayerController>();
+            PlayerHealth ph = v.GetComponent<PlayerHealth>();
+            if (pc == null || ph == null) continue;
+            InitForMultiplayerLocalPlayer(pc, ph);
+            return;
+        }
+#endif
+    }
+
+    /// <summary>
+    /// Fixes MP HUD regression where SCORE was clipped at top-left and ENEMIES
+    /// disappeared from top-right. Creates the two TMP labels at known-good
+    /// anchored positions if missing, restores text + colour if present.
+    /// Does not change LEVEL / WEAPON / HP / TIMER paths.
+    /// </summary>
+    private void EnsureMultiplayerTopBarTexts()
+    {
+        GameObject canvasObject = GameObject.Find("HUDCanvas");
+        if (canvasObject == null) return;
+        Transform canvas = canvasObject.transform;
+        Transform topBar = canvas.Find("TopBar");
+
+        // ── SCORE (top-left, parented under the canvas, anchor 0,1) ─────────
+        if (scoreText == null)
+        {
+            scoreText = CreateText(canvas, "ScoreText",
+                new Vector2(0f, 1f), new Vector2(0f, 1f),
+                new Vector2(300f, -42f), new Vector2(360f, 48f),
+                30f, FontStyles.Bold, TextAlignmentOptions.Left);
+        }
+        scoreText.gameObject.SetActive(true);
+        scoreText.enabled = true;
+        scoreText.color = new Color(0.97f, 0.98f, 1f, 1f);
+        if (string.IsNullOrEmpty(scoreText.text)) scoreText.text = "SCORE  0";
+        // Push to front so the top-bar tint never paints over it.
+        scoreText.transform.SetAsLastSibling();
+        Debug.Log("[MPHUD] score text restored");
+
+        // ── ENEMIES (top-right, parented under top bar if present) ──────────
+        Transform enemyParent = topBar != null ? topBar : canvas;
+        if (enemyCountText == null)
+        {
+            enemyCountText = CreateText(enemyParent, "EnemyText",
+                new Vector2(1f, 0.5f), new Vector2(1f, 0.5f),
+                new Vector2(-215f, 14f), new Vector2(380f, 40f),
+                28f, FontStyles.Bold, TextAlignmentOptions.Right);
+        }
+        enemyCountText.gameObject.SetActive(true);
+        enemyCountText.enabled = true;
+        enemyCountText.color = new Color(0.97f, 0.98f, 1f, 1f);
+        if (string.IsNullOrEmpty(enemyCountText.text)) enemyCountText.text = "ENEMIES  0";
+        enemyCountText.transform.SetAsLastSibling();
+        Debug.Log("[MPHUD] enemies text restored");
+    }
+
+    private void EnsureMultiplayerHpText()
+    {
+        if (healthText != null)
+        {
+            healthText.gameObject.SetActive(true);
+            healthText.enabled = true;
+            if (healthText.color.a < 0.05f) healthText.color = Color.white;
+            if (prismFont != null && healthText.font == null) healthText.font = prismFont;
+            return;
+        }
+
+        GameObject canvasObject = GameObject.Find("HUDCanvas");
+        if (canvasObject == null) return;
+
+        Transform parentTransform = canvasObject.transform.Find("BottomHealthPanel");
+        if (parentTransform == null) parentTransform = canvasObject.transform;
+
+        healthText = CreateText(parentTransform, "HPText",
+            new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(238f, -28f), new Vector2(420f, 30f),
+            24f, FontStyles.Bold, TextAlignmentOptions.Left);
+        healthText.color = Color.white;
+        healthText.text = "HP 100 / 100";
+        healthText.gameObject.SetActive(true);
+        healthText.enabled = true;
     }
 
     private void RefreshMultiplayerLocalHealth(PlayerHealth ph)

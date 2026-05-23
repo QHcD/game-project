@@ -107,6 +107,8 @@ public class PlayerTacticalActions : MonoBehaviour
             FlushGroundSnap(zeroMove: true);
             EnforceProneGround();
             LogAction("Prone START");
+            if (_controller != null)
+                Debug.Log($"[Prone] enter height={_controller.height:F3} center={_controller.center.y:F3} stepOffset={_controller.stepOffset:F3}");
         }
         else
         {
@@ -114,6 +116,8 @@ public class PlayerTacticalActions : MonoBehaviour
             RestoreStandingColliderImmediate();
             FlushGroundSnap(zeroMove: true);
             LogAction("Prone END");
+            if (_controller != null)
+                Debug.Log($"[Prone] exit height={_controller.height:F3} center={_controller.center.y:F3} stepOffset={_controller.stepOffset:F3}");
         }
     }
 
@@ -184,7 +188,24 @@ public class PlayerTacticalActions : MonoBehaviour
             _controller.center = c;
         }
 
-        _controller.stepOffset = _controller.height > _standingHeight * 0.85f ? 0.5f : 0.05f;
+        SetStepOffsetSafe(_controller.height > _standingHeight * 0.85f ? 0.5f : 0.05f);
+    }
+
+    /// <summary>
+    /// Clamps stepOffset to (height - 0.01) so Unity never logs
+    /// "Step offset can't be greater than the height of the character
+    /// controller". Logs once when a clamp actually fires.
+    /// </summary>
+    private void SetStepOffsetSafe(float desired)
+    {
+        if (_controller == null) return;
+        float maxStep = Mathf.Max(0f, _controller.height - 0.01f);
+        if (desired > maxStep)
+        {
+            Debug.Log($"[Prone] clamped stepOffset because it exceeded controller height (desired={desired} height={_controller.height})");
+            desired = maxStep;
+        }
+        _controller.stepOffset = desired;
     }
 
     /// <summary>Prone-only ground correction (called from LateUpdate while C is held).</summary>
@@ -266,9 +287,13 @@ public class PlayerTacticalActions : MonoBehaviour
 
         float targetHeight = GetProneColliderHeight();
         float targetCenterY = _capsuleBottomY + targetHeight * 0.5f;
+        // ORDER MATTERS: shrink stepOffset BEFORE shrinking height, so during
+        // the same frame the controller never has stepOffset > height (which
+        // is what triggers Unity's runtime warning).
+        SetStepOffsetSafe(0.0f);
         _controller.height = targetHeight;
         _controller.center = new Vector3(_standingCenter.x, targetCenterY, _standingCenter.z);
-        _controller.stepOffset = 0.05f;
+        SetStepOffsetSafe(0.05f);
     }
 
     private void SnapColliderImmediate(float height)
@@ -282,10 +307,13 @@ public class PlayerTacticalActions : MonoBehaviour
     private void RestoreStandingColliderImmediate()
     {
         if (_controller == null) return;
+        // Restore order: shrink stepOffset first, raise height/center, then
+        // set the final stepOffset value (safe-clamped against the new height).
+        SetStepOffsetSafe(0.0f);
         _controller.height = _standingHeight;
         _controller.center = _standingCenter;
         _controller.radius = _standingRadius;
-        _controller.stepOffset = _standingHeight > 1.6f ? 0.5f : 0.05f;
+        SetStepOffsetSafe(_standingHeight > 1.6f ? 0.5f : 0.05f);
         LogCollider("RESTORE standing");
     }
 

@@ -56,6 +56,13 @@ public sealed class PhotonServiceRunner : MonoBehaviour
 
         _instance = this;
         DontDestroyOnLoad(gameObject);
+
+        // Belt-and-braces: even if MultiplayerMode's static init was skipped,
+        // ensure Photon keeps heartbeating during scene loads / focus loss.
+        Application.runInBackground = true;
+#if PUN_2_OR_NEWER
+        PhotonNetwork.KeepAliveInBackground = 60f;
+#endif
     }
 
     private void Update()

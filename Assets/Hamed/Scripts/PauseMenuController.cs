@@ -14,6 +14,78 @@ public class PauseMenuController : MonoBehaviour
     private bool isPaused;
     private TMP_FontAsset prismFont;
 
+    // The MultiplayerGameScene already has a PauseMenuController on a scene
+    // object, but builds without it (or scenes loaded via PhotonNetwork.LoadLevel
+    // before the scene object wakes) used to ship without a working ESC. Make
+    // sure exactly one controller exists in every gameplay scene.
+    // Earliest possible hook — runs before any scene Awake. If this line is
+    // not in the console, the entire script failed to compile.
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void StaticBootstrapLog()
+    {
+        Debug.Log("[MPPauseDiag] static bootstrap loaded");
+    }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    private static void EnsureExistsInGameplayScene()
+    {
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += (scene, mode) =>
+        {
+            if (scene.name == MultiplayerMode.MultiplayerSceneName)
+                Debug.Log("[MPPauseDiag] sceneLoaded MultiplayerGameScene");
+
+            if (scene.name != MultiplayerMode.SinglePlayerSceneName &&
+                scene.name != MultiplayerMode.MultiplayerSceneName)
+                return;
+
+            // Find ALL controllers (including inactive ones) — a scene-placed
+            // PauseMenuController on a disabled GameObject was silently
+            // killing ESC in MP because FindFirstObjectByType(active-only)
+            // returned it, we believed one existed, and Update never ran.
+            PauseMenuController[] all = FindObjectsByType<PauseMenuController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            PauseMenuController kept = null;
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i] == null) continue;
+                if (kept == null) { kept = all[i]; continue; }
+                Destroy(all[i].gameObject);
+            }
+
+            if (kept == null)
+            {
+                // Force-create a runtime controller. Use a clearly named GO so
+                // it stands out in the hierarchy vs any scene-placed instance.
+                GameObject go = new GameObject("PauseMenuController_Runtime");
+                kept = go.AddComponent<PauseMenuController>();
+                Debug.Log("[MPPauseDiag] forced runtime controller created");
+            }
+
+            // Force the controller awake — re-activate GameObject and component
+            // so a previously-disabled scene instance can never starve Update.
+            if (!kept.gameObject.activeSelf) kept.gameObject.SetActive(true);
+            if (!kept.enabled) kept.enabled = true;
+
+            // One-shot diagnostic dump describing the live state.
+            string backend = DetectInputBackend();
+            Debug.Log("[MPPauseDiag] PauseMenuController exists = true");
+            Debug.Log("[MPPauseDiag] enabled = " + kept.enabled);
+            Debug.Log("[MPPauseDiag] GameObject active = " + kept.gameObject.activeInHierarchy);
+            Debug.Log("[MPPauseDiag] current scene = " + scene.name);
+            Debug.Log("[MPPauseDiag] input backend detected = " + backend);
+        };
+    }
+
+    private static string DetectInputBackend()
+    {
+        bool legacy = false, newSys = false;
+        try { var _ = Input.anyKey; legacy = true; } catch { }
+        try { newSys = Keyboard.current != null || UnityEngine.InputSystem.InputSystem.devices.Count >= 0; } catch { }
+        if (legacy && newSys) return "Both";
+        if (legacy) return "Legacy";
+        if (newSys) return "New";
+        return "None";
+    }
+
     private readonly string[] graphicsLabels = { "LOW", "MEDIUM", "HIGH" };
 
     private Slider masterVolumeSlider;
@@ -24,9 +96,14 @@ public class PauseMenuController : MonoBehaviour
 
     private void Awake()
     {
-        SettingsManager.ApplyDisplayPreferences();
-        AudioSettingsRuntime.ApplyListenerVolume();
+        Debug.Log("[MPPauseDiag] Awake");
+        try { SettingsManager.ApplyDisplayPreferences(); } catch (System.Exception e) { Debug.LogWarning("[MPPauseDiag] Awake settings err: " + e.Message); }
+        try { AudioSettingsRuntime.ApplyListenerVolume(); } catch (System.Exception e) { Debug.LogWarning("[MPPauseDiag] Awake audio err: " + e.Message); }
     }
+
+    private float _aliveLogTimer;
+    private bool _firstUpdateLogged;
+    private bool _firstKeyLogged;
 
     private void Update()
     {
@@ -39,31 +116,142 @@ public class PauseMenuController : MonoBehaviour
             return;
         }
 
+        if (!_firstUpdateLogged)
+        {
+            _firstUpdateLogged = true;
+            Debug.Log("[MPPauseDiag] Update running");
+        }
+
+        // Heartbeat — confirms the controller is alive and ticking in MP.
+        _aliveLogTimer -= Time.unscaledDeltaTime;
+        if (_aliveLogTimer <= 0f)
+        {
+            _aliveLogTimer = 5f;
+            Debug.Log("[MPPauseDiag] controller alive");
+        }
+
+        // Match-finished gate kept ONLY for SP — in MP we never want it to
+        // suppress pause (MpMatchRules.Enabled == false, IsMatchFinished
+        // should always be false, but be defensive).
         HUDManager hudManager = HUDManager.Instance;
-        if (hudManager != null && hudManager.IsMatchFinished)
+        if (!MultiplayerMode.IsMultiplayer && hudManager != null && hudManager.IsMatchFinished)
             return;
 
-        if (Keyboard.current == null || !Keyboard.current.escapeKey.wasPressedThisFrame)
+        // "Update is running" proof: log the first time we see ANY keyboard
+        // activity at all so we can tell apart "ESC not reaching us" from
+        // "Update not ticking" in the console.
+        if (!_firstKeyLogged)
+        {
+            try
+            {
+                if (Input.anyKeyDown)
+                {
+                    _firstKeyLogged = true;
+                    Debug.Log("[MPPauseDiag] first key detected (legacy Input.anyKeyDown)");
+                }
+            }
+            catch { }
+            if (!_firstKeyLogged)
+            {
+                try
+                {
+                    Keyboard kb = Keyboard.current;
+                    if (kb != null && kb.anyKey.wasPressedThisFrame)
+                    {
+                        _firstKeyLogged = true;
+                        Debug.Log("[MPPauseDiag] first key detected (InputSystem Keyboard.current)");
+                    }
+                }
+                catch { }
+            }
+        }
+
+        // In multiplayer, HUDManager owns ESC detection (see
+        // HUDManager.HandleMultiplayerEscPause). Returning here prevents the
+        // double-toggle where both detectors fired on the same keypress and
+        // the menu instantly closed itself.
+        if (MultiplayerMode.IsMultiplayer)
             return;
 
+        // Single-player: dual-input ESC detection — each backend in its own
+        // try so a disabled or not-yet-initialised backend can't kill the
+        // other.
+        bool escPressed = false;
+
+        try
+        {
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                escPressed = true;
+                Debug.Log("[MPPauseDiag] ESC detected by Legacy");
+            }
+        }
+        catch { }
+
+        if (!escPressed)
+        {
+            try
+            {
+                Keyboard kb = Keyboard.current;
+                if (kb != null && kb.escapeKey.wasPressedThisFrame)
+                {
+                    escPressed = true;
+                    Debug.Log("[MPPauseDiag] ESC detected by InputSystem");
+                }
+            }
+            catch { }
+        }
+
+        if (!escPressed)
+            return;
+
+        // Close full map if open (MP only) before opening pause.
         if (MultiplayerMode.IsMultiplayer && hudManager != null && hudManager.CloseFullMapFromEscape())
             return;
 
-        if (isPaused) ResumeGame();
-        else ShowPauseMenu();
+        if (isPaused)
+        {
+            ResumeGame();
+            Debug.Log("[MPPauseDiag] normal pause menu visible = false");
+        }
+        else
+        {
+            Debug.Log("[MPPauseDiag] calling normal ShowPauseMenu");
+            ShowPauseMenu();
+            Debug.Log("[MPPauseDiag] normal pause menu visible = " + (pauseCanvas != null));
+        }
     }
+
+    /// <summary>
+    /// Public toggle so external systems (HUDManager) can drive the SAME
+    /// pause menu used by single-player ESC. Returns true if the menu is now
+    /// open, false if it was closed.
+    /// </summary>
+    public bool TogglePauseExternal()
+    {
+        if (isPaused) { ResumeGame(); return false; }
+        ShowPauseMenu();
+        return true;
+    }
+
+    public bool IsPauseMenuOpen => isPaused;
 
     private void ShowPauseMenu()
     {
+        Debug.Log("[MPPause] using normal pause menu");
         EnsureEventSystem();
         BuildPauseMenu();
         ShowPanel(mainPanel);
 
+        // Multiplayer keeps Time.timeScale = 1 — pausing time would freeze
+        // Photon serialization, RPCs, and remote players. SP behaviour is
+        // unchanged.
         if (!MultiplayerMode.IsMultiplayer)
             Time.timeScale = 0f;
         isPaused = true;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
+        Debug.Log("[MPPause] normal menu opened");
     }
 
     private void LateUpdate()
@@ -80,6 +268,7 @@ public class PauseMenuController : MonoBehaviour
         if (!MultiplayerMode.IsMultiplayer)
             Time.timeScale = 1f;
         isPaused = false;
+        Debug.Log("[MPPause] normal menu closed");
 
         if (pauseCanvas != null)
         {
@@ -104,6 +293,31 @@ public class PauseMenuController : MonoBehaviour
         isPaused = false;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
+
+        // In MP, the player is in a Photon room — leave it cleanly before
+        // returning to the main menu. Wrapped in try so any Photon error
+        // never blocks the menu transition.
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            Debug.Log("[MPPause] leaving Photon room then main menu");
+            // Latch the guard BEFORE LeaveRoom so any late property-write call
+            // (SetReadyState, MpRoomConfig, MpMatchController timer ticks)
+            // that fires during the unload window early-outs cleanly.
+            MultiplayerShutdownGuard.BeginLeave();
+#if PUN_2_OR_NEWER
+            try
+            {
+                if (Photon.Pun.PhotonNetwork.InRoom)
+                    Photon.Pun.PhotonNetwork.LeaveRoom();
+            }
+            catch { /* never block menu return */ }
+#endif
+            MultiplayerMode.SetSinglePlayer();
+            UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+            Debug.Log("[MPLeave] loaded MainMenu");
+            return;
+        }
+
         GameManager.Instance?.GoToMainMenu();
     }
 

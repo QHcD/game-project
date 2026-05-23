@@ -41,6 +41,49 @@ public class LoadingScreenUI : MonoBehaviour
     }
 
     /// <summary>
+    /// Multiplayer-specific entry point. Shows a SIMPLE timed overlay that
+    /// auto-destroys after <paramref name="seconds"/>. While visible, sets
+    /// EndMatchCinematic.GameplayLocked = true so attacks / hit audio / enemy
+    /// AI cannot fire underneath the overlay. After the timer expires:
+    /// unlock gameplay + destroy the overlay. Does NOT wait for Photon
+    /// callbacks, HUD init, or any async gameplay state.
+    /// </summary>
+    public static void ShowTimedForMultiplayer(float seconds = 5f)
+    {
+        LoadingScreenUI ui = CreateOrGet();
+        if (ui == null) return;
+        ui.SetLabel("LOADING...");
+        ui.BeginMultiplayerLockWindow(seconds);
+    }
+
+    private bool _mpLockActive;
+
+    private void BeginMultiplayerLockWindow(float seconds)
+    {
+        EndMatchCinematic.GameplayLocked = true;
+        _mpLockActive = true;
+        if (_canvas != null) _canvas.sortingOrder = 9999;
+        Debug.Log("[MPLoading] visible before scene load");
+        Debug.Log("[MPLoading] overlay shown");
+        StartCoroutine(MultiplayerLockCoroutine(seconds));
+    }
+
+    private IEnumerator MultiplayerLockCoroutine(float seconds)
+    {
+        yield return new WaitForSecondsRealtime(seconds);
+
+        Debug.Log("[MPLoading] hidden after 5 seconds");
+        Debug.Log("[MPLoading] overlay destroyed after " + seconds + " seconds");
+
+        // Hand the gameplay lock off to the 3-2-1-GO overlay (lives on its
+        // own GameObject so this MonoBehaviour can be destroyed immediately
+        // without killing the countdown coroutine).
+        _mpLockActive = false; // suppress OnDestroy unlock — the countdown owns it now
+        MpStartCountdown.Spawn();
+        DestroySelf();
+    }
+
+    /// <summary>
     /// Kills any legacy blue background objects and animators from older
     /// loading-screen prefabs that may still be in the scene at startup.
     /// Called every time we show the screen so a stale prefab in a freshly
@@ -92,8 +135,23 @@ public class LoadingScreenUI : MonoBehaviour
     private void OnEnable()
     {
         DestroyLoadingStageIfAny();
-        if (_dotsRoutine == null && isActiveAndEnabled)
-            _dotsRoutine = StartCoroutine(LoadingDotsLoop());
+        // Note: the dot-anim loop is intentionally NOT started here. The
+        // multiplayer flow uses a static "LOADING..." label and a 5-second
+        // timed destroy (see ShowTimedForMultiplayer); the dot animation
+        // would overwrite that label every 0.22s.
+    }
+
+    private void OnDestroy()
+    {
+        // Safety net: if the overlay is destroyed externally before the
+        // coroutine fires (scene reload, force close), make sure we don't
+        // leave gameplay locked.
+        if (_mpLockActive)
+        {
+            EndMatchCinematic.GameplayLocked = false;
+            _mpLockActive = false;
+            Debug.Log("[MPLoading] gameplay unlocked (overlay destroyed early)");
+        }
     }
 
     private IEnumerator LoadingDotsLoop()
@@ -151,8 +209,9 @@ public class LoadingScreenUI : MonoBehaviour
         {
             _backgroundImage.sprite = null;
             _backgroundImage.color = new Color(0.02f, 0.02f, 0.03f, 1f);
+            // Fully opaque — must completely hide the scene behind the overlay.
             if (_dimOverlay != null)
-                _dimOverlay.color = new Color(0f, 0f, 0f, 0.12f);
+                _dimOverlay.color = new Color(0f, 0f, 0f, 0.92f);
         }
 
         Transform accent = transform.Find("Accent");
@@ -179,8 +238,12 @@ public class LoadingScreenUI : MonoBehaviour
     {
         _canvas = gameObject.AddComponent<Canvas>();
         _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        _canvas.sortingOrder = 2000;
+        // 9999 beats anything else in the project (HUDCanvas=50, Pause=300,
+        // Spectator=999). Verified to render over the freshly loaded scene's
+        // own canvases too.
+        _canvas.sortingOrder = 9999;
         gameObject.AddComponent<GraphicRaycaster>();
+        Debug.Log($"[MPLoading] overlay canvas sortingOrder={_canvas.sortingOrder}");
 
         CanvasScaler scaler = gameObject.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -197,14 +260,17 @@ public class LoadingScreenUI : MonoBehaviour
         GameObject dimObject = new GameObject("DimOverlay");
         dimObject.transform.SetParent(transform, false);
         _dimOverlay = dimObject.AddComponent<Image>();
-        _dimOverlay.color = new Color(0f, 0f, 0f, 0.12f);
+        // Fully opaque dim so the underlying scene is never visible while the
+        // overlay is up — previously 0.12 alpha let gameplay bleed through.
+        _dimOverlay.color = new Color(0f, 0f, 0f, 0.92f);
         Stretch(_dimOverlay.rectTransform);
 
+        // Bottom-right, matching the normal gameplay loading style.
         GameObject labelObject = new GameObject("LoadingLabel");
         labelObject.transform.SetParent(transform, false);
         _loadingLabel = labelObject.AddComponent<TextMeshProUGUI>();
-        _loadingLabel.text = "LOADING";
-        _loadingLabel.fontSize = 34f;
+        _loadingLabel.text = "LOADING...";
+        _loadingLabel.fontSize = 36f;
         _loadingLabel.fontStyle = FontStyles.Bold;
         _loadingLabel.alignment = TextAlignmentOptions.BottomRight;
         _loadingLabel.color = new Color(0.90f, 0.95f, 1f, 0.96f);
@@ -215,8 +281,8 @@ public class LoadingScreenUI : MonoBehaviour
         labelRect.anchorMin = new Vector2(1f, 0f);
         labelRect.anchorMax = new Vector2(1f, 0f);
         labelRect.pivot = new Vector2(1f, 0f);
-        labelRect.sizeDelta = new Vector2(520f, 100f);
-        labelRect.anchoredPosition = new Vector2(-36f, 22f);
+        labelRect.sizeDelta = new Vector2(560f, 90f);
+        labelRect.anchoredPosition = new Vector2(-44f, 28f);
     }
 
     private static void Stretch(RectTransform rect)
@@ -225,5 +291,99 @@ public class LoadingScreenUI : MonoBehaviour
         rect.anchorMax = Vector2.one;
         rect.offsetMin = Vector2.zero;
         rect.offsetMax = Vector2.zero;
+    }
+}
+
+/// <summary>
+/// Big centred 3 → 2 → 1 → GO! flash that runs AFTER the LOADING overlay is
+/// torn down. Holds <c>EndMatchCinematic.GameplayLocked = true</c> for the
+/// duration so the player can't attack until "GO!". Lives on its own
+/// DontDestroyOnLoad GameObject; LoadingScreenUI hands the lock to it.
+/// </summary>
+public class MpStartCountdown : MonoBehaviour
+{
+    private TextMeshProUGUI _label;
+
+    public static void Spawn()
+    {
+        if (UnityEngine.Object.FindFirstObjectByType<MpStartCountdown>() != null)
+            return;
+
+        GameObject root = new GameObject("RuntimeStartCountdown");
+        DontDestroyOnLoad(root);
+        root.AddComponent<MpStartCountdown>();
+    }
+
+    private void Awake()
+    {
+        Canvas canvas = gameObject.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 9998;
+        gameObject.AddComponent<GraphicRaycaster>();
+        CanvasScaler scaler = gameObject.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1920f, 1080f);
+        scaler.matchWidthOrHeight = 0.5f;
+
+        GameObject dim = new GameObject("Dim");
+        dim.transform.SetParent(transform, false);
+        Image dimImg = dim.AddComponent<Image>();
+        dimImg.color = new Color(0f, 0f, 0f, 0.35f);
+        RectTransform dimRect = dimImg.rectTransform;
+        dimRect.anchorMin = Vector2.zero;
+        dimRect.anchorMax = Vector2.one;
+        dimRect.offsetMin = Vector2.zero;
+        dimRect.offsetMax = Vector2.zero;
+
+        GameObject labelObj = new GameObject("CountdownLabel");
+        labelObj.transform.SetParent(transform, false);
+        _label = labelObj.AddComponent<TextMeshProUGUI>();
+        _label.fontSize = 220f;
+        _label.fontStyle = FontStyles.Bold;
+        _label.alignment = TextAlignmentOptions.Center;
+        _label.color = new Color(0.95f, 0.98f, 1f, 1f);
+        TMP_FontAsset azonix = Resources.Load<TMP_FontAsset>("Fonts/Azonix SDF");
+        if (azonix != null) _label.font = azonix;
+        RectTransform lr = _label.rectTransform;
+        lr.anchorMin = new Vector2(0.5f, 0.5f);
+        lr.anchorMax = new Vector2(0.5f, 0.5f);
+        lr.pivot = new Vector2(0.5f, 0.5f);
+        lr.sizeDelta = new Vector2(800f, 400f);
+        lr.anchoredPosition = Vector2.zero;
+
+        // Keep the gameplay lock asserted while we exist.
+        EndMatchCinematic.GameplayLocked = true;
+        StartCoroutine(Run());
+    }
+
+    private IEnumerator Run()
+    {
+        string[] steps = { "3", "2", "1", "GO!" };
+        for (int i = 0; i < steps.Length; i++)
+        {
+            if (_label != null)
+            {
+                _label.text = steps[i];
+                _label.color = steps[i] == "GO!"
+                    ? new Color(0.40f, 1f, 0.55f, 1f)
+                    : new Color(0.95f, 0.98f, 1f, 1f);
+            }
+            Debug.Log("[MPLoading] countdown " + steps[i]);
+            yield return new WaitForSecondsRealtime(steps[i] == "GO!" ? 0.6f : 0.8f);
+        }
+
+        EndMatchCinematic.GameplayLocked = false;
+        Debug.Log("[MPLoading] gameplay unlocked");
+        UnityEngine.Object.Destroy(gameObject);
+    }
+
+    private void OnDestroy()
+    {
+        // Safety: if torn down externally, never leave gameplay locked.
+        if (EndMatchCinematic.GameplayLocked)
+        {
+            EndMatchCinematic.GameplayLocked = false;
+            Debug.Log("[MPLoading] gameplay unlocked (countdown destroyed early)");
+        }
     }
 }

@@ -38,7 +38,7 @@ public static class MpRoomConfig
     public static void WriteRoomConfig(MpGameMode mode, int level, int botCount)
     {
 #if PUN_2_OR_NEWER
-        if (!PhotonNetwork.InRoom) return;
+        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
 
         var props = new Hashtable
         {
@@ -65,12 +65,10 @@ public static class MpRoomConfig
 
     public static int ReadLevel()
     {
-#if PUN_2_OR_NEWER
-        if (PhotonNetwork.InRoom &&
-            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyLevel, out object raw))
-            return (int)raw;
-#endif
-        return GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        // Delegates to MultiplayerRuntimeConfig — the single source of truth
+        // for MP level selection. Do NOT inline the room-property lookup here
+        // or it will drift from the equip/HUD paths.
+        return MultiplayerRuntimeConfig.GetSelectedLevel();
     }
 
     public static int ReadBotCount()

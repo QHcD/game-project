@@ -11,9 +11,11 @@ public class NetworkPlayerSync : MonoBehaviour
 #endif
 {
     public float remoteLerpSpeed = 14f;
+    public float remoteSnapDistance = 6f;
 
     private Vector3 networkPosition;
     private Quaternion networkRotation;
+    private bool networkPoseInitialised;
     private PlayerHealth playerHealth;
     private PlayerController playerController;
     private bool deathRecorded;
@@ -53,8 +55,20 @@ public class NetworkPlayerSync : MonoBehaviour
 #if PUN_2_OR_NEWER
         if (photonView != null && !photonView.IsMine)
         {
-            transform.position = Vector3.Lerp(transform.position, networkPosition, remoteLerpSpeed * Time.deltaTime);
-            transform.rotation = Quaternion.Slerp(transform.rotation, networkRotation, remoteLerpSpeed * Time.deltaTime);
+            // First serialization snap: stops the new joiner from "rubber
+            // banding" from (0,0,0) to the real position over a second.
+            if (!networkPoseInitialised ||
+                Vector3.Distance(transform.position, networkPosition) > remoteSnapDistance)
+            {
+                transform.position = networkPosition;
+                transform.rotation = networkRotation;
+                networkPoseInitialised = true;
+            }
+            else
+            {
+                transform.position = Vector3.Lerp(transform.position, networkPosition, remoteLerpSpeed * Time.deltaTime);
+                transform.rotation = Quaternion.Slerp(transform.rotation, networkRotation, remoteLerpSpeed * Time.deltaTime);
+            }
         }
 #endif
     }
@@ -138,6 +152,9 @@ public class NetworkPlayerSync : MonoBehaviour
         {
             networkPosition = (Vector3)stream.ReceiveNext();
             networkRotation = (Quaternion)stream.ReceiveNext();
+            // Force the next Update on a remote ghost to teleport rather
+            // than lerp the very first time we ever hear from this owner.
+            // (We still snap on big future jumps via remoteSnapDistance.)
             float syncedHealth = (float)stream.ReceiveNext();
             int weaponLevel = (int)stream.ReceiveNext();
             string weaponName = (string)stream.ReceiveNext();
@@ -185,6 +202,7 @@ public class NetworkPlayerSync : MonoBehaviour
         if (!MultiplayerMode.IsMultiplayer || photonView == null || !photonView.IsMine)
             return;
 
+        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
         if (PhotonNetwork.LocalPlayer != null && string.IsNullOrWhiteSpace(PhotonNetwork.NickName))
             PhotonNetwork.NickName = $"Player_{PhotonNetwork.LocalPlayer.ActorNumber}";
 #endif

@@ -40,6 +40,10 @@ public class MpMatchController : MonoBehaviour
     /// </summary>
     public static void EnsureExists()
     {
+        // Stable-test mode kill-switch: do not even create the controller
+        // when match rules are disabled. Nothing here runs until the user
+        // flips MpMatchRules.Enabled back to true.
+        if (!MpMatchRules.Enabled) return;
         if (Instance != null) return;
         var go = new GameObject("MpMatchController");
         go.AddComponent<MpMatchController>();
@@ -63,6 +67,14 @@ public class MpMatchController : MonoBehaviour
 
     private void Start()
     {
+        if (!MpMatchRules.Enabled)
+        {
+            // Belt-and-braces: even if an old scene-placed controller was
+            // dragged in, force it inert when rules are disabled.
+            EndMatchCinematic.GameplayLocked = false;
+            enabled = false;
+            return;
+        }
 #if PUN_2_OR_NEWER
         if (!PhotonNetwork.InRoom) return;
 
@@ -92,7 +104,7 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 0)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)0 } };
-            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
             yield return new WaitForSeconds(3.0f);
             currentState = 1;
         }
@@ -101,7 +113,7 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 1)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)1 } };
-            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
             
             bool allReady = false;
             while (!allReady)
@@ -132,7 +144,7 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 2)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)2 } };
-            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
             
             float startCountdown = MpRoomConfig.ReadTimerDuration();
             if (startCountdown <= 0 || startCountdown > 5) startCountdown = 5;
@@ -140,7 +152,7 @@ public class MpMatchController : MonoBehaviour
             for (int i = (int)startCountdown; i > 0; i--)
             {
                 var propsTimer = new Hashtable { { MpRoomConfig.KeyTimerDuration, (float)i } };
-                PhotonNetwork.CurrentRoom.SetCustomProperties(propsTimer);
+                if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(propsTimer);
                 yield return new WaitForSeconds(1.0f);
             }
             currentState = 3;
@@ -150,7 +162,7 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 3)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)3 } };
-            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
 
             // Enable bots if active mode is not PurePvP
             BootBotDirector(MultiplayerMode.ActiveMode);
@@ -171,7 +183,7 @@ public class MpMatchController : MonoBehaviour
                 if (matchTimeRemaining < 0) matchTimeRemaining = 0;
 
                 var propsTimer = new Hashtable { { MpRoomConfig.KeyTimerDuration, matchTimeRemaining } };
-                PhotonNetwork.CurrentRoom.SetCustomProperties(propsTimer);
+                if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(propsTimer);
             }
 
             // 5. MatchEnded
@@ -197,7 +209,7 @@ public class MpMatchController : MonoBehaviour
                     { MpRoomConfig.KeyWinnerName, winner },
                     { MpRoomConfig.KeyMatchState, (byte)4 }
                 };
-                PhotonNetwork.CurrentRoom.SetCustomProperties(propsEnd);
+                if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(propsEnd);
             }
         }
     }
@@ -290,6 +302,7 @@ public class MpMatchController : MonoBehaviour
 #if PUN_2_OR_NEWER
     public override void OnRoomPropertiesUpdate(ExitGames.Client.Photon.Hashtable changedProps)
     {
+        if (!MpMatchRules.Enabled) return;
         // Re-apply config whenever master updates room properties.
         if (changedProps.ContainsKey(MpRoomConfig.KeyMode))
             MpRoomConfig.ApplyToLocalState();
@@ -425,6 +438,7 @@ public class MpMatchController : MonoBehaviour
 
     public override void OnMasterClientSwitched(Player newMasterClient)
     {
+        if (!MpMatchRules.Enabled) return;
         if (PhotonNetwork.IsMasterClient)
         {
             Debug.Log("[MpMatch] became master — resuming match lifecycle");
