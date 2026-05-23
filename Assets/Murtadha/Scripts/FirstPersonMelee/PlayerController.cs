@@ -347,15 +347,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private Camera runtimeThirdPersonCamera;
     private bool isThirdPersonActive;
     private bool _bodyFeetAligned;          // true once feet have been snapped to ground
+    private int _postSpawnGroundSnapFrames; // extra snaps after load/restart
     private Animator _bodyAnimatorCached;   // cached animator from thirdPersonBody
     private GameObject _lastThirdPersonBodyRef; // tracks when to invalidate the cache
     private float nextMovementInputDebugLogTime;
-
-    // Head bob
-    private float headBobTimer;
-    private float headBobVelocity;
-    private const float HeadBobFrequency = 10f;
-    private const float HeadBobAmplitude = 0.038f;
 
     // Camera kick (recoil feedback)
     private float cameraKickTarget;
@@ -505,7 +500,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                         + jumpGroundProbeExtra + 0.12f;
         int mask = GetGroundCheckMask();
         float minNormalY = GetMinWalkableSurfaceNormalY();
-        float maxSurfaceY = capsuleBottomY + Mathf.Max(controller.stepOffset, 0.35f) + 0.1f;
+        // Allow probing ground above the capsule so buried spawns (restart / NavMesh mismatch) can recover.
+        float maxSurfaceY = capsuleBottomY + Mathf.Max(3.5f, controller.stepOffset + 0.35f) + 0.1f;
         float minSurfaceY = capsuleBottomY - Mathf.Max(0.12f, maxFloorSnapDistance);
 
         int count = Physics.SphereCastNonAlloc(
@@ -574,9 +570,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (!hasFloor)
             return;
 
-        if (!controller.isGrounded && !lowProfile && !IsGroundedForJump())
-            return;
-
         float floorY = floorHit.point.y;
         float capsuleBottomY = transform.position.y + controller.center.y - controller.height * 0.5f;
         float targetBottomY = floorY + controller.skinWidth;
@@ -594,7 +587,15 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             return;
         }
 
+        if (!controller.isGrounded && !lowProfile && !IsGroundedForJump())
+            return;
+
         if (gap <= 0.001f || gap > maxFloorSnapDistance)
+            return;
+
+        // Standing still: only correct upward (sinking). Downward micro-snaps fight
+        // the capsule stick force and read as idle vibration.
+        if (IsStandingStill())
             return;
 
         float moveDown = Mathf.Min(gap, floorSnapSpeed * dt);
@@ -733,13 +734,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Vector3 requestedStart = IsUnsafeSpawn(transform.position)
             ? SafeFallbackSpawn
             : transform.position;
-        Vector3 startPos = ResolveSafeSpawnPosition(requestedStart);
+        Vector3 startPos = IsUnsafeSpawn(requestedStart)
+            ? ResolveSafeSpawnPosition(requestedStart)
+            : requestedStart;
+        if (controller != null) controller.enabled = false;
         transform.position = startPos;
         transform.rotation = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
         cameraYaw = transform.eulerAngles.y;
         cameraPitch = ThirdPersonInitialPitch;
         if (controller != null) controller.enabled = true;
+        SnapCapsuleToWalkableGround();
         verticalVelocity.y = -GetGroundedStickVelocity();
+        _postSpawnGroundSnapFrames = 4;
 
         // ── 2. Spawn the third-person body ──
         ApplyPerspectivePreference();
@@ -919,7 +925,55 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             return false;
 
         rootPosition = RootPositionFromGroundPoint(navHit.position);
+        if (TryFindPhysicsGround(rootPosition + Vector3.up * 2f, 10f, out RaycastHit physHit))
+            rootPosition = RootPositionFromGroundPoint(physHit.point);
+
         return IsSpawnCapsuleClear(rootPosition);
+    }
+
+    private bool TryFindPhysicsGround(Vector3 rayOrigin, float maxDistance, out RaycastHit hit)
+    {
+        hit = default;
+        int mask = GetGroundCheckMask();
+        if (Physics.Raycast(rayOrigin, Vector3.down, out hit, maxDistance, mask, QueryTriggerInteraction.Ignore)
+            && hit.collider != null
+            && !hit.collider.transform.IsChildOf(transform)
+            && hit.normal.y >= GetMinWalkableSurfaceNormalY())
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Aligns the capsule feet to physics ground (not NavMesh alone). Safe after restart / TeleportTo.
+    /// </summary>
+    public bool SnapCapsuleToWalkableGround()
+    {
+        if (controller == null)
+            controller = GetComponent<CharacterController>();
+        if (controller == null)
+            return false;
+
+        Vector3 rayOrigin = transform.position + Vector3.up * 3f;
+        if (!TryFindPhysicsGround(rayOrigin, 12f, out RaycastHit hit))
+        {
+            rayOrigin = transform.position + Vector3.up * 8f;
+            if (!TryFindPhysicsGround(rayOrigin, 20f, out hit))
+                return false;
+        }
+
+        Vector3 rooted = RootPositionFromGroundPoint(hit.point);
+        if (Mathf.Abs(rooted.y - transform.position.y) < 0.01f)
+            return true;
+
+        bool wasEnabled = controller.enabled;
+        controller.enabled = false;
+        transform.position = new Vector3(transform.position.x, rooted.y, transform.position.z);
+        controller.enabled = wasEnabled;
+        verticalVelocity.y = -GetGroundedStickVelocity();
+        Physics.SyncTransforms();
+        _probedFloorValid = false;
+        return true;
     }
 
     private Vector3 RootPositionFromGroundPoint(Vector3 groundPoint)
@@ -1067,14 +1121,20 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         // outside of a deliberate flip/prone pose, snap it back to its cached base.
         if (!isFlipping && thirdPersonBody != null && !isProne)
         {
-            NormalizeThirdPersonBodyLocalRotation();
+            if (IsStandingStill())
+                thirdPersonBody.transform.localRotation = thirdPersonBodyBaseLocalRotation;
+            else
+                NormalizeThirdPersonBodyLocalRotation();
         }
 
         if (isProne || isSliding || (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive))
             ClampLowProfileVisualMesh();
 
         AlignStandingVisualToCapsule();
-        MaintainBodyFeetOnWalkableGround();
+        if (IsStandingStill())
+            StabilizeStandingVisualPose();
+        else
+            MaintainBodyFeetOnWalkableGround();
 
         if (_tacticalActions != null)
         {
@@ -1127,6 +1187,12 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         ApplyMovement();
         ApplyCharacterSeparationPush();
         ResolveGroundContact();
+
+        if (_postSpawnGroundSnapFrames > 0)
+        {
+            SnapCapsuleToWalkableGround();
+            _postSpawnGroundSnapFrames--;
+        }
     }
 
     /// <summary>
@@ -1156,9 +1222,40 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// Small per-frame foot correction on uneven floors so the visible mesh stays
     /// planted while the capsule follows stairs/slopes.
     /// </summary>
+    private bool IsStandingStill()
+    {
+        return moveInputRaw.sqrMagnitude < 0.0001f
+            && moveInputSmoothed.sqrMagnitude < 0.0004f
+            && horizontalVelocity.sqrMagnitude < 0.0004f;
+    }
+
+    private void StabilizeStandingVisualPose()
+    {
+        if (thirdPersonBody == null || controller == null)
+            return;
+        if (isProne || isSliding || isMantling || IsAscendingJump())
+            return;
+        if (_tacticalActions != null && _tacticalActions.IsTacticalAnimActive)
+            return;
+
+        float yOff = standingVisualFootLift;
+        if (isCrouching)
+            yOff = Mathf.Max(yOff, crouchBodyYOffset);
+
+        Vector3 desired = thirdPersonBodyBaseLocalPosition + new Vector3(0f, yOff, 0f);
+        Vector3 lp = thirdPersonBody.transform.localPosition;
+        if ((lp - desired).sqrMagnitude < 1e-8f)
+            return;
+
+        float blend = 1f - Mathf.Exp(-24f * Time.deltaTime);
+        thirdPersonBody.transform.localPosition = Vector3.Lerp(lp, desired, blend);
+    }
+
     private void MaintainBodyFeetOnWalkableGround()
     {
         if (thirdPersonBody == null || controller == null)
+            return;
+        if (IsStandingStill())
             return;
         if (isProne || isSliding || isMantling || IsAscendingJump())
             return;
@@ -1858,11 +1955,19 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         ClampInsideArena();
 
-        Vector3 frameDisplacement = transform.position - frameStartPosition;
-        frameDisplacement.y = 0f;
-        actualHorizontalVelocity = dt > 0f
-            ? frameDisplacement / dt
-            : Vector3.zero;
+        if (IsStandingStill())
+        {
+            horizontalVelocity = Vector3.zero;
+            actualHorizontalVelocity = Vector3.zero;
+        }
+        else
+        {
+            Vector3 frameDisplacement = transform.position - frameStartPosition;
+            frameDisplacement.y = 0f;
+            actualHorizontalVelocity = dt > 0f
+                ? frameDisplacement / dt
+                : Vector3.zero;
+        }
 
         wasMoving = moveInputSmoothed.sqrMagnitude > 0.01f;
     }
@@ -1975,6 +2080,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     public void TeleportTo(Vector3 position)
     {
+        if (controller == null)
+            controller = GetComponent<CharacterController>();
+
         if (IsUnsafeSpawn(position))
             position = SafeFallbackSpawn;
 
@@ -1983,7 +2091,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (controller != null) controller.enabled = false;
         transform.position = position;
         if (controller != null) controller.enabled = true;
+        SnapCapsuleToWalkableGround();
         verticalVelocity = Vector3.zero;
+        verticalVelocity.y = -GetGroundedStickVelocity();
+        _postSpawnGroundSnapFrames = 4;
+        Physics.SyncTransforms();
         cameraYaw = transform.eulerAngles.y;
 
         if (runtimeThirdPersonCamera != null)
@@ -2073,15 +2185,25 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (isThirdPersonActive) return;
         if (firstPersonCam == null) return;
 
-        // Simple, clean FPS bob: tied to horizontal speed and grounded state.
-        float speed = new Vector3(actualHorizontalVelocity.x, 0f, actualHorizontalVelocity.z).magnitude;
-        float bobStrength = isGrounded ? Mathf.Clamp01(speed / 6f) : 0f;
-        float bobFreq = Mathf.Lerp(0f, 10.5f, bobStrength);
+        Vector3 basePos = firstPersonLocalPos;
+        if (IsStandingStill() || !isGrounded)
+        {
+            firstPersonCam.transform.localPosition = basePos;
+            return;
+        }
 
+        // Bob from locomotion intent — not physics displacement (ground snap noise).
+        float speed = horizontalVelocity.magnitude;
+        float bobStrength = Mathf.Clamp01(speed / 6f);
+        if (bobStrength < 0.05f)
+        {
+            firstPersonCam.transform.localPosition = basePos;
+            return;
+        }
+
+        float bobFreq = Mathf.Lerp(0f, 10.5f, bobStrength);
         float y = Mathf.Sin(Time.time * bobFreq) * 0.03f * bobStrength;
         float x = Mathf.Cos(Time.time * bobFreq * 0.5f) * 0.02f * bobStrength;
-
-        Vector3 basePos = firstPersonLocalPos;
         firstPersonCam.transform.localPosition = basePos + new Vector3(x, y, 0f);
     }
 
@@ -3555,6 +3677,48 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (thirdPersonBody != null && isThirdPersonActive)
             thirdPersonBody.SetActive(true);
     }
+
+#if UNITY_EDITOR
+    /// <summary>
+    /// Editor Game tab preview — wires third-person camera/body without entering Play Mode.
+    /// </summary>
+    public void PrepareEditorGameViewPreview()
+    {
+        if (Application.isPlaying)
+            return;
+
+        if (controller == null)
+            controller = GetComponent<CharacterController>();
+
+        if (firstPersonCam == null)
+            firstPersonCam = GetComponentInChildren<Camera>(true);
+
+        isThirdPersonActive = true;
+        EnsureThirdPersonCamera();
+        EnsureThirdPersonBody();
+
+        if (firstPersonCam != null)
+            firstPersonCam.gameObject.SetActive(false);
+
+        if (runtimeThirdPersonCamera != null)
+        {
+            runtimeThirdPersonCamera.tag = "MainCamera";
+            runtimeThirdPersonCamera.gameObject.SetActive(true);
+        }
+
+        if (thirdPersonBody != null)
+        {
+            thirdPersonBody.SetActive(true);
+            SetThirdPersonRenderersVisible(true);
+            UpdateBodyBasePosition();
+            StabilizeStandingVisualPose();
+            thirdPersonBody.transform.localRotation = thirdPersonBodyBaseLocalRotation;
+        }
+
+        Vector3 euler = transform.eulerAngles;
+        transform.eulerAngles = new Vector3(0f, euler.y, 0f);
+    }
+#endif
 
     private void ApplyPerspectivePreference()
     {

@@ -141,8 +141,6 @@ public class CameraController : MonoBehaviour
     private float     _currentDistance;
     private Vector3   _smoothedLookTarget;
     private bool      _lookTargetInitialized;
-    private Transform _lookAtBone;
-    private Animator  _cachedAnimator;
     private float     _distanceVelocity;
     private Vector3   _positionVelocity;
     private float     _fieldOfViewVelocity;
@@ -435,82 +433,6 @@ public class CameraController : MonoBehaviour
         }
 
         return _smoothedLookTarget;
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  BONE HELPERS
-    // ════════════════════════════════════════════════════════════════════════
-
-    private Transform ResolveLookBone(Transform root)
-    {
-        Animator animator = root != null ? root.GetComponentInChildren<Animator>(true) : null;
-        if (animator != _cachedAnimator)
-        {
-            _cachedAnimator = animator;
-            _lookAtBone = null;
-        }
-
-        if (_lookAtBone == null || !IsChildOf(_lookAtBone, root))
-            _lookAtBone = FindLookBone(root, animator);
-
-        return _lookAtBone;
-    }
-
-    private static Transform FindLookBone(Transform root, Animator anim)
-    {
-        // ── Pass 1: Humanoid avatar API (works for Ronin / Crosby / Mixamo) ──
-        if (anim != null && anim.isHuman)
-        {
-            Transform b;
-            b = anim.GetBoneTransform(HumanBodyBones.UpperChest); if (b != null) return b;
-            b = anim.GetBoneTransform(HumanBodyBones.Chest);      if (b != null) return b;
-            b = anim.GetBoneTransform(HumanBodyBones.Spine);      if (b != null) return b;
-            b = anim.GetBoneTransform(HumanBodyBones.Head);       if (b != null) return b;
-        }
-
-        // ── Pass 2: Name-based search — covers non-humanoid / Generic rigs ───
-        string[] names = {
-            "bip_spine_02", "Bip_Spine_02", "bip_spine2", "bip_spine_01",
-            "bip_spine_1",  "bip_spine",
-            "spine_02",     "spine2",       "Spine2",      "spine_01",
-            "Spine1",       "Spine",
-            "j_spine4",     "j_spineupper", "j_spine_up",  "j_spine",
-            "B-chest",      "B-spine",      "mixamorig:Spine2",
-            "mixamorig:Spine1", "mixamorig:Spine",
-            "j_head",       "Head",         "head",
-        };
-        foreach (string n in names)
-        {
-            Transform found = FindBoneByName(root, n);
-            if (found != null) return found;
-        }
-        return null;
-    }
-
-    private static Transform FindBoneByName(Transform root, string boneName)
-    {
-        if (root.name == boneName) return root;
-        foreach (Transform child in root)
-        {
-            Transform found = FindBoneByName(child, boneName);
-            if (found != null) return found;
-        }
-        return null;
-    }
-
-    private static bool IsChildOf(Transform child, Transform potentialRoot)
-    {
-        if (child == null || potentialRoot == null) return false;
-
-        Transform current = child;
-        while (current != null)
-        {
-            if (current == potentialRoot)
-                return true;
-            current = current.parent;
-        }
-
-        return false;
     }
 
     // ════════════════════════════════════════════════════════════════════════
