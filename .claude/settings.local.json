@@ -18,7 +18,8 @@
       "Bash(Select-String \"99fdce567ba49aa4cb099d09ecea163b\")",
       "Bash(Select-Object -First 5 Path)",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\murta\\\\Desktop\\\\PRISM-7\\\\Assets\" -Directory)",
-      "mcp__coplay-mcp__search_files"
+      "mcp__coplay-mcp__search_files",
+      "Bash(ls \"C:\\\\Program Files\\\\Unity\\\\Hub\\\\Editor\\\\\" 2>/dev/null || ls \"C:\\\\Program Files\\\\Unity\\\\\" 2>/dev/null || echo \"not found\")"
     ]
   }
 }

@@ -48,6 +48,52 @@ public static class AutoBuilder
         EditorApplication.delayCall += BuildWindows64;
     }
 
+    [MenuItem("PRISM-7/Fix + Build EXE")]
+    public static void FixScenesAndBuild()
+    {
+        Debug.Log("[AutoBuilder] Fixing all scenes before build...");
+
+        string[] scenePaths = Scenes;
+        foreach (string scenePath in scenePaths)
+        {
+            if (!File.Exists(scenePath)) continue;
+
+            var scene = UnityEditor.SceneManagement.EditorSceneManager.OpenScene(scenePath, UnityEditor.SceneManagement.OpenSceneMode.Single);
+            int fixed2 = 0, removed = 0;
+
+            foreach (var root in scene.GetRootGameObjects())
+            {
+                foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
+                {
+                    if (t == null) continue;
+                    var go = t.gameObject;
+
+                    Vector3 p = go.transform.localPosition;
+                    if (float.IsNaN(p.x) || float.IsNaN(p.y) || float.IsNaN(p.z) ||
+                        float.IsInfinity(p.x) || float.IsInfinity(p.y) || float.IsInfinity(p.z))
+                    { go.transform.localPosition = Vector3.zero; fixed2++; }
+
+                    Quaternion r = go.transform.localRotation;
+                    if (float.IsNaN(r.x) || float.IsNaN(r.y) || float.IsNaN(r.z) || float.IsNaN(r.w))
+                    { go.transform.localRotation = Quaternion.identity; fixed2++; }
+
+                    Vector3 s = go.transform.localScale;
+                    if (float.IsNaN(s.x) || float.IsNaN(s.y) || float.IsNaN(s.z) ||
+                        float.IsInfinity(s.x) || float.IsInfinity(s.y) || float.IsInfinity(s.z))
+                    { go.transform.localScale = Vector3.one; fixed2++; }
+
+                    removed += GameObjectUtility.RemoveMonoBehavioursWithMissingScript(go);
+                }
+            }
+
+            UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene);
+            Debug.Log($"[AutoBuilder] Scene '{scenePath}' fixed: {fixed2} transforms, {removed} missing scripts removed.");
+        }
+
+        Debug.Log("[AutoBuilder] All scenes fixed. Starting build...");
+        BuildWindows64();
+    }
+
     [MenuItem("Build/Build Windows64 EXE")]
     public static void BuildWindows64()
     {
