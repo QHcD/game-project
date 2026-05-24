@@ -7,6 +7,13 @@ using UnityEngine.AI;
 /// </summary>
 public static class EnemySpawnGeometry
 {
+    /// <summary>
+    /// When true, IsValidOutdoorSpawn bypasses the IsEnclosedOrIndoor rejection.
+    /// Set this for indoor maps (e.g. SciFiArena) so spawns inside a roofed,
+    /// wall-bounded warehouse aren't all rejected as "indoor".
+    /// </summary>
+    public static bool AllowEnclosedArena = false;
+
     private const float MinWallClearance = 0.85f;
     private const float MaxFeetBelowGround = 0.12f;
     private const float MaxFeetAboveGround = 0.35f;
@@ -98,7 +105,7 @@ public static class EnemySpawnGeometry
         if (!HasHorizontalWallClearance(feet))
             return false;
 
-        if (IsEnclosedOrIndoor(feet))
+        if (!AllowEnclosedArena && IsEnclosedOrIndoor(feet))
             return false;
 
         return true;

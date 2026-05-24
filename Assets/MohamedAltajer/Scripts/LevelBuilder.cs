@@ -825,18 +825,30 @@ public class LevelBuilder : MonoBehaviour
                lower.Contains("arena") || lower.Contains("platform");
     }
 
-    /// <summary>Loads the industrial map prefab from Resources and places it as visual geometry.</summary>
+    [Header("Arena Source")]
+    [Tooltip("When true, loads the SciFi warehouse arena instead of the legacy Industrial Map.")]
+    public bool useSciFiArena = true;
+
+    /// <summary>Loads the active arena prefab from Resources and places it as visual geometry.</summary>
     private void LoadFbxMap(Transform parent, GameManager.ArenaMap map)
     {
-        // Both map slots now use the RPG/FPS industrial arena.
-        // Run PRISM-7 ▸ Setup Industrial Map once in the editor to generate the prefab.
-        string resourcePath = "Maps/IndustrialMap/IndustrialMap";
+        EnemySpawnGeometry.AllowEnclosedArena = useSciFiArena;
+
+        string resourcePath = useSciFiArena
+            ? "Maps/SciFiArena/SciFiArena"
+            : "Maps/IndustrialMap/IndustrialMap";
 
         GameObject mapPrefab = Resources.Load<GameObject>(resourcePath);
-        Debug.Log("[MPBuild] map loaded from scene/resource/addressable = " + (mapPrefab != null ? "resource" : "missing"));
+        Debug.Log("[MPBuild] map loaded from scene/resource/addressable = " + (mapPrefab != null ? "resource" : "missing") + " path=" + resourcePath);
 
-        // If the industrial prefab isn't generated yet, log a clear message.
-        // Run PRISM-7 ▸ Setup Industrial Map (or wait for auto-setup) then re-enter Play.
+        if (mapPrefab == null && useSciFiArena)
+        {
+            Debug.LogWarning("[LevelBuilder] SciFi arena prefab not found at Resources/" + resourcePath +
+                ".\nRun  Tools ▸ PRISM-7 ▸ Build SciFi Arena Prefab  in the Editor (exit Play mode first), then press Play again.");
+            CreateProceduralFallback(parent, map);
+            return;
+        }
+
         if (mapPrefab == null)
         {
             Debug.LogWarning("[LevelBuilder] Industrial map prefab not found at Resources/" + resourcePath +
@@ -932,7 +944,8 @@ public class LevelBuilder : MonoBehaviour
                 float mapExtentX = Mathf.Abs(overallBounds.extents.x);
                 float mapExtentZ = Mathf.Abs(overallBounds.extents.z);
                 arenaHalfSize = Mathf.Max(mapExtentX, mapExtentZ) + 1.0f;
-                arenaHalfSize = Mathf.Max(30f, arenaHalfSize);
+                if (!useSciFiArena)
+                    arenaHalfSize = Mathf.Max(30f, arenaHalfSize);
                 Debug.Log($"[LevelBuilder] DynBounds: Centered and grounded FBX map at {mapInstance.transform.position}, arenaHalfSize dynamically set to {arenaHalfSize}");
             }
         }
@@ -2301,6 +2314,8 @@ public class LevelBuilder : MonoBehaviour
         if (arena == null)
             arena = GameObject.Find(GameplayRootName)?.transform;
         if (arena == null)
+            arena = GameObject.Find("SciFiArena")?.transform;
+        if (arena == null)
             arena = GameObject.Find("IndustrialMap_v3")?.transform;
         if (arena == null)
             arena = GameObject.Find("IndustrialMap")?.transform;
@@ -2737,6 +2752,30 @@ public class LevelBuilder : MonoBehaviour
         int mask = ~0;
         if (hittable >= 0) mask &= ~(1 << hittable);
 
+        // Enclosed sci-fi arena: floor is not a "street", so street-based outdoor sweeps
+        // will never succeed and emit confusing warnings. Use the prefab's PlayerSpawn
+        // marker + NavMesh-anchored capsule validation instead. CRITICALLY, when
+        // useSciFiArena is true we never fall through to the street sweeps — that would
+        // re-emit "No street spawn found" warnings on every spawn.
+        if (Instance != null && Instance.useSciFiArena)
+        {
+            if (TryFindSciFiArenaIndoorSpawn(fallback, center, radius, height, mask, out Vector3 indoorFeet))
+            {
+                Debug.Log($"[LevelBuilder] SciFiArena indoor player spawn at {indoorFeet}");
+                return indoorFeet + Vector3.up * 0.02f;
+            }
+
+            Transform marker = FindSciFiArenaPlayerSpawnMarker();
+            if (marker != null)
+            {
+                Debug.Log($"[LevelBuilder] SciFiArena marker fallback at {marker.position}");
+                return marker.position + Vector3.up * 0.02f;
+            }
+
+            Debug.Log("[LevelBuilder] SciFiArena spawn: indoor finder failed, returning fallback (NavMesh likely not ready yet).");
+            return SafeFallbackSpawn;
+        }
+
         if (EnemySpawnGeometry.TryFindStreetPlayerSpawn(halfSize, fallback, out Vector3 streetFeet)
             && PassesPlayerSpawnCapsuleChecks(streetFeet, center, radius, height, mask))
         {
@@ -2788,6 +2827,93 @@ public class LevelBuilder : MonoBehaviour
             return lastResort;
 
         return SafeFallbackSpawn;
+    }
+
+    /// <summary>
+    /// Indoor-only player spawn finder for the enclosed SciFiArena. Tries the prefab's
+    /// PlayerSpawn marker first, then a small set of fallback positions inside the hall.
+    /// Bypasses street/outdoor validators that always reject sci-fi floors.
+    /// </summary>
+    private static bool TryFindSciFiArenaIndoorSpawn(
+        Vector3 fallback,
+        Vector3 capsuleCenterLocal,
+        float radius,
+        float height,
+        int mask,
+        out Vector3 feet)
+    {
+        feet = default;
+
+        // 1) Use the prefab's authored PlayerSpawn marker if present.
+        //    LevelBuilder renames the instantiated arena to "FbxMap"; the marker lives
+        //    under FbxMap/SpawnPoints/PlayerSpawn for SciFiArena.
+        Transform marker = FindSciFiArenaPlayerSpawnMarker();
+        if (marker != null
+            && TryIndoorNavMeshSpawn(marker.position, capsuleCenterLocal, radius, height, mask, out feet))
+            return true;
+
+        // 2) Try the requested fallback position.
+        if (TryIndoorNavMeshSpawn(fallback, capsuleCenterLocal, radius, height, mask, out feet))
+            return true;
+
+        // 3) Sweep a small set of hall-center candidates.
+        Vector3[] seeds =
+        {
+            new Vector3(0f, 1f, -6f),
+            new Vector3(0f, 1f,  0f),
+            new Vector3(0f, 1f,  6f),
+            new Vector3(-4f, 1f, -2f),
+            new Vector3( 4f, 1f,  2f),
+            new Vector3(-6f, 1f,  4f),
+            new Vector3( 6f, 1f, -4f),
+        };
+        for (int i = 0; i < seeds.Length; i++)
+        {
+            if (TryIndoorNavMeshSpawn(seeds[i], capsuleCenterLocal, radius, height, mask, out feet))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Finds the authored PlayerSpawn marker inside the runtime SciFi arena hierarchy.
+    /// The prefab is named "SciFiArena" but the instantiated copy is renamed to
+    /// "FbxMap" by LoadFbxMap, so we search both.
+    /// </summary>
+    private static Transform FindSciFiArenaPlayerSpawnMarker()
+    {
+        GameObject arena = GameObject.Find("FbxMap");
+        if (arena == null) arena = GameObject.Find("SciFiArena");
+        if (arena == null) arena = GameObject.Find("SciFiArena(Clone)");
+        if (arena == null) return null;
+
+        Transform direct = arena.transform.Find("SpawnPoints/PlayerSpawn");
+        if (direct != null) return direct;
+
+        Transform[] all = arena.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i] != null && all[i].name == "PlayerSpawn") return all[i];
+        }
+        return null;
+    }
+
+    private static bool TryIndoorNavMeshSpawn(
+        Vector3 seed,
+        Vector3 capsuleCenterLocal,
+        float radius,
+        float height,
+        int mask,
+        out Vector3 feet)
+    {
+        feet = default;
+        if (!NavMesh.SamplePosition(seed, out NavMeshHit hit, 6f, NavMesh.AllAreas))
+            return false;
+        if (!IsCapsuleSpawnClear(hit.position, capsuleCenterLocal, radius, height, mask, minObstacleDistance: 0.55f))
+            return false;
+        feet = hit.position;
+        return true;
     }
 
     private static bool PassesPlayerSpawnCapsuleChecks(

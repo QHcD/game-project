@@ -106,7 +106,7 @@ public sealed class MainMenuMapPresenter : MonoBehaviour
 
     private static Transform FindMapRoot()
     {
-        foreach (string name in new[] { MapRootName, "IndustrialMap", "FbxMap" })
+        foreach (string name in new[] { "SciFiArena", MapRootName, "IndustrialMap", "FbxMap" })
         {
             GameObject go = GameObject.Find(name);
             if (go != null)

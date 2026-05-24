@@ -885,9 +885,21 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             staticObstacleMask = BuildDefaultStaticObstacleMask();
 
         float arenaHalf = LevelBuilder.Instance != null ? LevelBuilder.Instance.arenaHalfSize : 80f;
-        if (EnemySpawnGeometry.TryFindStreetPlayerSpawn(arenaHalf, requestedPosition, out Vector3 streetFeet)
+        bool enclosedArena = LevelBuilder.Instance != null && LevelBuilder.Instance.useSciFiArena;
+
+        // Enclosed sci-fi arena: floors aren't named "road/street", so the street-only
+        // validator always fails. Prefer the prefab's PlayerSpawn marker, then accept
+        // any NavMesh-sampled point with capsule clearance.
+        if (enclosedArena)
+        {
+            if (TryFindSciFiArenaPlayerSpawn(requestedPosition, out Vector3 arenaRoot))
+                return arenaRoot;
+        }
+        else if (EnemySpawnGeometry.TryFindStreetPlayerSpawn(arenaHalf, requestedPosition, out Vector3 streetFeet)
             && TryBuildSafeSpawnCandidate(streetFeet, out Vector3 streetRoot))
+        {
             return streetRoot;
+        }
 
         int attempts = Mathf.Max(8, safeSpawnMaxAttempts);
         float maxRadius = Mathf.Max(1f, safeSpawnSearchRadius);
@@ -907,11 +919,79 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 return safePosition;
         }
 
+        // Enclosed arena: NavMesh sample + capsule clearance is enough — no street-name check.
+        if (enclosedArena)
+        {
+            for (int i = 0; i <= attempts; i++)
+            {
+                float t = i / Mathf.Max(1f, (float)attempts);
+                float radius = Mathf.Lerp(0.75f, maxRadius, Mathf.Sqrt(t));
+                float angle = i * goldenAngle;
+                Vector3 offset = i == 0 ? Vector3.zero
+                    : new Vector3(Mathf.Cos(angle) * radius, 0f, Mathf.Sin(angle) * radius);
+                if (TryBuildEnclosedSpawnCandidate(requestedPosition + offset, out Vector3 enclosed))
+                    return enclosed;
+            }
+        }
+
         if (TryBuildSafeSpawnCandidate(SafeFallbackSpawn, out safePosition))
             return safePosition;
+        if (enclosedArena && TryBuildEnclosedSpawnCandidate(SafeFallbackSpawn, out Vector3 enclosedFallback))
+            return enclosedFallback;
+
+        // SciFi (enclosed) arena: never emit the outdoor warning — it's misleading for
+        // indoor maps. Silently use the safe fallback; LevelBuilder will have logged
+        // its own SciFi-specific diagnostic upstream.
+        if (enclosedArena)
+            return SafeFallbackSpawn;
 
         Debug.LogWarning("[PlayerController] Could not find an outdoor spawn; using fallback.");
         return SafeFallbackSpawn;
+    }
+
+    private bool TryFindSciFiArenaPlayerSpawn(Vector3 requestedPosition, out Vector3 rootPosition)
+    {
+        rootPosition = requestedPosition;
+
+        // LevelBuilder renames the instantiated SciFi arena to "FbxMap".
+        GameObject arena = GameObject.Find("FbxMap")
+                        ?? GameObject.Find("SciFiArena")
+                        ?? GameObject.Find("SciFiArena(Clone)");
+        if (arena == null) return false;
+
+        Transform marker = arena.transform.Find("SpawnPoints/PlayerSpawn");
+        if (marker == null)
+        {
+            Transform[] all = arena.GetComponentsInChildren<Transform>(true);
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i] != null && all[i].name == "PlayerSpawn") { marker = all[i]; break; }
+            }
+        }
+        if (marker == null) return false;
+
+        if (TryBuildEnclosedSpawnCandidate(marker.position, out rootPosition))
+            return true;
+
+        // NavMesh may not be ready — root-position the marker directly so we never warn.
+        rootPosition = RootPositionFromGroundPoint(marker.position);
+        return true;
+    }
+
+    private bool TryBuildEnclosedSpawnCandidate(Vector3 requestedPosition, out Vector3 rootPosition)
+    {
+        rootPosition = requestedPosition;
+        if (controller == null) return false;
+
+        float sampleRadius = Mathf.Max(0.5f, safeSpawnNavMeshSampleRadius);
+        if (!NavMesh.SamplePosition(requestedPosition, out NavMeshHit navHit, sampleRadius, NavMesh.AllAreas))
+            return false;
+
+        rootPosition = RootPositionFromGroundPoint(navHit.position);
+        if (TryFindPhysicsGround(rootPosition + Vector3.up * 2f, 10f, out RaycastHit physHit))
+            rootPosition = RootPositionFromGroundPoint(physHit.point);
+
+        return IsSpawnCapsuleClear(rootPosition);
     }
 
     private bool TryBuildSafeSpawnCandidate(Vector3 requestedPosition, out Vector3 rootPosition)
