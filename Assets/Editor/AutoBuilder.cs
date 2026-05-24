@@ -1,15 +1,22 @@
 using System.IO;
 using System.Linq;
+using Unity.AI.Navigation;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Profile;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
-/// <summary>
-/// Build utilities for Windows and macOS standalone players.
-/// macOS release builds: Build > Build macOS Release (or batchmode -executeMethod AutoBuilder.BuildMacOSRelease).
-/// </summary>
+public class ScenePreBuildCleaner : IPreprocessBuildWithReport
+{
+    public int callbackOrder => -100;
+
+    public void OnPreprocessBuild(BuildReport report)
+    {
+        AutoBuilder.PreBuildSceneCleanup();
+    }
+}
+
 [InitializeOnLoad]
 public static class AutoBuilder
 {
@@ -46,6 +53,42 @@ public static class AutoBuilder
         File.Delete(TriggerFile);
         Debug.Log("[AutoBuilder] Trigger file detected — scheduling Windows build after editor init.");
         EditorApplication.delayCall += BuildWindows64;
+    }
+
+    public static void PreBuildSceneCleanup()
+    {
+        foreach (string scenePath in Scenes)
+        {
+            if (!File.Exists(scenePath)) continue;
+
+            var scene = UnityEditor.SceneManagement.EditorSceneManager.OpenScene(
+                scenePath, UnityEditor.SceneManagement.OpenSceneMode.Single);
+
+            CleanRuntimeSceneContent();
+
+            UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene);
+            Debug.Log($"[AutoBuilder] Pre-build cleanup complete for: {scenePath}");
+        }
+    }
+
+    private static void CleanRuntimeSceneContent()
+    {
+        foreach (NavMeshSurface surface in Object.FindObjectsByType<NavMeshSurface>(FindObjectsSortMode.None))
+        {
+            surface.RemoveData();
+            EditorUtility.SetDirty(surface);
+        }
+
+        string[] runtimeRoots = { "GameplayRoot", "UrbanArenaRoot", "EnemiesRoot", "__LevelBuilderRuntime" };
+        foreach (string rootName in runtimeRoots)
+        {
+            GameObject go = GameObject.Find(rootName);
+            if (go != null)
+            {
+                Debug.Log($"[AutoBuilder] Removing runtime object before build: {rootName}");
+                Object.DestroyImmediate(go);
+            }
+        }
     }
 
     [MenuItem("PRISM-7/Fix + Build EXE")]
@@ -85,6 +128,8 @@ public static class AutoBuilder
                     removed += GameObjectUtility.RemoveMonoBehavioursWithMissingScript(go);
                 }
             }
+
+            CleanRuntimeSceneContent();
 
             UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene);
             Debug.Log($"[AutoBuilder] Scene '{scenePath}' fixed: {fixed2} transforms, {removed} missing scripts removed.");

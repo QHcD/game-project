@@ -186,18 +186,21 @@ public class CameraController : MonoBehaviour
             return;
         }
         Instance = this;
+
+        if (target == null)
+        {
+            GameObject playerGo = GameObject.FindWithTag("Player");
+            if (playerGo != null)
+                target = playerGo.transform;
+        }
     }
 
     private void Start()
     {
-        // Force near-clip to a sane value for third-person.
-        // 0.01 can cause severe character clipping (seeing inside body/legs).
         Camera cam = GetComponent<Camera>();
         if (cam != null)
         {
             cam.nearClipPlane = 0.08f;
-            // Industrial map uses thin fences / one-sided meshes; occlusion culling
-            // was hiding entire wall chunks and exposing gray void behind them.
             cam.useOcclusionCulling = false;
         }
 
@@ -205,18 +208,20 @@ public class CameraController : MonoBehaviour
             defaultFieldOfView = cam.fieldOfView;
 
         _currentDistance = GetCurrentOffset().magnitude;
-
-        // Build the SphereCast collision mask from an explicit include list
-        // (geometry the camera must NOT pass through) and then strip an
-        // explicit exclude list (player/enemy/UI bodies that must never push
-        // the camera around). The previous build path collapsed to ~0 which
-        // missed the StaticObstacle layer required for many level walls.
         collisionMask = BuildSolidCameraMask();
 
-        // Belt-and-suspenders: also strip whatever runtime layer the player
-        // happens to be on, in case it differs from the named layers above.
+        if (target == null)
+        {
+            GameObject playerGo = GameObject.FindWithTag("Player");
+            if (playerGo != null)
+                target = playerGo.transform;
+        }
+
         if (target != null)
+        {
             collisionMask &= ~(1 << target.gameObject.layer);
+            SnapToTarget();
+        }
     }
 
     private void IncludeLayerIfExists(string layerName)

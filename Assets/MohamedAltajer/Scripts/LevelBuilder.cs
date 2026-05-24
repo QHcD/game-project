@@ -364,7 +364,7 @@ public class LevelBuilder : MonoBehaviour
             StabilizeGround(arenaRoot);
             EnsureIndustrialDoorsInteractable(arenaRoot);
             EnsureMinimapCamera();
-            _navMeshReady = TryBuildNavMesh();
+            _navMeshReady = Application.isPlaying && TryBuildNavMesh();
 
             MapReadinessInfo info;
             if (!TryGetMultiplayerMapReadiness(out info))
@@ -435,7 +435,7 @@ public class LevelBuilder : MonoBehaviour
             EnsureMinimapCamera();
             Debug.Log("[LevelBuilder] Step 5: Minimap camera");
 
-            _navMeshReady = TryBuildNavMesh();
+            _navMeshReady = Application.isPlaying && TryBuildNavMesh();
             Debug.Log(_navMeshReady
                 ? "[LevelBuilder] Step 6: NavMesh built"
                 : "[LevelBuilder] Step 6: NavMesh skipped; using fallback spawn");
