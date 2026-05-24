@@ -17,8 +17,9 @@ public class LevelSetup : MonoBehaviour
             EnsurePlayer();
             EnsureCamera();
             EnsureGroundVisible();
-            StabilizeEnvironment();
-            DestroyHeavyLevelProps();
+        StabilizeEnvironment();
+        StabilizeSceneStructures();
+        DestroyHeavyLevelProps();
             ForceFallbackSpawnIfNeeded();
             TryInitializeOptionalAISystems();
         }
@@ -158,6 +159,18 @@ public class LevelSetup : MonoBehaviour
             fallbackRenderer.enabled = false;
 
         Debug.LogWarning("[LevelSetup] No ground renderer found; created VisibleGround_Fallback.");
+    }
+
+    private void StabilizeSceneStructures()
+    {
+        string[] mapRootNames = { "FbxMap", "IndustrialMap", "IndustrialMap_v3", "IndustrialMap_v3_small" };
+        for (int i = 0; i < mapRootNames.Length; i++)
+        {
+            GameObject mapRoot = GameObject.Find(mapRootNames[i]);
+            if (mapRoot == null) continue;
+            MapStructureStabilizer.Install(mapRoot.transform);
+            MapVisibilityStabilizer.Install(mapRoot.transform);
+        }
     }
 
     /// <summary>

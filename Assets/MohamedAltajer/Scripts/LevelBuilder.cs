@@ -939,6 +939,7 @@ public class LevelBuilder : MonoBehaviour
         EnvironmentGroundAnchor.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
         MapAttachedPropsPreserver.Restore(mapInstance.transform);
 
+        MapStructureStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
         MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
 
         Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
