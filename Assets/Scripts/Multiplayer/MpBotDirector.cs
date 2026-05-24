@@ -38,7 +38,11 @@ public class MpBotDirector : MonoBehaviour
 
     public static void EnsureExists(MpGameMode mode, int botCount)
     {
-        if (mode == MpGameMode.PurePvP) return;
+        if (mode == MpGameMode.PurePvP)
+        {
+            Debug.Log("[MPMode] PurePvP active - skipping bot director");
+            return;
+        }
 
         if (Instance != null)
         {
@@ -70,6 +74,7 @@ public class MpBotDirector : MonoBehaviour
 #endif
         if (_mode == MpGameMode.PurePvP)
         {
+            Debug.Log("[MPMode] PurePvP active - skipping bot director");
             Destroy(gameObject);
             return;
         }
@@ -140,10 +145,42 @@ public class MpBotDirector : MonoBehaviour
 
     private IEnumerator SpawnBotsDelayed()
     {
+        if (_mode == MpGameMode.PurePvP)
+        {
+            Debug.Log("[MPMode] PurePvP active - skipping enemy spawn");
+            yield break;
+        }
+
         // Wait one frame for the scene and NavMesh to be fully ready
         // before activating enemies — prevents NavMesh.CalculatePath null spam.
         yield return null;
-        yield return null;
+
+        LevelBuilder.MapReadinessInfo mapInfo = new LevelBuilder.MapReadinessInfo();
+        while (!LevelBuilder.IsMultiplayerBuildComplete ||
+               !LevelBuilder.TryGetMultiplayerMapReadiness(out mapInfo))
+        {
+            Debug.Log("[AISpawn] waiting for map");
+            yield return null;
+        }
+
+        Debug.Log("[MPBuild] map root found: " + mapInfo.Root.name);
+
+        bool navReady;
+        while (!LevelBuilder.TryValidateMultiplayerNavMesh(out navReady) || !navReady)
+        {
+            Debug.Log("[AISpawn] waiting for NavMesh");
+            if (LevelBuilder.Instance != null)
+                LevelBuilder.Instance.TriggerBuild();
+            yield return null;
+        }
+
+        RefreshHumanTargets();
+        while (_humanTargets.Count <= 0)
+        {
+            Debug.Log("[AISpawn] waiting for player target");
+            yield return null;
+            RefreshHumanTargets();
+        }
 
         EnemyController[] sceneEnemies = FindObjectsByType<EnemyController>(
             FindObjectsInactive.Include, FindObjectsSortMode.None);
@@ -164,32 +201,43 @@ public class MpBotDirector : MonoBehaviour
                 NavMeshAgent agent = enemy.GetComponent<NavMeshAgent>();
                 if (agent != null)
                 {
-                    agent.enabled = false;
-                    if (NavMesh.SamplePosition(enemy.transform.position, out NavMeshHit hit, 8f, NavMesh.AllAreas))
+                    if (agent.enabled)
+                        agent.enabled = false;
+
+                    if (NavMesh.SamplePosition(enemy.transform.position, out NavMeshHit hit, 12f, NavMesh.AllAreas))
+                    {
                         enemy.transform.position = hit.position;
+                        Debug.Log("[AINav] warped enemy " + enemy.name + " to NavMesh position");
+                    }
+                    else
+                    {
+                        Debug.LogError("[AINav] ERROR no NavMesh found near enemy " + enemy.name);
+                    }
+
                     agent.enabled = true;
                 }
             }
 
+            enemy.PrepareForMultiplayerAi();
             _activeBots.Add(enemy);
             spawned++;
         }
 
+        Debug.Log("[AISpawn] enemies activated count = " + spawned);
         Debug.Log($"[MpBotDirector] activated {spawned} bots, mode={_mode}");
         ApplyTargetsToAllBots();
     }
 
     private void ApplyTargetsToAllBots()
     {
-        // In CoopSurvival, give bots the human-player target list so they
-        // prioritise humans. In HybridChaos, leave default behaviour (bots
-        // naturally find the nearest IDamageable).
-        if (_mode != MpGameMode.CoopSurvival) return;
-
         foreach (EnemyController bot in _activeBots)
         {
             if (bot == null) continue;
-            bot.SetMultiplayerTargets(_humanTargets);
+            if (_mode == MpGameMode.CoopSurvival)
+                bot.SetMultiplayerTargets(_humanTargets);
+            else
+                bot.SetMultiplayerTargets(null);
+            bot.PrepareForMultiplayerAi();
         }
     }
 

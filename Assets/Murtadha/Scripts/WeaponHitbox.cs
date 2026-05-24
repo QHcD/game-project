@@ -19,6 +19,8 @@ public class WeaponHitbox : MonoBehaviour
     private bool isActive;
     private GameObject ownerRoot;
     private Transform attackTarget;
+    private Vector3 _lastWeaponTip;
+    private bool _hasLastWeaponTip;
 
     public static LayerMask BuildDefaultMeleeVictimMask()
     {
@@ -70,6 +72,8 @@ public class WeaponHitbox : MonoBehaviour
         hitThisSwing.Clear();
         _meleeMissNotifiedThisSwing = false;
         isActive = true;
+        _lastWeaponTip = GetWeaponTipWorldPosition();
+        _hasLastWeaponTip = true;
         if (hitboxCollider != null)
             hitboxCollider.enabled = false;
         DealOverlapSphereDamage();
@@ -79,6 +83,7 @@ public class WeaponHitbox : MonoBehaviour
     {
         isActive = false;
         attackTarget = null;
+        _hasLastWeaponTip = false;
         if (hitboxCollider != null)
             hitboxCollider.enabled = false;
         hitThisSwing.Clear();
@@ -131,6 +136,7 @@ public class WeaponHitbox : MonoBehaviour
         Transform attackerRoot = resolvedOwner != null ? resolvedOwner.transform : null;
         bool isEnemyAttacker = IsEnemyAttacker();
         Vector3 tip = GetWeaponTipWorldPosition();
+        Vector3 previousTip = _hasLastWeaponTip ? _lastWeaponTip : tip;
         float probeRadius = Mathf.Max(0.1f, overlapRadius);
         int mask = BuildQueryMask();
 
@@ -143,8 +149,33 @@ public class WeaponHitbox : MonoBehaviour
             TryDamageCollider(col);
         }
 
+        Vector3 sweep = tip - previousTip;
+        float sweepLength = sweep.magnitude;
+        if (sweepLength > 0.03f)
+        {
+            hitCount = Physics.OverlapCapsuleNonAlloc(
+                previousTip,
+                tip,
+                probeRadius,
+                OverlapHits,
+                mask,
+                QueryTriggerInteraction.Ignore);
+
+            for (int i = 0; i < hitCount; i++)
+            {
+                Collider col = OverlapHits[i];
+                if (IsAttackerCollider(col, attackerRoot))
+                    continue;
+                TryDamageCollider(col);
+            }
+        }
+
         if (!isEnemyAttacker || attackTarget == null)
+        {
+            _lastWeaponTip = tip;
+            _hasLastWeaponTip = true;
             return;
+        }
 
         Vector3 torso = MeleeBodyTargeting.GetTorsoWorldPoint(attackTarget);
         Vector3 mid = Vector3.Lerp(tip, torso, 0.5f);
@@ -177,6 +208,8 @@ public class WeaponHitbox : MonoBehaviour
         }
 
         TryEnemyDirectBodyContact(tip, probeRadius);
+        _lastWeaponTip = tip;
+        _hasLastWeaponTip = true;
     }
 
     private bool TryEnemyDirectBodyContact(Vector3 weaponTip, float probeRadius)
@@ -196,9 +229,13 @@ public class WeaponHitbox : MonoBehaviour
         if (hitThisSwing.Contains(id))
             return false;
 
+        if (!EnemyStrikePathIsClear(resolvedOwner, player.gameObject, weaponTip))
+            return false;
+
         float bodyReach = meleeAttackRange > 0f ? meleeAttackRange : 2f;
         float tipToBody = MeleeBodyTargeting.GetClosestBodyDistance(weaponTip, player.transform);
-        if (tipToBody > bodyReach + probeRadius * 0.35f)
+        float rootReach = HorizontalDistance(resolvedOwner.transform.position, player.transform.position);
+        if (tipToBody > bodyReach + probeRadius * 0.55f || rootReach > bodyReach + 0.65f)
             return false;
 
         if (DamageOcclusion.IsBlockedFromPoint(resolvedOwner, player.gameObject, weaponTip))
@@ -269,7 +306,11 @@ public class WeaponHitbox : MonoBehaviour
             return false;
 
         int dmg = damage > 0 ? damage : 25;
-        if (DamageOcclusion.IsBlockedFromPoint(resolvedOwner, target.gameObject, GetWeaponTipWorldPosition()))
+        Vector3 weaponTip = GetWeaponTipWorldPosition();
+        if (DamageOcclusion.IsBlockedFromPoint(resolvedOwner, target.gameObject, weaponTip))
+            return NotifyEnemyMeleeMiss(resolvedOwner, true);
+
+        if (isEnemyAttacker && !EnemyStrikePathIsClear(resolvedOwner, target.gameObject, weaponTip))
             return NotifyEnemyMeleeMiss(resolvedOwner, true);
 
         target.ReceiveDamage(dmg, resolvedOwner);
@@ -343,6 +384,36 @@ public class WeaponHitbox : MonoBehaviour
             ? GetWeaponTipWorldPosition()
             : attacker.transform.position + Vector3.up * 1.4f;
         return !DamageOcclusion.IsBlockedFromPoint(attacker, target, origin);
+    }
+
+    private bool EnemyStrikePathIsClear(GameObject attacker, GameObject target, Vector3 weaponTip)
+    {
+        if (attacker == null || target == null)
+            return true;
+
+        if (attacker.GetComponent<EnemyController>() == null)
+            return true;
+
+        Vector3 attackerChest = attacker.transform.position + Vector3.up * 1.25f;
+        Vector3 targetTorso = MeleeBodyTargeting.GetTorsoWorldPoint(target.transform);
+
+        if (DamageOcclusion.IsSegmentBlocked(attacker, target, attackerChest, weaponTip))
+            return false;
+
+        if (DamageOcclusion.IsSegmentBlocked(attacker, target, attackerChest, targetTorso))
+            return false;
+
+        if (DamageOcclusion.IsSegmentBlocked(attacker, target, weaponTip, targetTorso))
+            return false;
+
+        return true;
+    }
+
+    private static float HorizontalDistance(Vector3 a, Vector3 b)
+    {
+        Vector3 delta = b - a;
+        delta.y = 0f;
+        return delta.magnitude;
     }
 
     private bool NotifyEnemyMeleeMiss(GameObject resolvedOwner, bool resumeChase)

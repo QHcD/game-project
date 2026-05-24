@@ -2,6 +2,10 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 
+#if PUN_2_OR_NEWER
+using Photon.Pun;
+#endif
+
 /// <summary>
 /// Coordination / decision-making layer that sits ON TOP of EnemyController
 /// without altering its state machine. The brain:
@@ -127,6 +131,11 @@ public class EnemyTacticalBrain : MonoBehaviour
 
     private void Update()
     {
+#if PUN_2_OR_NEWER
+        if (MultiplayerMode.IsMultiplayer && !PhotonNetwork.IsMasterClient)
+            return;
+#endif
+
         if (_ctrl == null || !_ctrl.IsAlive) { ReleaseClaim(); return; }
 
         if (Time.time >= _nextDecisionTime)

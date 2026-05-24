@@ -311,14 +311,41 @@ public class RuntimeMenuBuilder : MonoBehaviour
         var navList = new System.Collections.Generic.List<Selectable>(8);
 
         // Layout order: Continue → Multiplayer → Select Level → Prism Store → Challenges → Settings → Credits → Quit
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, startLabel,       () => GameManager.Instance?.StartRun(continueLevel)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "MULTIPLAYER",    () => ToggleMultiplayer(root)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SELECT LEVEL",   () => ToggleLevelSelect(root)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "PRISM STORE",    () => ToggleStore(root)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CHALLENGES",     () => ToggleChallenges(root)));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "SETTINGS",       () => UnityEngine.SceneManagement.SceneManager.LoadScene("Settings")));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "CREDITS",        () => UnityEngine.SceneManagement.SceneManager.LoadScene("Credits")));
-        navList.Add(MakeCenteredPillMenuButton(menuPanel, "QUIT",           QuitFromMainMenu));
+        UnityAction startAction = () => GameManager.Instance?.StartRun(continueLevel);
+        UnityAction multiplayerAction = () => ToggleMultiplayer(root);
+        UnityAction selectLevelAction = () => ToggleLevelSelect(root);
+        UnityAction storeAction = () => ToggleStore(root);
+        UnityAction challengesAction = () => ToggleChallenges(root);
+        UnityAction settingsAction = () => UnityEngine.SceneManagement.SceneManager.LoadScene("Settings");
+        UnityAction creditsAction = () => UnityEngine.SceneManagement.SceneManager.LoadScene("Credits");
+        UnityAction quitAction = QuitFromMainMenu;
+
+        Button startBtn = MakeCenteredPillMenuButton(menuPanel, startLabel, startAction);
+        Button multiplayerBtn = MakeCenteredPillMenuButton(menuPanel, "MULTIPLAYER", multiplayerAction);
+        Button selectLevelBtn = MakeCenteredPillMenuButton(menuPanel, "SELECT LEVEL", selectLevelAction);
+        Button storeBtn = MakeCenteredPillMenuButton(menuPanel, "PRISM STORE", storeAction);
+        Button challengesBtn = MakeCenteredPillMenuButton(menuPanel, "CHALLENGES", challengesAction);
+        Button settingsBtn = MakeCenteredPillMenuButton(menuPanel, "SETTINGS", settingsAction);
+        Button creditsBtn = MakeCenteredPillMenuButton(menuPanel, "CREDITS", creditsAction);
+        Button quitBtn = MakeCenteredPillMenuButton(menuPanel, "QUIT", quitAction);
+
+        RebindMainMenuButton(startBtn, startAction);
+        RebindMainMenuButton(multiplayerBtn, multiplayerAction);
+        RebindMainMenuButton(selectLevelBtn, selectLevelAction);
+        RebindMainMenuButton(storeBtn, storeAction);
+        RebindMainMenuButton(challengesBtn, challengesAction);
+        RebindMainMenuButton(settingsBtn, settingsAction);
+        RebindMainMenuButton(creditsBtn, creditsAction);
+        RebindMainMenuButton(quitBtn, quitAction);
+
+        navList.Add(startBtn);
+        navList.Add(multiplayerBtn);
+        navList.Add(selectLevelBtn);
+        navList.Add(storeBtn);
+        navList.Add(challengesBtn);
+        navList.Add(settingsBtn);
+        navList.Add(creditsBtn);
+        navList.Add(quitBtn);
 
         MenuNavigationManager.AttachLinear(root.gameObject, navList);
 
@@ -565,6 +592,21 @@ public class RuntimeMenuBuilder : MonoBehaviour
         MenuNavigationManager.AttachLinear(overlayObj, nav);
     }
 
+    static void RebindMainMenuButton(Button button, UnityAction action)
+    {
+        if (button == null || action == null)
+            return;
+
+        button.onClick.RemoveAllListeners();
+        button.onClick.AddListener(action);
+
+        Image image = button.GetComponent<Image>();
+        if (image != null)
+            button.targetGraphic = image;
+
+        button.interactable = true;
+    }
+
     // ─── Multiplayer Level Selector overlay ───────────────────────────────────
     // Builds a scrollable list of Level 1..16 with the weapon name from
     // GameManager. Selecting a row writes
@@ -786,14 +828,21 @@ public class RuntimeMenuBuilder : MonoBehaviour
     // ─── RESULTS MENU ─────────────────────────────────────────────────────────────
     void BuildResultsMenu(Transform root)
     {
-        // Ensure GameManager exists so button callbacks never silently fail
         EnsureGameManager();
+
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            Debug.Log("[EndUI] blocked stale/invalid outcome in multiplayer");
+            return;
+        }
+
+        GameManager.MenuScreen outcome = GameManager.ResolveAuthoritativeOutcomeScreen();
+        GameManager.SetPendingMenuScreen(outcome);
 
         string title = "MISSION RESULT", subtitle = "Back to the Prism.", primaryButton = "MAIN MENU";
         UnityEngine.Events.UnityAction primaryAction = GoToMainMenuSafe;
+        bool allowRetry = GameManager.IsRetrySupported();
 
-        // Resolve the match winner from MatchStatsManager (top-of-leaderboard
-        // by kill count) so the result screen can announce them by name.
         string winnerName  = "—";
         int    winnerKills = 0;
         bool   winnerIsPlayer = false;
@@ -809,8 +858,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
         }
         int liveCredits = SessionManager.Instance != null ? SessionManager.Instance.Credits : 0;
 
-        if (GameManager.PendingMenuScreen == GameManager.MenuScreen.LevelComplete)
+        if (outcome == GameManager.MenuScreen.LevelComplete)
         {
+            Debug.Log("[EndUI] outcome = Victory reason = results menu level complete");
             int stars = GameManager.Instance != null ? GameManager.Instance.CalculateStars(120f) : 1;
             int score  = GameManager.Instance != null ? GameManager.Instance.score : 0;
             int level  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
@@ -824,8 +874,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
             primaryButton = "NEXT LEVEL";
             primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.LoadNextLevel(); else GoToMainMenuSafe(); };
         }
-        else if (GameManager.PendingMenuScreen == GameManager.MenuScreen.GameOver)
+        else if (outcome == GameManager.MenuScreen.GameOver)
         {
+            Debug.Log("[EndUI] outcome = MissionFailed reason = results menu game over");
             int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
             int score = GameManager.Instance != null ? GameManager.Instance.score : 0;
             title = "MISSION FAILED";
@@ -833,11 +884,20 @@ public class RuntimeMenuBuilder : MonoBehaviour
                      + "\nLEVEL  " + level
                      + "\nSCORE  " + score
                      + "\nCREDITS  " + liveCredits.ToString("N0");
-            primaryButton = "RETRY";
-            primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.ReplayCurrentLevel(); else UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene"); };
+            if (allowRetry)
+            {
+                primaryButton = "RETRY";
+                primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.ReplayCurrentLevel(); else UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene"); };
+            }
+            else
+            {
+                primaryButton = "MAIN MENU";
+                primaryAction = GoToMainMenuSafe;
+            }
         }
-        else if (GameManager.PendingMenuScreen == GameManager.MenuScreen.Victory)
+        else if (outcome == GameManager.MenuScreen.Victory)
         {
+            Debug.Log("[EndUI] outcome = Victory reason = results menu campaign victory");
             int score = GameManager.Instance != null ? GameManager.Instance.score : 0;
             title = "PRISM CONQUERED";
             subtitle = "YOU ARE #1 — EVERY TRIAL FALLS.\nAll 20 missions completed.\nFinal Score: " + score
@@ -846,11 +906,11 @@ public class RuntimeMenuBuilder : MonoBehaviour
             primaryAction = () => { if (GameManager.Instance != null) GameManager.Instance.StartRun(1); else UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene"); };
         }
 
-        bool celebrate = GameManager.PendingMenuScreen == GameManager.MenuScreen.LevelComplete
-            || GameManager.PendingMenuScreen == GameManager.MenuScreen.Victory;
+        bool celebrate = outcome == GameManager.MenuScreen.LevelComplete
+            || outcome == GameManager.MenuScreen.Victory;
 
         string displayTitle = title;
-        if (GameManager.PendingMenuScreen == GameManager.MenuScreen.LevelComplete)
+        if (outcome == GameManager.MenuScreen.LevelComplete)
             displayTitle = "VICTORY";
 
         Color titleColor = celebrate
@@ -866,7 +926,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         TextMeshProUGUI bannerTmp = null;
         if (celebrate)
         {
-            string bannerLine = GameManager.PendingMenuScreen == GameManager.MenuScreen.Victory
+            string bannerLine = outcome == GameManager.MenuScreen.Victory
                 ? "#1 ON THE BOARD — LEGEND STATUS"
                 : "#1 PLACEMENT — CHAMPION";
             bannerTmp = MakeText(root, bannerLine, 46, new Color(1f, 0.42f, 0.95f, 1f),

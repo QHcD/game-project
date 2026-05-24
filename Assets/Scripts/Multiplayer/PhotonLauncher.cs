@@ -196,14 +196,14 @@ public class PhotonLauncher : MonoBehaviour
         bool roomBotsEnabled = true;
         bool roomFriendlyFire = true;
 
-        if (MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival)
+        if (MultiplayerRuntimeConfig.MultiplayerSelectedGameMode == MpGameMode.CoopSurvival)
         {
             roomMaxPlayers = 4;
             roomBotCount = 25;
             roomBotsEnabled = true;
             roomFriendlyFire = false;
         }
-        else if (MultiplayerMode.ActiveMode == MpGameMode.PurePvP)
+        else if (MultiplayerRuntimeConfig.MultiplayerSelectedGameMode == MpGameMode.PurePvP)
         {
             roomMaxPlayers = 8;
             roomBotCount = 0;
@@ -218,10 +218,13 @@ public class PhotonLauncher : MonoBehaviour
             roomFriendlyFire = true;
         }
 
+        MpGameMode hostMode = MultiplayerRuntimeConfig.MultiplayerSelectedGameMode;
+        Debug.Log($"[MPMode] selected mode = {hostMode}");
+
         RoomOptions options = new RoomOptions { MaxPlayers = roomMaxPlayers, IsOpen = true, IsVisible = true };
         options.CustomRoomProperties = new ExitGames.Client.Photon.Hashtable
         {
-            { MpRoomConfig.KeyMode, (byte)MultiplayerMode.ActiveMode },
+            { MpRoomConfig.KeyMode, (byte)hostMode },
             // Multiplayer rooms always start on the canonical level/loadout
             // (Level 1 Tactical Knife). Never read GameManager.currentLevel
             // here — that is the single-player Continue level and used to
@@ -290,14 +293,14 @@ public class PhotonLauncher : MonoBehaviour
         bool roomBotsEnabled = true;
         bool roomFriendlyFire = true;
 
-        if (MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival)
+        if (MultiplayerRuntimeConfig.MultiplayerSelectedGameMode == MpGameMode.CoopSurvival)
         {
             roomMaxPlayers = 4;
             roomBotCount = 25;
             roomBotsEnabled = true;
             roomFriendlyFire = false;
         }
-        else if (MultiplayerMode.ActiveMode == MpGameMode.PurePvP)
+        else if (MultiplayerRuntimeConfig.MultiplayerSelectedGameMode == MpGameMode.PurePvP)
         {
             roomMaxPlayers = 8;
             roomBotCount = 0;
@@ -312,10 +315,13 @@ public class PhotonLauncher : MonoBehaviour
             roomFriendlyFire = true;
         }
 
+        MpGameMode hostMode = MultiplayerRuntimeConfig.MultiplayerSelectedGameMode;
+        Debug.Log($"[MPMode] selected mode = {hostMode}");
+
         RoomOptions options = new RoomOptions { MaxPlayers = roomMaxPlayers, IsOpen = true, IsVisible = true };
         options.CustomRoomProperties = new ExitGames.Client.Photon.Hashtable
         {
-            { MpRoomConfig.KeyMode, (byte)MultiplayerMode.ActiveMode },
+            { MpRoomConfig.KeyMode, (byte)hostMode },
             // Multiplayer rooms always start on the canonical level/loadout
             // (Level 1 Tactical Knife). Never read GameManager.currentLevel
             // here — that is the single-player Continue level and used to
@@ -411,9 +417,11 @@ public class PhotonLauncher : MonoBehaviour
 #if PUN_2_OR_NEWER
     public override void OnConnectedToMaster()
     {
+        ApplyPlayerName();
         SetButtonsInteractable(false);
         SetStatus("Connecting... (joining lobby)");
-        PhotonNetwork.JoinLobby();
+        if (PhotonNetwork.IsConnectedAndReady)
+            PhotonNetwork.JoinLobby();
     }
 
     public override void OnJoinedLobby()
@@ -468,6 +476,7 @@ public class PhotonLauncher : MonoBehaviour
     public override void OnJoinedRoom()
     {
         MultiplayerMode.SetMultiplayer();
+        ApplyPlayerName();
         SetStatus($"Joined room: {PhotonNetwork.CurrentRoom.Name}");
 
         MpRoomConfig.ApplyToLocalState();
@@ -502,7 +511,7 @@ public class PhotonLauncher : MonoBehaviour
             // destroys it once the local player is ready.
             ShowMultiplayerLoadingScreen();
 
-            if (PhotonNetwork.IsMasterClient)
+            if (PhotonNetwork.IsMasterClient && PhotonNetwork.InRoom && PhotonNetwork.IsConnectedAndReady)
                 PhotonNetwork.LoadLevel(multiplayerSceneName);
         }
     }
@@ -917,9 +926,10 @@ public class PhotonLauncher : MonoBehaviour
 
     private void SetReadyState(bool ready)
     {
-        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
+        if (!MultiplayerShutdownGuard.CanWriteProperties("PhotonLauncher.SetReadyState", requireRoom: true)) return;
         ExitGames.Client.Photon.Hashtable props = new ExitGames.Client.Photon.Hashtable();
         props["rd"] = ready;
+        MultiplayerShutdownGuard.LogPropertyWrite("PhotonLauncher.SetReadyState");
         PhotonNetwork.LocalPlayer.SetCustomProperties(props);
     }
 
@@ -928,9 +938,17 @@ public class PhotonLauncher : MonoBehaviour
         if (PhotonNetwork.IsMasterClient)
         {
             // IsOpen / IsVisible setters are property writes — guard for leave.
-            if (MultiplayerShutdownGuard.CanWriteProperties())
+            if (!MultiplayerShutdownGuard.CanWriteProperties("PhotonLauncher.StartMatch", requireRoom: true))
+                return;
+
+            if (MultiplayerShutdownGuard.CanWriteProperties("PhotonLauncher.StartMatch IsOpen", requireRoom: true))
             {
+                MultiplayerShutdownGuard.LogPropertyWrite("PhotonLauncher.StartMatch IsOpen");
                 PhotonNetwork.CurrentRoom.IsOpen = false;
+            }
+            if (MultiplayerShutdownGuard.CanWriteProperties("PhotonLauncher.StartMatch IsVisible", requireRoom: true))
+            {
+                MultiplayerShutdownGuard.LogPropertyWrite("PhotonLauncher.StartMatch IsVisible");
                 PhotonNetwork.CurrentRoom.IsVisible = false;
             }
             SetStatus("Starting match...");
@@ -940,13 +958,14 @@ public class PhotonLauncher : MonoBehaviour
             HideLauncherCanvas();
             ShowMultiplayerLoadingScreen();
 
-            PhotonNetwork.LoadLevel(multiplayerSceneName);
+            if (PhotonNetwork.InRoom && PhotonNetwork.IsConnectedAndReady)
+                PhotonNetwork.LoadLevel(multiplayerSceneName);
         }
     }
 
     public void LeaveLobby()
     {
-        if (PhotonNetwork.InRoom)
+        if (PhotonNetwork.InRoom && PhotonNetwork.IsConnectedAndReady)
         {
             SetReadyState(false);
             PhotonNetwork.LeaveRoom();
@@ -981,8 +1000,20 @@ public class PhotonLauncher : MonoBehaviour
         // NickName setter calls Photon's internal SetPlayerCustomProperties —
         // guarded for shutdown so a late ApplyPlayerName (menu rebuild after
         // QUIT) doesn't trip "client state: Leaving".
-        if (MultiplayerShutdownGuard.CanWriteProperties() || !PhotonNetwork.InRoom)
-            PhotonNetwork.NickName = PlayerProfile.Username;
+        if (MultiplayerShutdownGuard.IsLeavingMultiplayer)
+        {
+            MultiplayerShutdownGuard.CanWriteProperties("PhotonLauncher.ApplyPlayerName", requireRoom: true);
+            return;
+        }
+
+        if (!PhotonNetwork.InRoom || !PhotonNetwork.IsConnectedAndReady)
+            return;
+
+        if (!MultiplayerShutdownGuard.CanWriteProperties("PhotonLauncher.ApplyPlayerName", requireRoom: true))
+            return;
+
+        MultiplayerShutdownGuard.LogPropertyWrite("PhotonLauncher.ApplyPlayerName");
+        PhotonNetwork.NickName = PlayerProfile.Username;
 #endif
     }
 

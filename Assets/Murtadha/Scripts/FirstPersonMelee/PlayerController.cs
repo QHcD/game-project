@@ -1144,12 +1144,44 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         {
             _tacticalActions.DisableRootMotionOnAnimators();
             if (isProne)
+            {
                 _tacticalActions.EnforceProneGround();
+                AlignProneVisualToGround();
+            }
             else if (isSliding || _tacticalActions.IsTacticalAnimActive)
                 _tacticalActions.EnforceGroundContact();
         }
         else if (isProne || isSliding)
             FlushLowProfileGroundSnap(forceZeroMove: false);
+    }
+
+    private void AlignProneVisualToGround()
+    {
+        if (!isProne || thirdPersonBody == null || controller == null)
+            return;
+
+        if (!TryProbeWalkableGround(out RaycastHit groundHit))
+            return;
+
+        float footWorldY = thirdPersonBody.transform.position.y;
+        Animator bodyAnim = thirdPersonBody.GetComponentInChildren<Animator>(true);
+        if (bodyAnim != null && bodyAnim.isHuman)
+        {
+            Transform leftFoot = bodyAnim.GetBoneTransform(HumanBodyBones.LeftFoot);
+            Transform rightFoot = bodyAnim.GetBoneTransform(HumanBodyBones.RightFoot);
+            if (leftFoot != null)
+                footWorldY = Mathf.Min(footWorldY, leftFoot.position.y);
+            if (rightFoot != null)
+                footWorldY = Mathf.Min(footWorldY, rightFoot.position.y);
+        }
+
+        float soleOffset = 0.06f;
+        float deltaWorldY = groundHit.point.y + soleOffset - footWorldY;
+        if (Mathf.Abs(deltaWorldY) < 0.001f || Mathf.Abs(deltaWorldY) > 0.28f)
+            return;
+
+        Vector3 local = thirdPersonBody.transform.localPosition;
+        thirdPersonBody.transform.localPosition = local + new Vector3(0f, deltaWorldY, 0f);
     }
 
     private void NormalizeThirdPersonBodyLocalRotation()
@@ -1387,6 +1419,14 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         coyoteTimeCounter = 0f;
     }
 
+    public void ClearMovementForMatchLock()
+    {
+        ResetMovementInputState();
+        verticalVelocity = Vector3.zero;
+        isSprinting = false;
+        sprintToggled = false;
+    }
+
     private void HandleActionInput()
     {
         if (Keyboard.current != null)
@@ -1435,7 +1475,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private Vector2 ReadMovementInput()
     {
         // ── Keyboard (always wins) ────────────────────────────────────────────
-        Vector2 keyboard = BuildNormalizedKeyboardMoveInput();
+        Vector2 keyboard = BuildNormalizedKeyboardMoveInput(ResolveControlStyleState());
         _dbgKeyboard = keyboard;
 
         // ── Gamepad ───────────────────────────────────────────────────────────
@@ -1469,17 +1509,37 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         return gamepadOut;
     }
 
-    private static Vector2 BuildNormalizedKeyboardMoveInput()
+    private static GameManager.ControlStyleState ResolveControlStyleState()
+    {
+        if (GameManager.Instance != null)
+            return GameManager.Instance.GetControlStyleState();
+
+        return GameManager.LoadControlStyleState();
+    }
+
+    private static Vector2 BuildNormalizedKeyboardMoveInput(GameManager.ControlStyleState state)
     {
         if (Keyboard.current == null) return Vector2.zero;
 
         Keyboard k = Keyboard.current;
         Vector2 m = Vector2.zero;
 
-        if (k.wKey.isPressed || k.upArrowKey.isPressed || k.numpad8Key.isPressed) m.y += 1f;
-        if (k.sKey.isPressed || k.downArrowKey.isPressed || k.numpad2Key.isPressed) m.y -= 1f;
-        if (k.aKey.isPressed || k.leftArrowKey.isPressed || k.numpad4Key.isPressed) m.x -= 1f;
-        if (k.dKey.isPressed || k.rightArrowKey.isPressed || k.numpad6Key.isPressed) m.x += 1f;
+        switch (state)
+        {
+            case GameManager.ControlStyleState.ArrowsMouse:
+                if (k.upArrowKey.isPressed) m.y += 1f;
+                if (k.downArrowKey.isPressed) m.y -= 1f;
+                if (k.leftArrowKey.isPressed) m.x -= 1f;
+                if (k.rightArrowKey.isPressed) m.x += 1f;
+                break;
+            case GameManager.ControlStyleState.WasdMouse:
+            default:
+                if (k.wKey.isPressed) m.y += 1f;
+                if (k.sKey.isPressed) m.y -= 1f;
+                if (k.aKey.isPressed) m.x -= 1f;
+                if (k.dKey.isPressed) m.x += 1f;
+                break;
+        }
 
         return Vector2.ClampMagnitude(m, 1f);
     }
@@ -1979,6 +2039,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         }
 
         wasMoving = moveInputSmoothed.sqrMagnitude > 0.01f;
+
+        if (PlayerSfx.Instance != null && onGroundContact && !isProne && !isSliding)
+            PlayerSfx.Instance.TickFootsteps(true, isSprinting, horizontalVelocity.magnitude);
     }
 
     private Vector3 GetCameraRelativeMoveDirection(Vector2 input)

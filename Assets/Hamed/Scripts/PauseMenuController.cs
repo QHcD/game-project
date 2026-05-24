@@ -175,6 +175,9 @@ public class PauseMenuController : MonoBehaviour
         if (!Application.isPlaying || !isActiveAndEnabled)
             return;
 
+        if (MultiplayerMode.IsMultiplayer)
+            return;
+
         bool isGameplayScene = SceneManager.GetActiveScene().name == MultiplayerMode.SinglePlayerSceneName ||
                                SceneManager.GetActiveScene().name == MultiplayerMode.MultiplayerSceneName;
         if (!isGameplayScene)
@@ -321,7 +324,7 @@ public class PauseMenuController : MonoBehaviour
 #if PUN_2_OR_NEWER
             try
             {
-                if (Photon.Pun.PhotonNetwork.InRoom)
+                if (Photon.Pun.PhotonNetwork.InRoom && Photon.Pun.PhotonNetwork.IsConnectedAndReady)
                     Photon.Pun.PhotonNetwork.LeaveRoom();
             }
             catch { /* never block menu return */ }
@@ -868,30 +871,34 @@ public class PauseMenuController : MonoBehaviour
 
     private string GetMovementLabel()
     {
-        GameManager.MovementScheme scheme = GameManager.Instance != null
-            ? GameManager.Instance.GetMovementScheme()
-            : (GameManager.MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", 0), 0, 1);
-        return scheme == GameManager.MovementScheme.ArrowKeys ? "ARROWS + MOUSE" : "WASD + MOUSE";
+        GameManager.ControlStyleState state = GameManager.Instance != null
+            ? GameManager.Instance.GetControlStyleState()
+            : GameManager.LoadControlStyleState();
+        return state == GameManager.ControlStyleState.ArrowsMouse ? "ARROWS + MOUSE" : "WASD + MOUSE";
     }
 
     private void CycleMovement()
     {
-        GameManager.MovementScheme current = GameManager.Instance != null
-            ? GameManager.Instance.GetMovementScheme()
-            : (GameManager.MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", 0), 0, 1);
-        GameManager.MovementScheme next = current == GameManager.MovementScheme.Wasd
-            ? GameManager.MovementScheme.ArrowKeys
-            : GameManager.MovementScheme.Wasd;
+        GameManager.ControlStyleState current = GameManager.Instance != null
+            ? GameManager.Instance.GetControlStyleState()
+            : GameManager.LoadControlStyleState();
+        GameManager.ControlStyleState next = current == GameManager.ControlStyleState.WasdMouse
+            ? GameManager.ControlStyleState.ArrowsMouse
+            : GameManager.ControlStyleState.WasdMouse;
 
         if (GameManager.Instance != null)
         {
-            GameManager.Instance.SetMovementScheme(next);
+            GameManager.Instance.SetControlStyleState(next);
         }
         else
         {
-            PlayerPrefs.SetInt("MovementScheme", (int)next);
+            PlayerPrefs.SetInt("MovementScheme", (int)GameManager.ToMovementScheme(next));
             PlayerPrefs.Save();
         }
+
+        PlayerController player = FindFirstObjectByType<PlayerController>();
+        if (player != null)
+            player.RefreshGameplayPreferences();
     }
 
     private string GetGraphicsLabel()

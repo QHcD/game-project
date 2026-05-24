@@ -16,6 +16,12 @@ using Photon.Pun;
 public static class MultiplayerRuntimeConfig
 {
     /// <summary>
+    /// Host menu selection written to Photon room custom properties on CreateRoom.
+    /// Joining clients must read the room property via <see cref="GetSelectedGameMode"/>.
+    /// </summary>
+    public static MpGameMode MultiplayerSelectedGameMode = MpGameMode.PurePvP;
+
+    /// <summary>
     /// Default level used when the host creates a new multiplayer room.
     /// Future: the multiplayer menu will let the host pick this; for now it
     /// is hard-clamped to 1 so every match starts on Tactical Knife.
@@ -72,5 +78,55 @@ public static class MultiplayerRuntimeConfig
         // Mirror PlayerController's hard-coded L1/L2 fallback when GameManager
         // hasn't booted yet (e.g. fresh Editor enter-play).
         return level == 2 ? "Razor Katana" : "Tactical Knife";
+    }
+
+    /// <summary>
+    /// Single source of truth for multiplayer game mode. Order:
+    ///   1. Photon room custom property "gm" (set by the host on CreateRoom)
+    ///   2. <see cref="MultiplayerSelectedGameMode"/> (default PurePvP)
+    /// Emits [MPMode] with the chosen source.
+    /// </summary>
+    private static MpGameMode _lastLoggedMode = (MpGameMode)255;
+    private static string _lastLoggedModeSource = string.Empty;
+
+    public static MpGameMode GetSelectedGameMode()
+    {
+        MpGameMode mode;
+        string source;
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.InRoom &&
+            PhotonNetwork.CurrentRoom != null &&
+            PhotonNetwork.CurrentRoom.CustomProperties != null &&
+            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(MpRoomConfig.KeyMode, out object raw))
+        {
+            mode = (MpGameMode)(byte)raw;
+            source = "RoomProperty";
+        }
+        else
+#endif
+        {
+            mode = MultiplayerSelectedGameMode;
+            source = "Default";
+        }
+
+        if (mode != _lastLoggedMode || source != _lastLoggedModeSource)
+        {
+            _lastLoggedMode = mode;
+            _lastLoggedModeSource = source;
+            Debug.Log($"[MPMode] room mode = {mode} source={source}");
+        }
+
+        return mode;
+    }
+
+    public static bool IsPurePvP()
+    {
+        return GetSelectedGameMode() == MpGameMode.PurePvP;
+    }
+
+    public static bool IsAiEnabled()
+    {
+        MpGameMode mode = GetSelectedGameMode();
+        return mode == MpGameMode.HybridChaos || mode == MpGameMode.CoopSurvival;
     }
 }

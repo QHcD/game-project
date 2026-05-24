@@ -229,6 +229,9 @@ public class KatanaCombatHandler : MonoBehaviour
 
                 if (DamageOcclusion.IsBlockedFromPoint(gameObject, targetRoot, bladePoint))
                     continue;
+
+                if (!EnemyKatanaStrikePathIsClear(enemyController, targetRoot, bladePoint))
+                    continue;
             }
             else if (DamageOcclusion.IsBlockedFromPoint(gameObject, targetRoot, bladePoint))
             {
@@ -247,7 +250,8 @@ public class KatanaCombatHandler : MonoBehaviour
             {
                 float reach = MeleeBodyTargeting.GetClosestBodyDistance(bladePoint, player.transform);
                 if (reach <= aiStrikeRange + 0.25f
-                    && !DamageOcclusion.IsBlockedFromPoint(gameObject, player.gameObject, bladePoint))
+                    && !DamageOcclusion.IsBlockedFromPoint(gameObject, player.gameObject, bladePoint)
+                    && EnemyKatanaStrikePathIsClear(enemyController, player.gameObject, bladePoint))
                 {
                     ApplyDamageToTarget(player.gameObject, damage);
                     landedHit = true;
@@ -281,6 +285,26 @@ public class KatanaCombatHandler : MonoBehaviour
         Vector3 delta = b - a;
         delta.y = 0f;
         return delta.magnitude;
+    }
+
+    private bool EnemyKatanaStrikePathIsClear(EnemyController enemyController, GameObject targetRoot, Vector3 bladePoint)
+    {
+        if (enemyController == null || targetRoot == null)
+            return true;
+
+        Vector3 attackerChest = enemyController.transform.position + Vector3.up * 1.25f;
+        Vector3 targetTorso = MeleeBodyTargeting.GetTorsoWorldPoint(targetRoot.transform);
+
+        if (DamageOcclusion.IsSegmentBlocked(gameObject, targetRoot, attackerChest, bladePoint))
+            return false;
+
+        if (DamageOcclusion.IsSegmentBlocked(gameObject, targetRoot, attackerChest, targetTorso))
+            return false;
+
+        if (DamageOcclusion.IsSegmentBlocked(gameObject, targetRoot, bladePoint, targetTorso))
+            return false;
+
+        return true;
     }
 
     // ── Damage routing ────────────────────────────────────────────────────────

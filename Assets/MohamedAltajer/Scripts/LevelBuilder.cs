@@ -19,6 +19,7 @@ public class LevelBuilder : MonoBehaviour
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
     private bool _navMeshReady;
+    private static bool _multiplayerBuildComplete;
 #if UNITY_EDITOR
     private static bool _editorPreviewQueued;
     private static double _lastEditorPreviewTime;
@@ -314,8 +315,15 @@ public class LevelBuilder : MonoBehaviour
             Debug.Log("[LevelBuilder] Building GameScene (synchronous)...");
             BuildGameScene();
         }
+        else if (scene.name == MultiplayerMode.MultiplayerSceneName)
+        {
+            Debug.Log("[MPBuild] running in build/editor = " + (Application.isEditor ? "editor" : "build"));
+            Debug.Log("[LevelBuilder] Building MultiplayerGameScene map (synchronous)...");
+            BuildMultiplayerScene();
+        }
         else if (scene.name == "MainMenu")
         {
+            _multiplayerBuildComplete = false;
             CleanupMainMenu();
         }
     }
@@ -332,6 +340,48 @@ public class LevelBuilder : MonoBehaviour
             _lastBuiltFrame = Time.frameCount;
             Debug.Log("[LevelBuilder] TriggerBuild called from scene-local fallback.");
             BuildGameScene();
+        }
+        else if (active.name == MultiplayerMode.MultiplayerSceneName)
+        {
+            _lastBuiltFrame = Time.frameCount;
+            Debug.Log("[LevelBuilder] TriggerBuild called for MultiplayerGameScene.");
+            BuildMultiplayerScene();
+        }
+    }
+
+    private void BuildMultiplayerScene()
+    {
+        _multiplayerBuildComplete = false;
+        try
+        {
+            Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
+            Transform arenaRoot = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
+            gameplayRoot.gameObject.SetActive(true);
+            arenaRoot.gameObject.SetActive(true);
+            ClearChildren(arenaRoot);
+
+            BuildArena(arenaRoot);
+            StabilizeGround(arenaRoot);
+            EnsureIndustrialDoorsInteractable(arenaRoot);
+            EnsureMinimapCamera();
+            _navMeshReady = TryBuildNavMesh();
+
+            MapReadinessInfo info;
+            if (!TryGetMultiplayerMapReadiness(out info))
+            {
+                Debug.LogError("[MPBuild] ERROR map missing in build");
+                Debug.LogError("[MPBuild] " + info.Message);
+                return;
+            }
+
+            _multiplayerBuildComplete = true;
+            Debug.Log("[MPBuild] map loaded from scene/resource/addressable = resource");
+        }
+        catch (System.Exception e)
+        {
+            _multiplayerBuildComplete = false;
+            Debug.LogError("[MPBuild] ERROR map missing in build");
+            Debug.LogError("[MPBuild] " + e.GetType().Name + ": " + e.Message + "\n" + e.StackTrace);
         }
     }
 
@@ -783,6 +833,7 @@ public class LevelBuilder : MonoBehaviour
         string resourcePath = "Maps/IndustrialMap/IndustrialMap";
 
         GameObject mapPrefab = Resources.Load<GameObject>(resourcePath);
+        Debug.Log("[MPBuild] map loaded from scene/resource/addressable = " + (mapPrefab != null ? "resource" : "missing"));
 
         // If the industrial prefab isn't generated yet, log a clear message.
         // Run PRISM-7 ▸ Setup Industrial Map (or wait for auto-setup) then re-enter Play.
@@ -2212,15 +2263,25 @@ public class LevelBuilder : MonoBehaviour
         {
             NavMeshSurface navMeshSurface = EnsureNavMeshSurface();
             if (navMeshSurface == null)
+            {
+                Debug.Log("[AINav] no NavMeshSurface found");
                 return false;
+            }
 
             MarkNavMeshWalkability();
+            Debug.Log("[AINav] runtime NavMesh build started");
             navMeshSurface.BuildNavMesh();
-            return NavMesh.SamplePosition(SafeFallbackSpawn, out _, 6f, NavMesh.AllAreas);
+            bool ready = NavMesh.SamplePosition(SafeFallbackSpawn, out _, 6f, NavMesh.AllAreas);
+            Debug.Log("[AINav] runtime NavMesh build completed");
+            Debug.Log("[AINav] NavMesh ready = " + ready.ToString().ToLowerInvariant());
+            if (ready)
+                Debug.Log("[AINav] using baked NavMesh data");
+            return ready;
         }
         catch (System.Exception e)
         {
             Debug.LogWarning($"[LevelBuilder] NavMesh build failed; continuing with fallback spawn. {e.GetType().Name}: {e.Message}");
+            Debug.Log("[AINav] NavMesh ready = false");
             return false;
         }
     }
@@ -3033,6 +3094,192 @@ public class LevelBuilder : MonoBehaviour
     {
         T component = target.GetComponent<T>();
         return component != null ? component : target.AddComponent<T>();
+    }
+
+    public static bool IsMultiplayerBuildComplete => _multiplayerBuildComplete;
+
+    public static bool IsLocalClientMapReadyForSync()
+    {
+        if (!Application.isPlaying)
+            return false;
+
+        if (SceneManager.GetActiveScene().name != MultiplayerMode.MultiplayerSceneName)
+            return true;
+
+        if (!IsMultiplayerBuildComplete)
+            return false;
+
+        if (!TryGetMultiplayerMapReadiness(out MapReadinessInfo info))
+            return false;
+
+        return info.MeshRendererCount > 0 && info.ColliderCount > 0 && info.GroundRaycastOk;
+    }
+
+    public struct MapReadinessInfo
+    {
+        public Transform Root;
+        public int MeshRendererCount;
+        public int ColliderCount;
+        public bool GroundRaycastOk;
+        public string Message;
+    }
+
+    public static bool TryGetMultiplayerMapReadiness(out MapReadinessInfo info)
+    {
+        info = new MapReadinessInfo();
+        Transform root = FindMultiplayerMapRoot();
+        info.Root = root;
+
+        if (root == null)
+        {
+            info.Message = "no active map root found";
+            return false;
+        }
+
+        if (!root.gameObject.activeInHierarchy)
+        {
+            info.Message = "map root inactive: " + root.name;
+            return false;
+        }
+
+        MeshRenderer[] meshRenderers = root.GetComponentsInChildren<MeshRenderer>(false);
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(false);
+        info.MeshRendererCount = meshRenderers != null ? meshRenderers.Length : 0;
+        info.ColliderCount = colliders != null ? colliders.Length : 0;
+
+        if (info.MeshRendererCount <= 0)
+        {
+            info.Message = "map root has no active MeshRenderer: " + root.name;
+            return false;
+        }
+
+        if (info.ColliderCount <= 0)
+        {
+            info.Message = "map root has no active Collider: " + root.name;
+            return false;
+        }
+
+        info.GroundRaycastOk = TryRaycastMapGround(root, out _);
+        if (!info.GroundRaycastOk)
+        {
+            info.Message = "ground raycast failed under map root: " + root.name;
+            return false;
+        }
+
+        info.Message = "ready";
+        return true;
+    }
+
+    public static bool TryValidateMultiplayerNavMesh(out bool ready)
+    {
+        ready = false;
+
+        MapReadinessInfo info;
+        if (!TryGetMultiplayerMapReadiness(out info) || info.Root == null)
+        {
+            Debug.Log("[AINav] NavMesh ready = false");
+            return false;
+        }
+
+        Vector3[] probes =
+        {
+            info.Root.position,
+            SafeFallbackSpawn,
+            new Vector3(8f, SafeFallbackSpawn.y, 8f),
+            new Vector3(-8f, SafeFallbackSpawn.y, 8f),
+            new Vector3(8f, SafeFallbackSpawn.y, -8f),
+            new Vector3(-8f, SafeFallbackSpawn.y, -8f)
+        };
+
+        for (int i = 0; i < probes.Length; i++)
+        {
+            if (NavMesh.SamplePosition(probes[i], out _, 18f, NavMesh.AllAreas))
+            {
+                ready = true;
+                break;
+            }
+        }
+
+        if (!ready)
+        {
+            Collider[] colliders = info.Root.GetComponentsInChildren<Collider>(false);
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                Collider c = colliders[i];
+                if (c == null || !c.enabled)
+                    continue;
+
+                if (NavMesh.SamplePosition(c.bounds.center, out _, 18f, NavMesh.AllAreas))
+                {
+                    ready = true;
+                    break;
+                }
+            }
+        }
+
+        Debug.Log("[AINav] NavMesh ready = " + ready.ToString().ToLowerInvariant());
+        return ready;
+    }
+
+    private static Transform FindMultiplayerMapRoot()
+    {
+        string[] names = { "FbxMap", "Map", "Environment", "LevelRoot", "GeneratedLevel", "Ground", ArenaRootName, GameplayRootName };
+        for (int i = 0; i < names.Length; i++)
+        {
+            GameObject found = GameObject.Find(names[i]);
+            if (found != null && found.activeInHierarchy)
+                return found.transform;
+        }
+
+        string[] tags = { "Map", "Environment", "LevelContent" };
+        for (int i = 0; i < tags.Length; i++)
+        {
+            try
+            {
+                GameObject[] tagged = GameObject.FindGameObjectsWithTag(tags[i]);
+                for (int j = 0; j < tagged.Length; j++)
+                    if (tagged[j] != null && tagged[j].activeInHierarchy)
+                        return tagged[j].transform;
+            }
+            catch { }
+        }
+
+        int environmentLayer = LayerMask.NameToLayer("Environment");
+        if (environmentLayer >= 0)
+        {
+            MeshRenderer[] renderers = Object.FindObjectsByType<MeshRenderer>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+            for (int i = 0; i < renderers.Length; i++)
+                if (renderers[i] != null && renderers[i].gameObject.layer == environmentLayer)
+                    return renderers[i].transform.root;
+        }
+
+        return null;
+    }
+
+    private static bool TryRaycastMapGround(Transform root, out RaycastHit hit)
+    {
+        Vector3 origin = root != null ? root.position : Vector3.zero;
+        origin.y += 500f;
+        if (Physics.Raycast(origin, Vector3.down, out hit, 1000f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+            return true;
+
+        Collider[] colliders = root != null ? root.GetComponentsInChildren<Collider>(false) : null;
+        if (colliders == null)
+            return false;
+
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider collider = colliders[i];
+            if (collider == null || !collider.enabled)
+                continue;
+
+            Vector3 above = collider.bounds.center;
+            above.y = collider.bounds.max.y + 100f;
+            if (Physics.Raycast(above, Vector3.down, out hit, 300f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+                return true;
+        }
+
+        return false;
     }
 
     // ════════════════════════════════════════════════════════════════════════

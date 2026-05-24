@@ -23,6 +23,8 @@ public class NetworkPlayerSpawner : MonoBehaviour
     public float obstacleClearance = 0.35f;
     public LayerMask obstacleMask = ~0;
     private static bool statsResetForCurrentMultiplayerScene;
+    private bool spawnRoutineRunning;
+    private bool lastGroundSecureOk;
 
     // Same fix as PhotonServiceRunner: AfterSceneLoad fires once at startup on the
     // menu (IsMultiplayer false), so the spawner was never created when the
@@ -60,6 +62,8 @@ public class NetworkPlayerSpawner : MonoBehaviour
     {
         MultiplayerMode.SetMultiplayer();
         Application.runInBackground = true;
+        MatchInitializer.EnsureExists();
+        MatchInitializer.ResetSessionState();
 
         // Defensive: if we somehow loaded the MP scene without joining a room
         // (e.g. coming from a broken state) bail out to MainMenu instead of
@@ -84,15 +88,32 @@ public class NetworkPlayerSpawner : MonoBehaviour
         // window. If spawn fails the scene player remains as a fallback.
         // Mode must be read before spawning so bots/HUD react correctly.
         MpRoomConfig.ApplyToLocalState();
+        MpGameMode mode = MultiplayerRuntimeConfig.GetSelectedGameMode();
 
-        DisableAiEnemies();
+        if (mode == MpGameMode.PurePvP)
+        {
+            Debug.Log("[MPMode] PurePvP active - skipping bot director");
+            Debug.Log("[MPMode] PurePvP active - skipping enemy spawn");
+            DisableAiEnemies();
+            ForceZeroEnemyCount();
+            Debug.Log("[MPMode] PurePvP active - totalEnemies = 0");
+        }
+        else
+        {
+            if (mode == MpGameMode.HybridChaos)
+                Debug.Log("[MPMode] AI enabled for mode = HybridChaos");
+            else if (mode == MpGameMode.CoopSurvival)
+                Debug.Log("[MPMode] AI enabled for mode = CoOpSurvival");
+
+            DisableAiEnemies();
+        }
 
 #if PUN_2_OR_NEWER
         if (PhotonNetwork.InRoom)
         {
             EnsureLocalNicknameFallback();
             RegisterPhotonPlayersForLeaderboard();
-            SpawnLocalPlayer();
+            QueueSpawnLocalPlayer();
 
             // Master client owns the match lifecycle and bot director — but
             // only when match rules are enabled. Stable-test mode skips this
@@ -110,7 +131,7 @@ public class NetworkPlayerSpawner : MonoBehaviour
     {
         EnsureLocalNicknameFallback();
         RegisterPhotonPlayersForLeaderboard();
-        SpawnLocalPlayer();
+        QueueSpawnLocalPlayer();
     }
 
     public override void OnPlayerEnteredRoom(Player newPlayer)
@@ -148,12 +169,14 @@ public class NetworkPlayerSpawner : MonoBehaviour
             return;
         }
 
+        Debug.Log("[MPBuild] spawning player after map ready");
         Debug.Log("[PhotonSpawn] spawning local player");
         Vector3 spawn = ResolveSpawnPosition();
         GameObject spawned = PhotonNetwork.Instantiate(playerPrefabPath, spawn, Quaternion.identity);
 
         if (spawned != null)
         {
+            FreezeSpawnedPlayer(spawned, true);
             Debug.Log($"[PhotonSpawn] spawned local player {spawned.name} at {spawn}");
             // Only now disable the scene-placed player — the Photon player's
             // camera is live so there is no black-screen window.
@@ -168,12 +191,93 @@ public class NetworkPlayerSpawner : MonoBehaviour
         }
     }
 
+    private void QueueSpawnLocalPlayer()
+    {
+        if (spawnRoutineRunning || FindOwnedPlayer() != null)
+            return;
+
+        StartCoroutine(SpawnLocalPlayerWhenMapReady());
+    }
+
+    private IEnumerator SpawnLocalPlayerWhenMapReady()
+    {
+        spawnRoutineRunning = true;
+        Debug.Log("[MPBuild] waiting for map");
+        yield return null;
+
+        if (!LevelBuilder.IsMultiplayerBuildComplete && LevelBuilder.Instance != null)
+            LevelBuilder.Instance.TriggerBuild();
+
+        float timeoutAt = Time.realtimeSinceStartup + 20f;
+        bool loggedRoot = false;
+        int lastMeshCount = -1;
+        int lastColliderCount = -1;
+
+        while (Time.realtimeSinceStartup < timeoutAt)
+        {
+            if (LevelBuilder.IsMultiplayerBuildComplete &&
+                LevelBuilder.TryGetMultiplayerMapReadiness(out LevelBuilder.MapReadinessInfo info))
+            {
+                if (!loggedRoot)
+                {
+                    loggedRoot = true;
+                    Debug.Log("[MPBuild] map root found: " + info.Root.name);
+                }
+                if (lastMeshCount != info.MeshRendererCount)
+                {
+                    lastMeshCount = info.MeshRendererCount;
+                    Debug.Log("[MPBuild] mesh renderers count = " + info.MeshRendererCount);
+                }
+                if (lastColliderCount != info.ColliderCount)
+                {
+                    lastColliderCount = info.ColliderCount;
+                    Debug.Log("[MPBuild] colliders count = " + info.ColliderCount);
+                }
+                Debug.Log("[MPBuild] ground raycast ok");
+                spawnRoutineRunning = false;
+                SpawnLocalPlayer();
+                yield break;
+            }
+
+            LevelBuilder.TryGetMultiplayerMapReadiness(out LevelBuilder.MapReadinessInfo pendingInfo);
+            if (pendingInfo.Root != null)
+            {
+                if (!loggedRoot && pendingInfo.Root != null)
+                {
+                    loggedRoot = true;
+                    Debug.Log("[MPBuild] map root found: " + pendingInfo.Root.name);
+                }
+                if (lastMeshCount != pendingInfo.MeshRendererCount)
+                {
+                    lastMeshCount = pendingInfo.MeshRendererCount;
+                    Debug.Log("[MPBuild] mesh renderers count = " + pendingInfo.MeshRendererCount);
+                }
+                if (lastColliderCount != pendingInfo.ColliderCount)
+                {
+                    lastColliderCount = pendingInfo.ColliderCount;
+                    Debug.Log("[MPBuild] colliders count = " + pendingInfo.ColliderCount);
+                }
+            }
+
+            yield return null;
+        }
+
+        spawnRoutineRunning = false;
+        Debug.LogError("[MPBuild] ERROR map missing in build");
+        LevelBuilder.TryGetMultiplayerMapReadiness(out LevelBuilder.MapReadinessInfo failedInfo);
+        Debug.LogError("[MPBuild] " + (string.IsNullOrWhiteSpace(failedInfo.Message) ? "map never became ready before spawn timeout" : failedInfo.Message));
+    }
+
     private IEnumerator FinalizeLocalPlayerSpawn(GameObject spawned)
     {
         // Let PlayerController.Start finish third-person body + camera setup first.
         yield return null;
 
         if (spawned == null)
+            yield break;
+
+        yield return SecureSpawnedPlayerOnGround(spawned);
+        if (!lastGroundSecureOk)
             yield break;
 
         PlayerController pc = spawned.GetComponent<PlayerController>();
@@ -194,6 +298,66 @@ public class NetworkPlayerSpawner : MonoBehaviour
             Debug.Log("[MPFlow] gameplay state active");
             Debug.Log("[MPFlow] hiding match stats");
             Debug.Log("[MPFlow] input enabled");
+        }
+
+        FreezeSpawnedPlayer(spawned, false);
+
+#if PUN_2_OR_NEWER
+        if (PhotonNetwork.IsMasterClient)
+        {
+            MpGameMode mode = MultiplayerRuntimeConfig.GetSelectedGameMode();
+            if (mode != MpGameMode.PurePvP)
+                MpBotDirector.EnsureExists(mode, MpRoomConfig.ReadBotCount());
+        }
+#endif
+    }
+
+    private IEnumerator SecureSpawnedPlayerOnGround(GameObject spawned)
+    {
+        lastGroundSecureOk = false;
+        if (spawned == null)
+            yield break;
+
+        FreezeSpawnedPlayer(spawned, true);
+
+        float timeoutAt = Time.realtimeSinceStartup + 8f;
+        while (Time.realtimeSinceStartup < timeoutAt)
+        {
+            Vector3 safe = ResolveSpawnPosition();
+            if (TryFindGroundBelow(safe + Vector3.up * 80f, out RaycastHit hit))
+            {
+                CharacterController cc = spawned.GetComponent<CharacterController>();
+                if (cc != null) cc.enabled = false;
+                spawned.transform.position = hit.point + Vector3.up * 0.15f;
+                Physics.SyncTransforms();
+                Debug.Log("[MPBuild] ground raycast ok");
+                lastGroundSecureOk = true;
+                yield break;
+            }
+
+            yield return null;
+        }
+
+        Debug.LogError("[MPBuild] ERROR map missing in build");
+        Debug.LogError("[MPBuild] no valid ground under multiplayer spawn");
+    }
+
+    private static void FreezeSpawnedPlayer(GameObject spawned, bool freeze)
+    {
+        if (spawned == null)
+            return;
+
+        CharacterController cc = spawned.GetComponent<CharacterController>();
+        if (cc != null)
+            cc.enabled = !freeze;
+
+        Rigidbody rb = spawned.GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+            rb.isKinematic = freeze;
+            rb.useGravity = !freeze;
         }
     }
 
@@ -220,9 +384,12 @@ public class NetworkPlayerSpawner : MonoBehaviour
 
     private void EnsureLocalNicknameFallback()
     {
-        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
+        if (!MultiplayerShutdownGuard.CanWriteProperties("NetworkPlayerSpawner.EnsureLocalNicknameFallback", requireRoom: true)) return;
         if (PhotonNetwork.LocalPlayer != null && string.IsNullOrWhiteSpace(PhotonNetwork.NickName))
+        {
+            MultiplayerShutdownGuard.LogPropertyWrite("NetworkPlayerSpawner.EnsureLocalNicknameFallback");
             PhotonNetwork.NickName = $"Player_{PhotonNetwork.LocalPlayer.ActorNumber}";
+        }
     }
 
     private void RegisterPhotonPlayersForLeaderboard()
@@ -353,7 +520,7 @@ public class NetworkPlayerSpawner : MonoBehaviour
         exitBtn.targetGraphic = exitBtnImg;
         exitBtn.onClick.AddListener(() => {
 #if PUN_2_OR_NEWER
-            if (PhotonNetwork.InRoom)
+            if (PhotonNetwork.InRoom && PhotonNetwork.IsConnectedAndReady)
             {
                 PhotonNetwork.LeaveRoom();
             }
@@ -411,6 +578,32 @@ public class NetworkPlayerSpawner : MonoBehaviour
             return groundHit.point + Vector3.up * 0.1f;
 
         return origin + Vector3.up;
+    }
+
+    private static bool TryFindGroundBelow(Vector3 origin, out RaycastHit hit)
+    {
+        if (Physics.Raycast(origin, Vector3.down, out hit, 300f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+            return true;
+
+        LevelBuilder.TryGetMultiplayerMapReadiness(out LevelBuilder.MapReadinessInfo info);
+        Transform root = info.Root;
+        Collider[] colliders = root != null ? root.GetComponentsInChildren<Collider>(false) : null;
+        if (colliders == null)
+            return false;
+
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider collider = colliders[i];
+            if (collider == null || !collider.enabled)
+                continue;
+
+            Vector3 above = collider.bounds.center;
+            above.y = collider.bounds.max.y + 60f;
+            if (Physics.Raycast(above, Vector3.down, out hit, 160f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+                return true;
+        }
+
+        return false;
     }
 
     private Transform[] FindSpawnPoints()
@@ -478,5 +671,11 @@ public class NetworkPlayerSpawner : MonoBehaviour
             if (enemies[i] != null)
                 enemies[i].gameObject.SetActive(false);
         }
+    }
+
+    private static void ForceZeroEnemyCount()
+    {
+        if (GameManager.Instance != null)
+            GameManager.Instance.InitializeEnemyCount(0);
     }
 }
