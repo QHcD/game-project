@@ -939,8 +939,11 @@ public class LevelBuilder : MonoBehaviour
         EnvironmentGroundAnchor.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
         MapAttachedPropsPreserver.Restore(mapInstance.transform);
 
-        MapStructureStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
+            MapStructureStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
         MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
+
+        EnemySpawnGeometry.RefreshStreetSpawnAnchors(mapInstance.transform);
+        Debug.Log($"[LevelBuilder] Street spawn anchors: {EnemySpawnGeometry.StreetSpawnAnchorCount}");
 
         Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
     }
@@ -2132,16 +2135,13 @@ public class LevelBuilder : MonoBehaviour
             cc.radius = 0.4f;
         }
 
-        // ── Find safe spawn on OPEN ground (not inside buildings) ──────────
-        // Try many candidate positions spread across the arena. For each one,
-        // check NavMesh AND verify there's open sky above (no roof/wall).
-        // 2026-05: also validate against environment colliders so the player
-        // never spawns intersecting tanks/walls/props (the #1 "stuck at start"
-        // issue reported in melee FFA).
-        Vector3 safeSpawn = _navMeshReady
-            ? FindValidatedPlayerSpawnPoint(SafeFallbackSpawn, playerController)
-            : SafeFallbackSpawn;
-        Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn}");
+        // ── Street-only spawn (real map roads — never backfill / under buildings) ──
+        Transform fbxMap = GameObject.Find("FbxMap")?.transform;
+        if (fbxMap != null)
+            EnemySpawnGeometry.RefreshStreetSpawnAnchors(fbxMap);
+
+        Vector3 safeSpawn = FindValidatedPlayerSpawnPoint(SafeFallbackSpawn, playerController);
+        Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn} (navMeshReady={_navMeshReady})");
 
         playerController.TeleportTo(safeSpawn);
         playerController.transform.rotation = Quaternion.identity;
@@ -2312,7 +2312,15 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool ShouldIncludeColliderInNavMesh(Collider collider, float groundY)
     {
+        for (Transform t = collider.transform; t != null; t = t.parent)
+        {
+            if (EnemySpawnGeometry.IsProceduralSpawnSurface(t.name.ToLowerInvariant()))
+                return false;
+        }
+
         string n = collider.name.ToLowerInvariant();
+        if (EnemySpawnGeometry.IsProceduralSpawnSurface(n))
+            return false;
         if (IsNonWalkableColliderName(n))
             return false;
 
@@ -2348,7 +2356,15 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool ShouldExcludeFromNavMesh(Renderer renderer, float groundY)
     {
+        for (Transform t = renderer.transform; t != null; t = t.parent)
+        {
+            if (EnemySpawnGeometry.IsProceduralSpawnSurface(t.name.ToLowerInvariant()))
+                return true;
+        }
+
         string n = renderer.name.ToLowerInvariant();
+        if (EnemySpawnGeometry.IsProceduralSpawnSurface(n))
+            return true;
         if (IsNonWalkableColliderName(n))
             return true;
 
@@ -2649,62 +2665,89 @@ public class LevelBuilder : MonoBehaviour
     /// </summary>
     private static Vector3 FindValidatedPlayerSpawnPoint(Vector3 fallback, PlayerController playerController)
     {
-        Vector3 baseSpawn = FindRandomOpenSpawnPoint(fallback);
+        float halfSize = Instance != null ? Instance.arenaHalfSize : 80f;
 
-        // Use the player's live CharacterController if available (authoritative capsule).
         CharacterController cc = playerController != null ? playerController.GetComponent<CharacterController>() : null;
         float radius = cc != null ? Mathf.Max(0.2f, cc.radius) : 0.4f;
         float height = cc != null ? Mathf.Max(radius * 2f, cc.height) : 2.0f;
         Vector3 center = cc != null ? cc.center : new Vector3(0f, height * 0.5f, 0f);
 
-        // Environment layers to avoid. We intentionally include everything except characters
-        // so we don't spawn inside tanks/walls/stairs/props even if they are on Default.
         int hittable = ResolveHittableLayer();
         int mask = ~0;
         if (hittable >= 0) mask &= ~(1 << hittable);
 
-        // Try multiple nearby offsets; the first that passes all checks wins.
-        Vector3[] offsets =
+        if (EnemySpawnGeometry.TryFindStreetPlayerSpawn(halfSize, fallback, out Vector3 streetFeet)
+            && PassesPlayerSpawnCapsuleChecks(streetFeet, center, radius, height, mask))
         {
-            Vector3.zero,
-            new Vector3( 2f, 0f,  0f), new Vector3(-2f, 0f,  0f),
-            new Vector3( 0f, 0f,  2f), new Vector3( 0f, 0f, -2f),
-            new Vector3( 3f, 0f,  3f), new Vector3(-3f, 0f, -3f),
-            new Vector3( 3f, 0f, -3f), new Vector3(-3f, 0f,  3f),
-            new Vector3( 5f, 0f,  0f), new Vector3( 0f, 0f,  5f),
-        };
-        Shuffle(offsets);
-
-        for (int i = 0; i < offsets.Length; i++)
-        {
-            Vector3 candidate = baseSpawn + offsets[i];
-            if (!NavMesh.SamplePosition(candidate, out NavMeshHit navHit, 3.0f, NavMesh.AllAreas))
-                continue;
-            Vector3 pos = navHit.position + Vector3.up * 0.1f;
-
-            if (!TryProjectToGround(pos, out Vector3 ground, 6f, mask))
-                continue;
-
-            ground += Vector3.up * 0.02f;
-
-            if (!IsCapsuleSpawnClear(ground, center, radius, height, mask, minObstacleDistance: 1.0f))
-                continue;
-
-            if (!IsFarFromEnemies(ground, minEnemyDistance: 6.0f))
-                continue;
-
-            // Explicit no-spawn zones by name (tanks/walls/stairs/ramps/containers).
-            if (!IsFarFromNamedObstacles(ground, minDistance: 4.0f))
-                continue;
-
-            return ground;
+            Debug.Log($"[LevelBuilder] Street player spawn at {streetFeet}");
+            return streetFeet + Vector3.up * 0.02f;
         }
 
-        // Last resort: pull to nearest NavMesh and accept (better than spawning inside geometry).
-        if (NavMesh.SamplePosition(baseSpawn, out NavMeshHit last, 10f, NavMesh.AllAreas))
-            return last.position + Vector3.up * 0.1f;
+        if (EnemySpawnGeometry.TryFindOpenPlayerSpawn(halfSize, fallback, out Vector3 openFeet)
+            && PassesPlayerSpawnCapsuleChecks(openFeet, center, radius, height, mask))
+        {
+            Debug.Log($"[LevelBuilder] Outdoor player spawn at {openFeet}");
+            return openFeet + Vector3.up * 0.02f;
+        }
+
+        // Secondary sweep around the arena rim — still outdoor-only.
+        Vector3[] rimSeeds =
+        {
+            new Vector3( halfSize * 0.55f, 0f,  0f),
+            new Vector3(-halfSize * 0.55f, 0f,  0f),
+            new Vector3( 0f, 0f,  halfSize * 0.55f),
+            new Vector3( 0f, 0f, -halfSize * 0.55f),
+            new Vector3( halfSize * 0.4f, 0f,  halfSize * 0.4f),
+            new Vector3(-halfSize * 0.4f, 0f, -halfSize * 0.4f),
+            new Vector3( halfSize * 0.4f, 0f, -halfSize * 0.4f),
+            new Vector3(-halfSize * 0.4f, 0f,  halfSize * 0.4f),
+        };
+        Shuffle(rimSeeds);
+
+        for (int i = 0; i < rimSeeds.Length; i++)
+        {
+            if (!EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(
+                    rimSeeds[i] + Vector3.up * 0.5f, default, halfSize * 0.35f, out Vector3 valid))
+                continue;
+
+            if (!EnemySpawnGeometry.IsValidPlayerStreetSpawn(valid))
+                continue;
+
+            if (!PassesPlayerSpawnCapsuleChecks(valid, center, radius, height, mask))
+                continue;
+
+            Debug.Log($"[LevelBuilder] Outdoor player spawn (rim) at {valid}");
+            return valid + Vector3.up * 0.02f;
+        }
+
+        Debug.LogWarning("[LevelBuilder] No street spawn found; retrying open-air street sweep.");
+        Vector3 lastResort = FindRandomOpenSpawnPoint(fallback);
+        if (EnemySpawnGeometry.IsValidPlayerStreetSpawn(lastResort)
+            && PassesPlayerSpawnCapsuleChecks(lastResort, center, radius, height, mask))
+            return lastResort;
 
         return SafeFallbackSpawn;
+    }
+
+    private static bool PassesPlayerSpawnCapsuleChecks(
+        Vector3 feetPos,
+        Vector3 capsuleCenterLocal,
+        float radius,
+        float height,
+        int mask)
+    {
+        Vector3 ground = feetPos + Vector3.up * 0.02f;
+
+        if (!IsCapsuleSpawnClear(ground, capsuleCenterLocal, radius, height, mask, minObstacleDistance: 0.75f))
+            return false;
+
+        if (!IsFarFromEnemies(ground, minEnemyDistance: 4.0f))
+            return false;
+
+        if (!IsFarFromNamedObstacles(ground, minDistance: 3.0f))
+            return false;
+
+        return true;
     }
 
     private static bool TryProjectToGround(Vector3 origin, out Vector3 ground, float maxDistance, int mask)
@@ -2773,7 +2816,7 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool IsFarFromNamedObstacles(Vector3 pos, float minDistance)
     {
-        string[] keywords = { "Tank", "WaterTank", "Container", "Wall", "Stairs", "Ramp" };
+        string[] keywords = { "Tank", "WaterTank", "Container", "Wall", "Stairs", "Ramp", "Hangar", "Building", "Warehouse" };
         Collider[] all = Object.FindObjectsByType<Collider>(FindObjectsSortMode.None);
         float minSq = minDistance * minDistance;
 
