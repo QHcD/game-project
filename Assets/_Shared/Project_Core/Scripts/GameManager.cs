@@ -941,11 +941,36 @@ public class GameManager : MonoBehaviour
         _levelCompleteTriggered  = false;
     }
 
+    private static bool SceneExistsInBuild(string sceneName)
+    {
+        int count = SceneManager.sceneCountInBuildSettings;
+        for (int i = 0; i < count; i++)
+        {
+            string path = UnityEngine.SceneManagement.SceneUtility.GetScenePathByBuildIndex(i);
+            if (string.Equals(
+                    System.IO.Path.GetFileNameWithoutExtension(path),
+                    sceneName,
+                    System.StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     private void BeginSceneLoad(string sceneName)
     {
+        if (!SceneExistsInBuild(sceneName))
+        {
+            Debug.LogWarning($"[GameManager] Scene '{sceneName}' not found in Build Settings — load aborted.");
+            return;
+        }
+
         if (!isActiveAndEnabled)
         {
-            SceneManager.LoadScene(sceneName);
+            try { SceneManager.LoadScene(sceneName); }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[GameManager] SceneManager.LoadScene('{sceneName}') failed: {e.Message}");
+            }
             return;
         }
 
@@ -962,7 +987,14 @@ public class GameManager : MonoBehaviour
         float minDuration = Mathf.Max(0.1f, loadingScreenMinSeconds);
         float start = Time.unscaledTime;
 
-        AsyncOperation op = SceneManager.LoadSceneAsync(sceneName);
+        AsyncOperation op;
+        try { op = SceneManager.LoadSceneAsync(sceneName); }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[GameManager] LoadSceneAsync('{sceneName}') threw: {e.Message}");
+            op = null;
+        }
+
         if (op == null)
         {
             loadingUi.DestroySelf();
