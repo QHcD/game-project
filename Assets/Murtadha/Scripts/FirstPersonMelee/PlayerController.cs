@@ -734,9 +734,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Vector3 requestedStart = IsUnsafeSpawn(transform.position)
             ? SafeFallbackSpawn
             : transform.position;
-        Vector3 startPos = IsUnsafeSpawn(requestedStart)
-            ? ResolveSafeSpawnPosition(requestedStart)
-            : requestedStart;
+        Vector3 startPos = ResolveSafeSpawnPosition(requestedStart);
         if (controller != null) controller.enabled = false;
         transform.position = startPos;
         transform.rotation = Quaternion.Euler(0f, transform.eulerAngles.y, 0f);
@@ -886,6 +884,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (staticObstacleMask.value == 0)
             staticObstacleMask = BuildDefaultStaticObstacleMask();
 
+        float arenaHalf = LevelBuilder.Instance != null ? LevelBuilder.Instance.arenaHalfSize : 80f;
+        if (EnemySpawnGeometry.TryFindStreetPlayerSpawn(arenaHalf, requestedPosition, out Vector3 streetFeet)
+            && TryBuildSafeSpawnCandidate(streetFeet, out Vector3 streetRoot))
+            return streetRoot;
+
         int attempts = Mathf.Max(8, safeSpawnMaxAttempts);
         float maxRadius = Mathf.Max(1f, safeSpawnSearchRadius);
 
@@ -907,11 +910,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (TryBuildSafeSpawnCandidate(SafeFallbackSpawn, out safePosition))
             return safePosition;
 
-        Debug.LogWarning("[PlayerController] Could not find a fully clear spawn point; using requested position after NavMesh sampling.");
-        if (NavMesh.SamplePosition(requestedPosition, out NavMeshHit hit, Mathf.Max(1f, safeSpawnNavMeshSampleRadius), NavMesh.AllAreas))
-            return RootPositionFromGroundPoint(hit.position);
-
-        return requestedPosition;
+        Debug.LogWarning("[PlayerController] Could not find an outdoor spawn; using fallback.");
+        return SafeFallbackSpawn;
     }
 
     private bool TryBuildSafeSpawnCandidate(Vector3 requestedPosition, out Vector3 rootPosition)
@@ -922,6 +922,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         float sampleRadius = Mathf.Max(0.5f, safeSpawnNavMeshSampleRadius);
         if (!NavMesh.SamplePosition(requestedPosition, out NavMeshHit navHit, sampleRadius, NavMesh.AllAreas))
+            return false;
+
+        Vector3 feetCheck = navHit.position + Vector3.up * 0.08f;
+        if (!EnemySpawnGeometry.IsValidPlayerStreetSpawn(feetCheck))
             return false;
 
         rootPosition = RootPositionFromGroundPoint(navHit.position);

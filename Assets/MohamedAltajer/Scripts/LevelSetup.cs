@@ -170,6 +170,7 @@ public class LevelSetup : MonoBehaviour
             if (mapRoot == null) continue;
             MapStructureStabilizer.Install(mapRoot.transform);
             MapVisibilityStabilizer.Install(mapRoot.transform);
+            EnemySpawnGeometry.RefreshStreetSpawnAnchors(mapRoot.transform);
         }
     }
 
