@@ -1597,6 +1597,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Add("Default");
         Add("Map");
         Add("LevelContent");
+        Add("Building");
+        Add("Buildings");
+        Add("Wall");
+        Add("Walls");
+        Add("StaticObstacle");
         return mask == 0 ? (LayerMask)0 : (LayerMask)mask;
     }
 
