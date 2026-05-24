@@ -116,8 +116,25 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         customFont = ResolveMenuFont();
         EnsureEventSystem();
+
+        var rootsBefore = new System.Collections.Generic.HashSet<int>(
+            System.Array.ConvertAll(scene.GetRootGameObjects(), go => go.GetInstanceID()));
+
         BuildCurrentScreen();
         DisableLegacyEmptyCanvas();
+
+        foreach (GameObject root in scene.GetRootGameObjects())
+        {
+            if (!rootsBefore.Contains(root.GetInstanceID()))
+                SetDontSaveRecursive(root);
+        }
+    }
+
+    private static void SetDontSaveRecursive(GameObject go)
+    {
+        go.hideFlags |= HideFlags.DontSaveInEditor | HideFlags.DontSaveInBuild;
+        foreach (Transform child in go.transform)
+            SetDontSaveRecursive(child.gameObject);
     }
 
     private static void DisableLegacyEmptyCanvas()

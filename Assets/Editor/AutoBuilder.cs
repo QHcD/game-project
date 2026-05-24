@@ -2,6 +2,7 @@ using System.IO;
 using System.Linq;
 using Unity.AI.Navigation;
 using UnityEditor;
+using UnityEngine.AI;
 using UnityEditor.Build;
 using UnityEditor.Build.Profile;
 using UnityEditor.Build.Reporting;
@@ -79,7 +80,7 @@ public static class AutoBuilder
             EditorUtility.SetDirty(surface);
         }
 
-        string[] runtimeRoots = { "GameplayRoot", "UrbanArenaRoot", "EnemiesRoot", "__LevelBuilderRuntime" };
+        string[] runtimeRoots = { "GameplayRoot", "UrbanArenaRoot", "EnemiesRoot", "__LevelBuilderRuntime", "CinematicStage", "NeonCanvas", "Map_v2" };
         foreach (string rootName in runtimeRoots)
         {
             GameObject go = GameObject.Find(rootName);
@@ -89,6 +90,30 @@ public static class AutoBuilder
                 Object.DestroyImmediate(go);
             }
         }
+
+        var activeScene = UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene();
+        if (activeScene.name != "GameScene" && activeScene.name != "MultiplayerGameScene")
+        {
+            foreach (NavMeshAgent agent in Object.FindObjectsByType<NavMeshAgent>(FindObjectsSortMode.None))
+            {
+                if (agent != null && agent.gameObject != null)
+                {
+                    Debug.Log($"[AutoBuilder] Removing NavMeshAgent object from menu scene: {agent.gameObject.name}");
+                    Object.DestroyImmediate(agent.gameObject);
+                }
+            }
+
+            foreach (GameObject go in Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None))
+            {
+                if (go != null && go.CompareTag("Enemy"))
+                {
+                    Debug.Log($"[AutoBuilder] Removing Enemy-tagged object from menu scene: {go.name}");
+                    Object.DestroyImmediate(go);
+                }
+            }
+        }
+
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(activeScene);
     }
 
     [MenuItem("PRISM-7/Fix + Build EXE")]
