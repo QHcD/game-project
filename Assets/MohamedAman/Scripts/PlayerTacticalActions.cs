@@ -214,8 +214,10 @@ public class PlayerTacticalActions : MonoBehaviour
         if (!_proneActive || _controller == null || !_controller.enabled)
             return;
 
+        CacheStandingCollider();
         ApplyProneColliderPinned();
         EnforceGroundContact();
+        FlushGroundSnap(zeroMove: false);
     }
 
     public void EnforceGroundContact()
@@ -230,16 +232,18 @@ public class PlayerTacticalActions : MonoBehaviour
         if (hit.collider != null && hit.collider.transform.IsChildOf(transform))
             return;
 
+        CacheStandingCollider();
         float capsuleBottomY = transform.position.y + _controller.center.y - _controller.height * 0.5f;
         float floorY = hit.point.y;
         float tolerance = _controller.skinWidth + 0.004f;
-        if (capsuleBottomY >= floorY - tolerance)
+        float delta = floorY - capsuleBottomY;
+        if (Mathf.Abs(delta) <= tolerance)
             return;
 
-        float lift = floorY - capsuleBottomY + _controller.skinWidth;
-        lift = Mathf.Clamp(lift, 0f, 0.35f);
-        if (lift > 0.001f)
-            _controller.Move(Vector3.up * lift);
+        float moveY = delta + (delta > 0f ? _controller.skinWidth : -_controller.skinWidth * 0.5f);
+        moveY = Mathf.Clamp(moveY, -0.35f, 0.35f);
+        if (Mathf.Abs(moveY) > 0.001f)
+            _controller.Move(Vector3.up * moveY);
     }
 
     public void FlushGroundSnap(bool zeroMove)
@@ -257,9 +261,10 @@ public class PlayerTacticalActions : MonoBehaviour
         if (hit.collider != null && hit.collider.transform.IsChildOf(transform))
             return;
 
+        CacheStandingCollider();
         float targetRootY = hit.point.y - _controller.center.y + _controller.height * 0.5f + _controller.skinWidth;
         float deltaY = targetRootY - transform.position.y;
-        deltaY = Mathf.Clamp(deltaY, -0.02f, 0.35f);
+        deltaY = Mathf.Clamp(deltaY, -0.35f, 0.35f);
         if (Mathf.Abs(deltaY) > 0.001f)
             _controller.Move(Vector3.up * deltaY);
     }

@@ -374,7 +374,7 @@ public class EndMatchCinematic : MonoBehaviour
                 new Color(0.32f, 0.56f, 0.96f, 1f), Color.white,
                 () => {
 #if PUN_2_OR_NEWER
-                    if (Photon.Pun.PhotonNetwork.InRoom)
+                    if (Photon.Pun.PhotonNetwork.InRoom && Photon.Pun.PhotonNetwork.IsConnectedAndReady)
                         Photon.Pun.PhotonNetwork.LeaveRoom();
 #endif
                     Finish(replay: false);

@@ -16,13 +16,14 @@ public static class MultiplayerMode
     public const int DefaultMultiplayerLevel = 1;
 
     public static bool       IsMultiplayer { get; private set; }
-    public static MpGameMode ActiveMode    { get; private set; } = MpGameMode.HybridChaos;
+    public static MpGameMode ActiveMode    { get; private set; } = MpGameMode.PurePvP;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetStaticsForPlayMode()
     {
         IsMultiplayer = false;
-        ActiveMode    = MpGameMode.HybridChaos;
+        ActiveMode    = MpGameMode.PurePvP;
+        MultiplayerRuntimeConfig.MultiplayerSelectedGameMode = MpGameMode.PurePvP;
     }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -40,12 +41,14 @@ public static class MultiplayerMode
     public static void SetSinglePlayer()
     {
         IsMultiplayer = false;
-        ActiveMode    = MpGameMode.HybridChaos;
+        ActiveMode    = MpGameMode.PurePvP;
 #if PUN_2_OR_NEWER
-        // Hard-leave any room/lobby so single-player runs are never observed
-        // by Photon (RPCs, ownership, and serialization stop immediately).
-        if (PhotonNetwork.InRoom)
-            PhotonNetwork.LeaveRoom();
+        if (PhotonNetwork.InRoom || PhotonNetwork.IsConnected)
+        {
+            MultiplayerShutdownGuard.BeginLeave();
+            if (PhotonNetwork.InRoom && PhotonNetwork.IsConnectedAndReady)
+                PhotonNetwork.LeaveRoom();
+        }
 #endif
     }
 
@@ -57,11 +60,15 @@ public static class MultiplayerMode
     }
 
     /// <summary>
-    /// Called by MpRoomConfig after reading room properties so all clients
-    /// share the same mode without extra RPCs.
+    /// Called by the multiplayer menu when the host picks a mode, and by
+    /// MpRoomConfig after reading room properties so all clients share the
+    /// same mode without extra RPCs.
     /// </summary>
-    public static void SetMode(MpGameMode mode)
+    public static void SetMode(MpGameMode mode, bool logLocalSelection = true)
     {
         ActiveMode = mode;
+        MultiplayerRuntimeConfig.MultiplayerSelectedGameMode = mode;
+        if (logLocalSelection)
+            Debug.Log($"[MPMode] selected mode = {mode}");
     }
 }

@@ -3,6 +3,9 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+#if PUN_2_OR_NEWER
+using Photon.Pun;
+#endif
 
 /// <summary>
 /// STRICT SINGLETON — "Destroyer" Pattern.
@@ -41,8 +44,19 @@ public class GameManager : MonoBehaviour
         ArrowKeys
     }
 
+    public enum ControlStyleState
+    {
+        WasdMouse,
+        ArrowsMouse
+    }
+
     public static GameManager Instance { get; private set; }
     public static MenuScreen PendingMenuScreen { get; private set; } = MenuScreen.MainMenu;
+
+    public static void SetPendingMenuScreen(MenuScreen screen)
+    {
+        PendingMenuScreen = screen;
+    }
 
     public const int TotalLevels = 16;
 
@@ -139,6 +153,10 @@ public class GameManager : MonoBehaviour
 
     private bool _levelCompleteTriggered = false;
     private Coroutine _sceneLoadRoutine;
+
+    private static string _cachedRetrySceneName = "GameScene";
+    private static int _cachedRetrySceneBuildIndex = -1;
+    private static int _cachedRetryLevel = 1;
 
     private AudioSource _matchVoiceAudio;
     private AudioSource _matchUiAudio;
@@ -302,7 +320,7 @@ public class GameManager : MonoBehaviour
             PlayerPrefs.SetInt("PerspectiveMode", (int)PerspectiveMode.ThirdPerson);
             PlayerPrefs.Save();
         }
-        movementScheme  = (MovementScheme)Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", (int)movementScheme), 0, 1);
+        movementScheme  = ToMovementScheme(LoadControlStyleState());
         currentLevel    = Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
     }
 
@@ -320,6 +338,9 @@ public class GameManager : MonoBehaviour
 
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
+        if (scene.name == "GameScene" || scene.name == MultiplayerMode.MultiplayerSceneName)
+            CacheActiveGameplaySession(scene);
+
         if (!scene.name.Equals("GameScene"))
             return;
 
@@ -327,6 +348,24 @@ public class GameManager : MonoBehaviour
 
         if (currentLevel == 6)
             StartCoroutine(RefreshLevel6Agents());
+    }
+
+    public static void CacheActiveGameplaySession(Scene scene)
+    {
+        if (!scene.IsValid() || !scene.isLoaded)
+            return;
+
+        _cachedRetrySceneName = scene.name;
+        _cachedRetrySceneBuildIndex = scene.buildIndex;
+        if (Instance != null)
+            _cachedRetryLevel = Instance.currentLevel;
+
+        Debug.Log($"[Retry] current scene = {_cachedRetrySceneName} index = {_cachedRetrySceneBuildIndex} level = {_cachedRetryLevel}");
+    }
+
+    private void CacheActiveGameplaySession()
+    {
+        CacheActiveGameplaySession(SceneManager.GetActiveScene());
     }
 
     private void Update()
@@ -418,12 +457,58 @@ public class GameManager : MonoBehaviour
 
     public void SetMovementScheme(MovementScheme scheme)
     {
-        movementScheme = scheme;
-        PlayerPrefs.SetInt("MovementScheme", (int)scheme);
-        PlayerPrefs.Save();
+        SetControlStyleState(ToControlStyleState(scheme));
     }
 
     public MovementScheme GetMovementScheme() => movementScheme;
+    public ControlStyleState GetControlStyleState() => ToControlStyleState(movementScheme);
+
+    public void SetControlStyleState(ControlStyleState state)
+    {
+        movementScheme = ToMovementScheme(state);
+        PlayerPrefs.SetInt("MovementScheme", (int)movementScheme);
+        PlayerPrefs.Save();
+        RefreshPlayerControlStyleState();
+    }
+
+    public static ControlStyleState LoadControlStyleState()
+    {
+        int raw = Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", 0), 0, 1);
+        return raw == (int)MovementScheme.ArrowKeys ? ControlStyleState.ArrowsMouse : ControlStyleState.WasdMouse;
+    }
+
+    public static MovementScheme ToMovementScheme(ControlStyleState state)
+    {
+        switch (state)
+        {
+            case ControlStyleState.ArrowsMouse:
+                return MovementScheme.ArrowKeys;
+            case ControlStyleState.WasdMouse:
+            default:
+                return MovementScheme.Wasd;
+        }
+    }
+
+    public static ControlStyleState ToControlStyleState(MovementScheme scheme)
+    {
+        switch (scheme)
+        {
+            case MovementScheme.ArrowKeys:
+                return ControlStyleState.ArrowsMouse;
+            case MovementScheme.Wasd:
+            default:
+                return ControlStyleState.WasdMouse;
+        }
+    }
+
+    private static void RefreshPlayerControlStyleState()
+    {
+        PlayerController[] players = UnityEngine.Object.FindObjectsByType<PlayerController>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        for (int i = 0; i < players.Length; i++)
+            if (players[i] != null)
+                players[i].RefreshGameplayPreferences();
+    }
+
     public ArenaMap GetSelectedMap() => selectedMap;
 
     public int GetContinueLevel()
@@ -479,18 +564,59 @@ public class GameManager : MonoBehaviour
 
     public void ReplayCurrentLevel()
     {
+        if (MultiplayerMode.IsMultiplayer)
+        {
+            ReplayMultiplayerMatch();
+            return;
+        }
+
         MultiplayerMode.SetSinglePlayer();
         Time.timeScale = 1f;
         if (MatchStatsManager.Instance != null)
             MatchStatsManager.Instance.ResetMatch();
+
+        int level = _cachedRetryLevel > 0 ? _cachedRetryLevel : currentLevel;
+        SetCurrentLevel(level);
+
+        string sceneName = string.IsNullOrEmpty(_cachedRetrySceneName) ? "GameScene" : _cachedRetrySceneName;
+        Debug.Log($"[Retry] reloading scene = {sceneName} index = {_cachedRetrySceneBuildIndex} level = {level}");
+
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
-        BeginSceneLoad("GameScene");
+        BeginSceneLoad(sceneName);
+    }
+
+    public void ReplayMultiplayerMatch()
+    {
+#if PUN_2_OR_NEWER
+        if (!PhotonNetwork.InRoom || !PhotonNetwork.IsConnectedAndReady)
+        {
+            GoToMainMenu();
+            return;
+        }
+
+        Time.timeScale = 1f;
+        EndMatchCinematic.GameplayLocked = true;
+        MatchInitializer.ResetSessionState();
+        MatchInitializer.EnsureExists();
+
+        if (MatchStatsManager.Instance != null)
+            MatchStatsManager.Instance.ResetMatch();
+
+        ResetLevelState();
+        LoadingScreenUI.ShowTimedForMultiplayer(5f);
+
+        if (PhotonNetwork.IsMasterClient)
+            PhotonNetwork.LoadLevel(MultiplayerMode.MultiplayerSceneName);
+#else
+        GoToMainMenu();
+#endif
     }
 
     public void SetCurrentLevel(int level)
     {
         currentLevel = Mathf.Clamp(level, 1, TotalLevels);
+        _cachedRetryLevel = currentLevel;
         enemiesRemaining = 0;
         PlayerPrefs.SetInt("ContinueLevel", currentLevel);
         if (MatchStatsManager.Instance != null)
@@ -646,6 +772,8 @@ public class GameManager : MonoBehaviour
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible   = true;
 
+        Debug.Log("[EndUI] outcome = Victory reason = level win condition met");
+
         int unlocked = PlayerPrefs.GetInt("UnlockedLevels", 1);
         if (currentLevel >= unlocked)
             PlayerPrefs.SetInt("UnlockedLevels", Mathf.Min(TotalLevels, currentLevel + 1));
@@ -653,8 +781,6 @@ public class GameManager : MonoBehaviour
         PlayerPrefs.SetInt("ContinueLevel", Mathf.Min(TotalLevels, currentLevel + 1));
         PlayerPrefs.Save();
 
-        // PRISM session — pay the +500 win bounty + advance Fast Win / Flawless
-        // / Match Wins challenges before transitioning to the menu.
         if (SessionManager.Instance != null)
             SessionManager.Instance.EndMatch(playerWon: true);
 
@@ -664,57 +790,62 @@ public class GameManager : MonoBehaviour
 
     private void ResolveTimedMatchWinner()
     {
-        // Winner resolution when the match timer expires:
-        //   1. If only one fighter is still alive, that fighter wins.
-        //   2. Otherwise the highest kill count wins.
-        //   3. Tie-break is delegated to MatchStatsManager's existing stable
-        //      ordering: Kills DESC → Deaths ASC → IsPlayer DESC → Name ASC.
-        //      "IsPlayer DESC" intentionally favours the human on a perfect
-        //      tie since the registration order is otherwise opaque to the
-        //      player; lower Deaths approximates "most health remaining" for
-        //      the alive set.
-        MatchStatsManager stats = MatchStatsManager.Instance;
-        bool playerWon;
-
-        if (stats == null)
+        if (MultiplayerMode.IsMultiplayer)
         {
-            playerWon = killCount > 0;
+            Debug.Log("[EndUI] blocked stale/invalid outcome in multiplayer");
+            return;
+        }
+
+        if (totalEnemiesSpawned > 0 && enemiesKilledThisLevel >= totalEnemiesSpawned)
+        {
+            Debug.Log("[EndUI] outcome = Victory reason = all enemies eliminated before timer");
+            LevelComplete();
+            return;
+        }
+
+        bool playerWon = EvaluateSinglePlayerTimerVictory();
+
+        if (playerWon)
+        {
+            Debug.Log("[EndUI] outcome = Victory reason = timer leaderboard player won");
+            LevelComplete();
         }
         else
         {
-            var leaders = stats.GetTopCombatants(64);
+            Debug.Log("[EndUI] outcome = MissionFailed reason = timer expired player did not win");
+            GameOver();
+        }
+    }
 
-            // Prefer the highest-kill ALIVE combatant. If everyone shown as
-            // dead, fall back to the highest-kill row regardless of alive
-            // state (stale IsAlive flags should not deny anyone a victory).
-            MatchStatsManager.CombatantSnapshot? winner = null;
+    private bool EvaluateSinglePlayerTimerVictory()
+    {
+        MatchStatsManager stats = MatchStatsManager.Instance;
+        if (stats == null)
+            return killCount > 0;
+
+        int playerKills = killCount;
+        int topKills = 0;
+        bool topIsPlayer = false;
+
+        var leaders = stats.GetTopCombatants(64);
+        if (leaders.Count > 0)
+        {
+            topKills = leaders[0].Kills;
+            topIsPlayer = leaders[0].IsPlayer;
             for (int i = 0; i < leaders.Count; i++)
             {
-                if (!leaders[i].IsAlive) continue;
-                winner = leaders[i];
-                break;
-            }
-            if (winner == null && leaders.Count > 0)
-                winner = leaders[0];
-
-            if (winner.HasValue)
-            {
-                playerWon = winner.Value.IsPlayer
-                            // If the player's local killCount has somehow
-                            // outpaced the stats snapshot (e.g. last frame
-                            // before timeout), still award the win.
-                            || killCount > winner.Value.Kills;
-            }
-            else
-            {
-                playerWon = killCount > 0;
+                if (leaders[i].IsPlayer)
+                {
+                    playerKills = Mathf.Max(playerKills, leaders[i].Kills);
+                    break;
+                }
             }
         }
 
-        // Skip EndMatchCinematic (Winners Circle + VICTORY scoreboard popup).
-        // Transition straight to the main-menu results flow instead.
-        if (playerWon) LevelComplete();
-        else           GameOver();
+        if (playerKills <= 0 && topKills <= 0)
+            return false;
+
+        return topIsPlayer || playerKills >= topKills;
     }
 
     public void LoadNextLevel()
@@ -743,14 +874,37 @@ public class GameManager : MonoBehaviour
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible   = true;
 
-        // Player lost — still award a tiny consolation credit drop so the
-        // economy never zero-sums after a hard match. EndMatch with
-        // playerWon=false also bumps the lifetimeMatchesPlayed counter.
+        Debug.Log("[EndUI] outcome = MissionFailed reason = player eliminated or fail condition");
+
         if (SessionManager.Instance != null)
             SessionManager.Instance.EndMatch(playerWon: false);
 
         PendingMenuScreen = MenuScreen.GameOver;
         SceneManager.LoadScene("MainMenu");
+    }
+
+    public static MenuScreen ResolveAuthoritativeOutcomeScreen()
+    {
+        if (MultiplayerMode.IsMultiplayer)
+            return MenuScreen.MainMenu;
+
+        if (Instance == null)
+            return PendingMenuScreen;
+
+        if (Instance.totalEnemiesSpawned > 0 &&
+            Instance.enemiesKilledThisLevel >= Instance.totalEnemiesSpawned)
+            return MenuScreen.LevelComplete;
+
+        PlayerHealth localHealth = UnityEngine.Object.FindFirstObjectByType<PlayerHealth>();
+        if (localHealth != null && !localHealth.IsAlive)
+            return MenuScreen.GameOver;
+
+        return PendingMenuScreen;
+    }
+
+    public static bool IsRetrySupported()
+    {
+        return true;
     }
 
     public void GoToMainMenu()
@@ -804,7 +958,6 @@ public class GameManager : MonoBehaviour
     private IEnumerator LoadSceneWithLoadingScreen(string sceneName)
     {
         LoadingScreenUI loadingUi = LoadingScreenUI.CreateOrGet();
-        loadingUi.SetLabel("LOADING");
 
         float minDuration = Mathf.Max(0.1f, loadingScreenMinSeconds);
         float start = Time.unscaledTime;
@@ -831,6 +984,8 @@ public class GameManager : MonoBehaviour
         op.allowSceneActivation = true;
         while (!op.isDone)
             yield return null;
+
+        CacheActiveGameplaySession();
 
         const float maxReadyWait = 4f;
         float readyStart = Time.unscaledTime;

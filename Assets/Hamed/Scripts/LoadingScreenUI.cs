@@ -27,7 +27,8 @@ public class LoadingScreenUI : MonoBehaviour
         {
             existing.gameObject.SetActive(true);
             existing.ApplyMinimalLook();
-            existing.StopAnyAnimations();
+            existing.StopLegacyAnimatorsOnly();
+            existing.StartLoadingDotsAnimation();
             return existing;
         }
 
@@ -36,7 +37,8 @@ public class LoadingScreenUI : MonoBehaviour
         LoadingScreenUI ui = root.AddComponent<LoadingScreenUI>();
         ui.BuildUi();
         ui.ApplyMinimalLook();
-        ui.StopAnyAnimations();
+        ui.StopLegacyAnimatorsOnly();
+        ui.StartLoadingDotsAnimation();
         return ui;
     }
 
@@ -52,7 +54,7 @@ public class LoadingScreenUI : MonoBehaviour
     {
         LoadingScreenUI ui = CreateOrGet();
         if (ui == null) return;
-        ui.SetLabel("LOADING...");
+        ui.StartLoadingDotsAnimation();
         ui.BeginMultiplayerLockWindow(seconds);
     }
 
@@ -78,8 +80,8 @@ public class LoadingScreenUI : MonoBehaviour
         // Hand the gameplay lock off to the 3-2-1-GO overlay (lives on its
         // own GameObject so this MonoBehaviour can be destroyed immediately
         // without killing the countdown coroutine).
-        _mpLockActive = false; // suppress OnDestroy unlock — the countdown owns it now
-        MpStartCountdown.Spawn();
+        _mpLockActive = false;
+        MatchInitializer.HandleMultiplayerLoadingFinished();
         DestroySelf();
     }
 
@@ -105,11 +107,15 @@ public class LoadingScreenUI : MonoBehaviour
         }
     }
 
-    private void StopAnyAnimations()
+    private void StartLoadingDotsAnimation()
     {
-        StopAllCoroutines();
-        _dotsRoutine = null;
+        if (_dotsRoutine != null)
+            StopCoroutine(_dotsRoutine);
+        _dotsRoutine = StartCoroutine(LoadingDotsLoop());
+    }
 
+    private void StopLegacyAnimatorsOnly()
+    {
         Animator[] animators = GetComponentsInChildren<Animator>(true);
         for (int i = 0; i < animators.Length; i++)
             if (animators[i] != null) animators[i].enabled = false;
@@ -127,6 +133,11 @@ public class LoadingScreenUI : MonoBehaviour
 
     public void DestroySelf()
     {
+        if (_dotsRoutine != null)
+        {
+            StopCoroutine(_dotsRoutine);
+            _dotsRoutine = null;
+        }
         DestroyLoadingStageIfAny();
         if (gameObject != null)
             UnityEngine.Object.Destroy(gameObject);
@@ -135,10 +146,7 @@ public class LoadingScreenUI : MonoBehaviour
     private void OnEnable()
     {
         DestroyLoadingStageIfAny();
-        // Note: the dot-anim loop is intentionally NOT started here. The
-        // multiplayer flow uses a static "LOADING..." label and a 5-second
-        // timed destroy (see ShowTimedForMultiplayer); the dot animation
-        // would overwrite that label every 0.22s.
+        StartLoadingDotsAnimation();
     }
 
     private void OnDestroy()
@@ -269,13 +277,11 @@ public class LoadingScreenUI : MonoBehaviour
         GameObject labelObject = new GameObject("LoadingLabel");
         labelObject.transform.SetParent(transform, false);
         _loadingLabel = labelObject.AddComponent<TextMeshProUGUI>();
-        _loadingLabel.text = "LOADING...";
+        _loadingLabel.text = "LOADING";
         _loadingLabel.fontSize = 36f;
         _loadingLabel.fontStyle = FontStyles.Bold;
         _loadingLabel.alignment = TextAlignmentOptions.BottomRight;
-        _loadingLabel.color = new Color(0.90f, 0.95f, 1f, 0.96f);
-        TMP_FontAsset azonix = Resources.Load<TMP_FontAsset>("Fonts/Azonix SDF");
-        if (azonix != null) _loadingLabel.font = azonix;
+        PrismaticHudTypography.ApplyLoadingStyle(_loadingLabel);
 
         RectTransform labelRect = _loadingLabel.rectTransform;
         labelRect.anchorMin = new Vector2(1f, 0f);
@@ -302,88 +308,8 @@ public class LoadingScreenUI : MonoBehaviour
 /// </summary>
 public class MpStartCountdown : MonoBehaviour
 {
-    private TextMeshProUGUI _label;
-
     public static void Spawn()
     {
-        if (UnityEngine.Object.FindFirstObjectByType<MpStartCountdown>() != null)
-            return;
-
-        GameObject root = new GameObject("RuntimeStartCountdown");
-        DontDestroyOnLoad(root);
-        root.AddComponent<MpStartCountdown>();
-    }
-
-    private void Awake()
-    {
-        Canvas canvas = gameObject.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = 9998;
-        gameObject.AddComponent<GraphicRaycaster>();
-        CanvasScaler scaler = gameObject.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920f, 1080f);
-        scaler.matchWidthOrHeight = 0.5f;
-
-        GameObject dim = new GameObject("Dim");
-        dim.transform.SetParent(transform, false);
-        Image dimImg = dim.AddComponent<Image>();
-        dimImg.color = new Color(0f, 0f, 0f, 0.35f);
-        RectTransform dimRect = dimImg.rectTransform;
-        dimRect.anchorMin = Vector2.zero;
-        dimRect.anchorMax = Vector2.one;
-        dimRect.offsetMin = Vector2.zero;
-        dimRect.offsetMax = Vector2.zero;
-
-        GameObject labelObj = new GameObject("CountdownLabel");
-        labelObj.transform.SetParent(transform, false);
-        _label = labelObj.AddComponent<TextMeshProUGUI>();
-        _label.fontSize = 220f;
-        _label.fontStyle = FontStyles.Bold;
-        _label.alignment = TextAlignmentOptions.Center;
-        _label.color = new Color(0.95f, 0.98f, 1f, 1f);
-        TMP_FontAsset azonix = Resources.Load<TMP_FontAsset>("Fonts/Azonix SDF");
-        if (azonix != null) _label.font = azonix;
-        RectTransform lr = _label.rectTransform;
-        lr.anchorMin = new Vector2(0.5f, 0.5f);
-        lr.anchorMax = new Vector2(0.5f, 0.5f);
-        lr.pivot = new Vector2(0.5f, 0.5f);
-        lr.sizeDelta = new Vector2(800f, 400f);
-        lr.anchoredPosition = Vector2.zero;
-
-        // Keep the gameplay lock asserted while we exist.
-        EndMatchCinematic.GameplayLocked = true;
-        StartCoroutine(Run());
-    }
-
-    private IEnumerator Run()
-    {
-        string[] steps = { "3", "2", "1", "GO!" };
-        for (int i = 0; i < steps.Length; i++)
-        {
-            if (_label != null)
-            {
-                _label.text = steps[i];
-                _label.color = steps[i] == "GO!"
-                    ? new Color(0.40f, 1f, 0.55f, 1f)
-                    : new Color(0.95f, 0.98f, 1f, 1f);
-            }
-            Debug.Log("[MPLoading] countdown " + steps[i]);
-            yield return new WaitForSecondsRealtime(steps[i] == "GO!" ? 0.6f : 0.8f);
-        }
-
-        EndMatchCinematic.GameplayLocked = false;
-        Debug.Log("[MPLoading] gameplay unlocked");
-        UnityEngine.Object.Destroy(gameObject);
-    }
-
-    private void OnDestroy()
-    {
-        // Safety: if torn down externally, never leave gameplay locked.
-        if (EndMatchCinematic.GameplayLocked)
-        {
-            EndMatchCinematic.GameplayLocked = false;
-            Debug.Log("[MPLoading] gameplay unlocked (countdown destroyed early)");
-        }
+        MatchInitializer.HandleMultiplayerLoadingFinished();
     }
 }

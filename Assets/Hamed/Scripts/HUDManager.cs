@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.UI;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 #if PUN_2_OR_NEWER
@@ -71,6 +72,9 @@ public class HUDManager : MonoBehaviour
     private bool _mpTimerStarted;
     private bool _mpTimerZeroLogged;
     private float _mpTimerLogAccum;
+    private float _mpPauseHudAliveLogTimer;
+    private bool _mpHudModeApplied;
+    private bool _mpEnemiesCounterVisible = true;
 
     // Kill counter (CoD-style)
     private TextMeshProUGUI killCountText;
@@ -232,6 +236,9 @@ public class HUDManager : MonoBehaviour
 
     private void Update()
     {
+        if (SceneManager.GetActiveScene().name == MultiplayerMode.MultiplayerSceneName)
+            TickMultiplayerEscPause();
+
         float remaining;
         if (MultiplayerMode.IsMultiplayer)
         {
@@ -333,6 +340,21 @@ public class HUDManager : MonoBehaviour
         HandleOverlayInput();
         UpdateMinimap();
         TryRefreshScoreboardPeriodic();
+
+        if (MultiplayerMode.IsMultiplayer)
+            RefreshMultiplayerTopBarCounter();
+    }
+
+    private void TickMultiplayerEscPause()
+    {
+        _mpPauseHudAliveLogTimer -= Time.unscaledDeltaTime;
+        if (_mpPauseHudAliveLogTimer <= 0f)
+        {
+            _mpPauseHudAliveLogTimer = 5f;
+            Debug.Log("[MPPauseHUD] alive");
+        }
+
+        MultiplayerEscPauseRouter.ProcessEscPauseInput();
     }
 
     private void EnsureMinimapReferences()
@@ -407,10 +429,66 @@ public class HUDManager : MonoBehaviour
 
     public void UpdateEnemyCount(int count)
     {
+        if (MultiplayerMode.IsMultiplayer && MultiplayerRuntimeConfig.IsPurePvP())
+            return;
+
         if (enemyCountText != null)
         {
             enemyCountText.text = "ENEMIES  " + count;
         }
+    }
+
+    private void RefreshMultiplayerTopBarCounter()
+    {
+        if (enemyCountText == null)
+            return;
+
+        MpGameMode mode = MultiplayerRuntimeConfig.GetSelectedGameMode();
+        if (mode == MpGameMode.PurePvP)
+        {
+            if (_mpEnemiesCounterVisible)
+            {
+                _mpEnemiesCounterVisible = false;
+                Debug.Log("[MPHUD] PurePvP hiding enemies counter");
+            }
+
+#if PUN_2_OR_NEWER
+            if (PhotonNetwork.InRoom)
+            {
+                int playerCount = PhotonNetwork.PlayerList.Length;
+                int maxPlayers = MpRoomConfig.ReadMaxPlayers();
+                enemyCountText.text = $"PLAYERS  {playerCount}/{maxPlayers}";
+            }
+            else
+#endif
+            {
+                enemyCountText.text = "PLAYERS  1";
+            }
+
+            enemyCountText.gameObject.SetActive(true);
+            enemyCountText.enabled = true;
+            return;
+        }
+
+        if (!_mpEnemiesCounterVisible)
+        {
+            _mpEnemiesCounterVisible = true;
+            Debug.Log($"[MPHUD] enemies counter visible for mode = {mode}");
+        }
+
+        EnemyController.CopyAliveEnemies(_mapEnemyScratch);
+        enemyCountText.text = "ENEMIES  " + _mapEnemyScratch.Count;
+        enemyCountText.gameObject.SetActive(true);
+        enemyCountText.enabled = true;
+    }
+
+    private void ApplyMultiplayerHudMode()
+    {
+        if (!MultiplayerMode.IsMultiplayer || _mpHudModeApplied)
+            return;
+
+        _mpHudModeApplied = true;
+        RefreshMultiplayerTopBarCounter();
     }
 
     public void RegisterKill()
@@ -528,8 +606,9 @@ public class HUDManager : MonoBehaviour
                 EnsureFullMapOverlay(canvasObject.transform);
                 EnsureScoreboardOverlay(canvasObject.transform);
                 EnsurePlayerIdentityChip(canvasObject.transform);
-                EnsureScoreLabelPresentation(canvasObject.transform);
-            }
+        if (canvasObject != null)
+            EnsureScoreLabelPresentation(canvasObject.transform);
+    }
             return;
         }
 
@@ -714,31 +793,40 @@ public class HUDManager : MonoBehaviour
 
         Image labelBg = scoreText.GetComponent<Image>();
         if (labelBg != null)
-            labelBg.enabled = false;
+            Object.Destroy(labelBg);
 
-        for (int i = 0; i < scoreText.transform.childCount; i++)
+        Shadow uiShadow = scoreText.GetComponent<Shadow>();
+        if (uiShadow != null)
+            Object.Destroy(uiShadow);
+
+        Outline uiOutline = scoreText.GetComponent<Outline>();
+        if (uiOutline != null)
+            Object.Destroy(uiOutline);
+
+        for (int i = scoreText.transform.childCount - 1; i >= 0; i--)
         {
-            Image childImg = scoreText.transform.GetChild(i).GetComponent<Image>();
+            Transform child = scoreText.transform.GetChild(i);
+            if (child == null) continue;
+            Image childImg = child.GetComponent<Image>();
             if (childImg != null)
-                childImg.enabled = false;
+                Object.Destroy(child.gameObject);
         }
 
-        string[] legacyBgNames = { "ScoreTextBackground", "ScoreBackground", "Background" };
+        string[] legacyBgNames = { "ScoreTextBackground", "ScoreBackground", "Background", "ScorePanel", "ScoreBg" };
         for (int n = 0; n < legacyBgNames.Length; n++)
         {
             Transform legacy = hudCanvas.Find("TopBar/" + legacyBgNames[n]);
             if (legacy == null)
                 legacy = hudCanvas.Find(legacyBgNames[n]);
             if (legacy == null)
+                legacy = FindHudChildRecursive(hudCanvas, legacyBgNames[n]);
+            if (legacy == null || legacy == scoreText.transform)
                 continue;
 
-            Image legacyImg = legacy.GetComponent<Image>();
-            if (legacyImg != null)
-            {
-                legacyImg.enabled = false;
-                legacyImg.raycastTarget = false;
-            }
+            Object.Destroy(legacy.gameObject);
         }
+
+        scoreText.raycastTarget = false;
 
         Transform parent = scoreText.transform.parent;
         if (parent != null && parent.name == "TopBar")
@@ -1025,7 +1113,7 @@ public class HUDManager : MonoBehaviour
             // panel to be off-centre and resolution-dependent.
             GameObject panel = CreateImage(scoreboardOverlay.transform, "ScoreboardPanel",
                 new Color(0.05f, 0.08f, 0.14f, 0.95f),
-                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(540f, 560f));
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(640f, 620f));
 
             RectTransform panelRect = panel.GetComponent<RectTransform>();
             panelRect.pivot = new Vector2(0.5f, 0.5f);
@@ -1036,10 +1124,14 @@ public class HUDManager : MonoBehaviour
 
             // ── Title ────────────────────────────────────────────────────────
             scoreboardTitleText = CreateText(panel.transform, "ScoreboardTitle",
-                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -36f), new Vector2(480f, 46f),
-                34f, FontStyles.Bold, TextAlignmentOptions.Center);
+                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -36f), new Vector2(580f, 52f),
+                30f, FontStyles.Bold, TextAlignmentOptions.Center);
             scoreboardTitleText.text = "MATCH STATS";
             scoreboardTitleText.color = Color.white;
+            scoreboardTitleText.enableAutoSizing = true;
+            scoreboardTitleText.fontSizeMin = 22f;
+            scoreboardTitleText.fontSizeMax = 30f;
+            scoreboardTitleText.overflowMode = TextOverflowModes.Truncate;
 
             // Thin separator line under title
             GameObject sep = new GameObject("TitleSeparator");
@@ -1051,11 +1143,10 @@ public class HUDManager : MonoBehaviour
             sepRect.anchorMax = new Vector2(0.5f, 1f);
             sepRect.pivot     = new Vector2(0.5f, 1f);
             sepRect.anchoredPosition = new Vector2(0f, -84f);
-            sepRect.sizeDelta        = new Vector2(480f, 2f);
+            sepRect.sizeDelta        = new Vector2(580f, 2f);
 
-            // ── Column headers ───────────────────────────────────────────────
             scoreboardSummaryText = CreateText(panel.transform, "ScoreboardSummary",
-                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -96f), new Vector2(480f, 28f),
+                new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -96f), new Vector2(580f, 28f),
                 17f, FontStyles.Bold, TextAlignmentOptions.Left);
             scoreboardSummaryText.text = "LIVE MATCH LEADERBOARD";
             scoreboardSummaryText.color = new Color(0.50f, 0.75f, 1f, 0.80f);
@@ -1083,7 +1174,23 @@ public class HUDManager : MonoBehaviour
         }
 
         if (scoreboardTitleText != null)
+        {
             scoreboardTitleText.text = MultiplayerMode.IsMultiplayer ? "MULTIPLAYER LEADERBOARD" : "MATCH STATS";
+            scoreboardTitleText.enableAutoSizing = true;
+            scoreboardTitleText.fontSizeMin = 22f;
+            scoreboardTitleText.fontSizeMax = 30f;
+            RectTransform titleRect = scoreboardTitleText.rectTransform;
+            if (titleRect != null)
+                titleRect.sizeDelta = new Vector2(580f, 52f);
+        }
+
+        Transform existingPanel = scoreboardOverlay != null ? scoreboardOverlay.transform.Find("ScoreboardPanel") : null;
+        if (existingPanel != null)
+        {
+            RectTransform panelRect = existingPanel as RectTransform;
+            if (panelRect != null)
+                panelRect.sizeDelta = new Vector2(640f, 620f);
+        }
 
         scoreboardOverlay.SetActive(false);
     }
@@ -1311,7 +1418,7 @@ public class HUDManager : MonoBehaviour
         MatchStatsManager stats = MatchStatsManager.Instance;
         if (stats == null) return;
 
-        bool showBots = !MultiplayerMode.IsMultiplayer || (MultiplayerMode.ActiveMode == MpGameMode.HybridChaos);
+        bool showBots = !MultiplayerMode.IsMultiplayer || MultiplayerRuntimeConfig.IsAiEnabled();
 
         // Header row stays as a fixed column guide.
         if (scoreboardSummaryText != null)
@@ -1818,6 +1925,7 @@ public class HUDManager : MonoBehaviour
         // one over the bottom panel so the player always sees "HP 100 / 100".
         EnsureMultiplayerHpText();
         EnsureMultiplayerTopBarTexts();
+        ApplyMultiplayerHudMode();
         RefreshMultiplayerLocalHealth(ph);
 
         int hpCur = ph != null ? Mathf.CeilToInt(ph.currentHealth) : 0;
@@ -1893,11 +2001,12 @@ public class HUDManager : MonoBehaviour
         scoreText.enabled = true;
         scoreText.color = new Color(0.97f, 0.98f, 1f, 1f);
         if (string.IsNullOrEmpty(scoreText.text)) scoreText.text = "SCORE  0";
+        EnsureScoreLabelPresentation(canvas);
         // Push to front so the top-bar tint never paints over it.
         scoreText.transform.SetAsLastSibling();
         Debug.Log("[MPHUD] score text restored");
 
-        // ── ENEMIES (top-right, parented under top bar if present) ──────────
+        // ── Top-right counter: PLAYERS in PurePvP, ENEMIES in AI modes ──────
         Transform enemyParent = topBar != null ? topBar : canvas;
         if (enemyCountText == null)
         {
@@ -1906,12 +2015,36 @@ public class HUDManager : MonoBehaviour
                 new Vector2(-215f, 14f), new Vector2(380f, 40f),
                 28f, FontStyles.Bold, TextAlignmentOptions.Right);
         }
-        enemyCountText.gameObject.SetActive(true);
+
         enemyCountText.enabled = true;
         enemyCountText.color = new Color(0.97f, 0.98f, 1f, 1f);
-        if (string.IsNullOrEmpty(enemyCountText.text)) enemyCountText.text = "ENEMIES  0";
         enemyCountText.transform.SetAsLastSibling();
-        Debug.Log("[MPHUD] enemies text restored");
+
+        if (MultiplayerRuntimeConfig.IsPurePvP())
+        {
+            Debug.Log("[MPHUD] PurePvP hiding enemies counter");
+#if PUN_2_OR_NEWER
+            if (PhotonNetwork.InRoom)
+            {
+                int playerCount = PhotonNetwork.PlayerList.Length;
+                int maxPlayers = MpRoomConfig.ReadMaxPlayers();
+                enemyCountText.text = $"PLAYERS  {playerCount}/{maxPlayers}";
+            }
+            else
+#endif
+                enemyCountText.text = "PLAYERS  1";
+            enemyCountText.gameObject.SetActive(true);
+            Debug.Log("[MPHUD] players counter restored");
+        }
+        else
+        {
+            MpGameMode mode = MultiplayerRuntimeConfig.GetSelectedGameMode();
+            Debug.Log($"[MPHUD] enemies counter visible for mode = {mode}");
+            if (string.IsNullOrEmpty(enemyCountText.text))
+                enemyCountText.text = "ENEMIES  0";
+            enemyCountText.gameObject.SetActive(true);
+            Debug.Log("[MPHUD] enemies text restored");
+        }
     }
 
     private void EnsureMultiplayerHpText()

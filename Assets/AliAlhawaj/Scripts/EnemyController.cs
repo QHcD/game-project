@@ -263,6 +263,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool _hasLastValidNavPosition;
     private float _navValidateTimer;
     private Vector3 _watchdogLastPosition;
+    private float _aiBuildLogTimer;
+    private float _noPathReacquireSince = -1f;
+    private bool _authorityLogged;
+    private bool _destinationSuccessLogged;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -628,16 +632,16 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool _navMeshErrorLogged;
     private float _nextForceRetargetTime;
 
-    private void EnsureAgentOnNavMesh()
+    private bool EnsureAgentOnNavMesh()
     {
         if (_agent == null) _agent = GetComponent<NavMeshAgent>();
-        if (_agent == null) return;
+        if (_agent == null) return false;
 
         if (!_agent.enabled)
             _agent.enabled = true;
 
         if (_agent.isOnNavMesh)
-            return;
+            return true;
 
         // Search downward first (same Y level ±4m) to avoid snapping to elevated
         // surfaces (rooftops, bridges) that happen to be within a large radius.
@@ -658,18 +662,23 @@ public class EnemyController : MonoBehaviour, IDamageable
             transform.position = valid;
             _agent.Warp(valid);
             _spawnY = valid.y;
+            Debug.Log("[AINav] warped enemy " + name + " to NavMesh position");
         }
         else if (NavMesh.SamplePosition(searchOrigin, out NavMeshHit hit, searchRadius, NavMesh.AllAreas))
         {
             transform.position = hit.position;
             _agent.Warp(hit.position);
+            Debug.Log("[AINav] warped enemy " + name + " to NavMesh position");
         }
 
         if (!_agent.isOnNavMesh && !_navMeshErrorLogged)
         {
             _navMeshErrorLogged = true;
             Debug.LogError($"[EnemyController] {name} is not on NavMesh after SamplePosition+Warp. pos={transform.position}", this);
+            Debug.LogError("[AINav] ERROR no NavMesh found near enemy " + name);
         }
+
+        return _agent.isOnNavMesh;
     }
 
     private void OnEnable()
@@ -719,9 +728,39 @@ public class EnemyController : MonoBehaviour, IDamageable
         return pc != null ? pc.transform : null;
     }
 
+    private bool HasAiDecisionAuthority()
+    {
+#if PUN_2_OR_NEWER
+        return !MultiplayerMode.IsMultiplayer || PhotonNetwork.IsMasterClient;
+#else
+        return true;
+#endif
+    }
+
+    private void LogAiAuthorityOnce()
+    {
+        if (_authorityLogged)
+            return;
+
+        _authorityLogged = true;
+#if PUN_2_OR_NEWER
+        if (MultiplayerMode.IsMultiplayer && PhotonNetwork.IsMasterClient)
+            Debug.Log("[AIAuth] MasterClient controls enemy " + name);
+        else if (MultiplayerMode.IsMultiplayer)
+            Debug.Log("[AIAuth] Non-master display-only enemy " + name);
+#endif
+    }
+
     private void Update()
     {
         if (_state == State.Dead) return;
+        LogAiAuthorityOnce();
+
+        if (!HasAiDecisionAuthority())
+        {
+            SyncAnimator();
+            return;
+        }
 
         // End-match cinematic — freeze AI: stop the agent in place, drop the
         // animator into idle, but keep the visible mesh updated so the orbit
@@ -866,6 +905,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void FixedUpdate()
     {
+        if (!HasAiDecisionAuthority())
+            return;
+
         ApplyFlockingSteering();
         EnforceStaticGeometryConstraint();
     }
@@ -1250,7 +1292,6 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         float distSqr = GetTargetHorizontalDistanceSqr();
-        float strikeSqr = GetStrictMeleeStrikeRangeSqr();
         if (distSqr > GetMeleeBreakDistanceSqr() || !HasCombatVisionTo(_target))
         {
             AbortActiveAttack();
@@ -1258,7 +1299,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        if (distSqr > strikeSqr)
+        if (GetTargetBodyDistance() > GetStrictMeleeStrikeRange())
         {
             AbortActiveAttack();
             TransitionTo(State.Chase);
@@ -1341,9 +1382,13 @@ public class EnemyController : MonoBehaviour, IDamageable
             NavMesh.CalculatePath(transform.position, _target.position, NavMesh.AllAreas, _pathScratch);
 
             if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
+            {
                 _agent.SetDestination(dest);
+                LogMoveDestination(dest);
+            }
             else
             {
+                Debug.Log("[AIMove] no path, reacquiring target");
                 RepositionOnInvalidPath();
                 if (debugAI)
                     Debug.Log($"[EnemyAI] {name} chase path {_pathScratch.status}, repositioning.", this);
@@ -2015,6 +2060,22 @@ public class EnemyController : MonoBehaviour, IDamageable
         return delta.sqrMagnitude;
     }
 
+    private float GetTargetBodyDistance()
+    {
+        if (_target == null)
+            return float.MaxValue;
+
+        return MeleeBodyTargeting.GetClosestBodyDistance(GetWeaponStrikePoint(), _target);
+    }
+
+    private Vector3 GetWeaponStrikePoint()
+    {
+        if (_equippedWeaponHitbox != null)
+            return _equippedWeaponHitbox.transform.position;
+
+        return transform.position + transform.forward * 0.85f + Vector3.up * 1.1f;
+    }
+
     private float GetApproachEnterDistanceSqr()
     {
         float enterDist = meleeAttackRange + Mathf.Max(0.15f, attackRangePadding * 0.5f);
@@ -2029,7 +2090,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private bool IsWithinMeleeAttackRange()
     {
-        return GetTargetHorizontalDistanceSqr() <= GetStrictMeleeStrikeRangeSqr();
+        return GetTargetBodyDistance() <= GetStrictMeleeStrikeRange();
     }
 
     private bool CanBeginMeleeAttack()
@@ -2211,9 +2272,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (_target != null)
         {
-            Vector3 delta = _target.position - transform.position;
-            delta.y = 0f;
-            if (delta.sqrMagnitude > GetStrictMeleeStrikeRangeSqr() || !HasCombatVisionTo(_target))
+            if (GetTargetBodyDistance() > GetStrictMeleeStrikeRange() || !HasCombatVisionTo(_target))
             {
                 CompleteAttackSwing(resumeChaseOnMiss: true);
                 yield break;
@@ -2265,6 +2324,11 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+#if PUN_2_OR_NEWER
+        if (MultiplayerMode.IsMultiplayer && !PhotonNetwork.IsMasterClient)
+            return;
+#endif
+
         if (MultiplayerMode.IsMultiplayer && MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival)
         {
             if (attackerRoot != null && attackerRoot.GetComponentInParent<EnemyController>() != null)
@@ -2336,6 +2400,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         int healthBefore = _currentHealth;
         if (CombatDebug.Enabled)
             CombatDebug.Log($"applyingDamage amount={appliedDamage} target={gameObject.name}");
+
+        if (MultiplayerMode.IsMultiplayer)
+            Debug.Log("[AICombat] damage applied by MasterClient");
 
         TakeDamage(appliedDamage, byPlayer: fromPlayer);
 
@@ -3136,6 +3203,11 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
 
         _agent.isStopped = false;
+        _agent.updatePosition = true;
+        _agent.updateRotation = false;
+        _agent.speed = Mathf.Max(0.1f, _agent.speed);
+        _agent.acceleration = Mathf.Max(0.1f, _agent.acceleration);
+        _agent.angularSpeed = Mathf.Max(30f, _agent.angularSpeed);
 
         bool needsDestination = !_agent.hasPath || _agent.pathPending
             || (_agent.remainingDistance <= _agent.stoppingDistance + 0.15f && _agent.velocity.sqrMagnitude < 0.04f);
@@ -3145,6 +3217,19 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         if (needsDestination || stalePartial || Time.time >= _nextForceRetargetTime)
         {
+            if (!_agent.hasPath && _noPathReacquireSince < 0f)
+                _noPathReacquireSince = Time.time;
+            else if (!_agent.hasPath && Time.time - _noPathReacquireSince > 1.2f)
+            {
+                Debug.Log("[AIMove] no path, reacquiring target");
+                EvaluateTargets();
+                _noPathReacquireSince = Time.time;
+            }
+            else if (_agent.hasPath)
+            {
+                _noPathReacquireSince = -1f;
+            }
+
             _nextForceRetargetTime = Time.time + Mathf.Max(0.25f, repathInterval);
             TrySetChaseDestinationValidated();
         }
@@ -3171,12 +3256,32 @@ public class EnemyController : MonoBehaviour, IDamageable
                 dest = edgeHit.position;
 
             _agent.SetDestination(dest);
+            LogMoveDestination(dest);
             return;
         }
 
+        Debug.Log("[AIMove] no path, reacquiring target");
         RepositionOnInvalidPath();
         if (debugAI)
             Debug.Log($"[EnemyAI] {name} initial chase path {_pathScratch.status}, repositioned.", this);
+    }
+
+    private void LogMoveDestination(Vector3 dest)
+    {
+        if (!MultiplayerMode.IsMultiplayer)
+            return;
+
+        if (!_destinationSuccessLogged)
+        {
+            _destinationSuccessLogged = true;
+            Debug.Log("[AIMove] SetDestination enemy " + name + " target=" + dest);
+        }
+
+        if (Time.time >= _aiBuildLogTimer)
+        {
+            _aiBuildLogTimer = Time.time + 2.5f;
+            Debug.Log("[AIMove] agent velocity=" + (_agent != null ? _agent.velocity.ToString() : "null"));
+        }
     }
 
     private Vector3 ClampChaseDestination(Vector3 raw)
@@ -3252,6 +3357,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             AbortActiveAttack();
 
         _state = newState;
+        if (MultiplayerMode.IsMultiplayer && (newState == State.Patrol || newState == State.Chase || newState == State.Attack))
+            Debug.Log("[AIState] enemy " + name + " state = " + newState);
 
         if (debugAICombat)
         {
@@ -3373,7 +3480,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         var wait = new WaitForSeconds(detectionInterval);
         while (true)
         {
-            if (_state != State.Dead)
+            if (_state != State.Dead && HasAiDecisionAuthority())
                 EvaluateTargets();
             yield return wait;
         }
@@ -3387,6 +3494,44 @@ public class EnemyController : MonoBehaviour, IDamageable
     public void SetMultiplayerTargets(System.Collections.Generic.List<Transform> humanTargets)
     {
         _mpHumanTargets = humanTargets;
+    }
+
+    public void PrepareForMultiplayerAi()
+    {
+        ConfigureAgent();
+#if PUN_2_OR_NEWER
+        if (MultiplayerMode.IsMultiplayer && PhotonNetwork.IsMasterClient)
+        {
+            PhotonView view = GetComponent<PhotonView>();
+            if (view != null && PhotonNetwork.MasterClient != null && view.OwnerActorNr != PhotonNetwork.MasterClient.ActorNumber)
+            {
+                view.TransferOwnership(PhotonNetwork.MasterClient);
+                Debug.Log("[AIAuth] transferred enemy authority to MasterClient");
+            }
+        }
+#endif
+
+        bool onNavMesh = EnsureAgentOnNavMesh();
+        Debug.Log("[AINav] enemy " + name + " isOnNavMesh = " + onNavMesh.ToString().ToLowerInvariant());
+        if (!onNavMesh)
+            return;
+
+        _agent.enabled = true;
+        _agent.isStopped = false;
+        _agent.updatePosition = true;
+        _agent.updateRotation = false;
+        _agent.speed = Mathf.Max(0.1f, _agent.speed);
+        _agent.acceleration = Mathf.Max(0.1f, _agent.acceleration);
+        _agent.angularSpeed = Mathf.Max(30f, _agent.angularSpeed);
+
+        if (_scanCoroutine == null && isActiveAndEnabled)
+            _scanCoroutine = StartCoroutine(TargetScanLoop());
+
+        Debug.Log("[AICombat] sensing enabled");
+        Debug.Log("[AICombat] attack state enabled");
+        EvaluateTargets();
+        if (_target != null)
+            Debug.Log("[AICombat] target acquired = " + (_target.GetComponentInParent<PlayerController>() != null ? "PLAYER" : "ENEMY"));
     }
 
     private void EvaluateTargets()
@@ -3407,6 +3552,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (nearest != null && nearestD <= Mathf.Max(detectionRadius, aggressiveScanRadius))
             {
                 if (nearest != _target) { _target = nearest; _targetLockTimer = Time.time + targetLockDuration; }
+                if (MultiplayerMode.IsMultiplayer)
+                    Debug.Log("[AICombat] target acquired = PLAYER");
                 if ((_state == State.Idle || _state == State.Patrol || _state == State.Attack) && CanEngageChase(_target))
                     TransitionTo(State.Chase);
                 return;
@@ -3448,6 +3595,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         {
             _target = candidate;
             _targetLockTimer = Time.time + targetLockDuration;
+            if (MultiplayerMode.IsMultiplayer)
+                Debug.Log("[AICombat] target acquired = " + (_target.GetComponentInParent<PlayerController>() != null ? "PLAYER" : "ENEMY"));
         }
 
         if ((_state == State.Idle || _state == State.Patrol || _state == State.Attack) &&
@@ -3477,7 +3626,10 @@ public class EnemyController : MonoBehaviour, IDamageable
         random.y = transform.position.y;
 
         if (NavMesh.SamplePosition(random, out NavMeshHit hit, patrolRadius, NavMesh.AllAreas))
+        {
             _agent.SetDestination(hit.position);
+            LogMoveDestination(hit.position);
+        }
     }
 
     private bool HandleOffMeshLinkTraversal()
@@ -3601,7 +3753,10 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         Vector3 targetPos = _target.position;
         if (NavMesh.SamplePosition(targetPos, out NavMeshHit hit, 4.5f, NavMesh.AllAreas))
+        {
             _agent.SetDestination(hit.position);
+            LogMoveDestination(hit.position);
+        }
     }
 
     private bool IsAgentReady()

@@ -38,7 +38,7 @@ public static class MpRoomConfig
     public static void WriteRoomConfig(MpGameMode mode, int level, int botCount)
     {
 #if PUN_2_OR_NEWER
-        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
+        if (!MultiplayerShutdownGuard.CanWriteProperties("MpRoomConfig.WriteRoomConfig", requireRoom: true)) return;
 
         var props = new Hashtable
         {
@@ -46,6 +46,7 @@ public static class MpRoomConfig
             { KeyLevel,    level       },
             { KeyBotCount, botCount    },
         };
+        MultiplayerShutdownGuard.LogPropertyWrite("MpRoomConfig.WriteRoomConfig");
         PhotonNetwork.CurrentRoom.SetCustomProperties(props);
         Debug.Log($"[MpRoomConfig] wrote mode={mode} level={level} bots={botCount}");
 #endif
@@ -55,12 +56,7 @@ public static class MpRoomConfig
 
     public static MpGameMode ReadMode()
     {
-#if PUN_2_OR_NEWER
-        if (PhotonNetwork.InRoom &&
-            PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(KeyMode, out object raw))
-            return (MpGameMode)(byte)raw;
-#endif
-        return MpGameMode.HybridChaos;
+        return MultiplayerRuntimeConfig.GetSelectedGameMode();
     }
 
     public static int ReadLevel()
@@ -147,8 +143,8 @@ public static class MpRoomConfig
     /// </summary>
     public static void ApplyToLocalState()
     {
-        MpGameMode mode = ReadMode();
-        MultiplayerMode.SetMode(mode);
+        MpGameMode mode = MultiplayerRuntimeConfig.GetSelectedGameMode();
+        MultiplayerMode.SetMode(mode, logLocalSelection: false);
         Debug.Log($"[MpRoomConfig] applied mode={mode} level={ReadLevel()} bots={ReadBotCount()} botsEnabled={ReadBotsEnabled()} friendlyFire={ReadFriendlyFire()} state={ReadMatchState()}");
     }
 }

@@ -72,6 +72,7 @@ public class UIManager : MonoBehaviour
         Time.timeScale = 1f;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
+        CleanMainMenuMissingScripts();
         CompactifyMainMenuCanvas();
         _mainMenuApplyFramesRemaining = 60;
 
@@ -113,7 +114,18 @@ public class UIManager : MonoBehaviour
     public void ShowGameFinishedMenu()
     {
         if (MultiplayerMode.IsMultiplayer)
+        {
+            Debug.Log("[EndUI] blocked stale/invalid outcome in multiplayer");
             return;
+        }
+
+        GameManager.MenuScreen outcome = GameManager.ResolveAuthoritativeOutcomeScreen();
+        if (outcome == GameManager.MenuScreen.LevelComplete || outcome == GameManager.MenuScreen.Victory)
+            Debug.Log("[EndUI] outcome = Victory reason = authoritative revalidation");
+        else if (outcome == GameManager.MenuScreen.GameOver)
+            Debug.Log("[EndUI] outcome = MissionFailed reason = authoritative revalidation");
+
+        GameManager.SetPendingMenuScreen(outcome);
 
         Time.timeScale = 0f;
         Cursor.lockState = CursorLockMode.None;
@@ -267,6 +279,59 @@ public class UIManager : MonoBehaviour
 
         // 3) Keyboard navigation wired to the new stack order.
         MenuNavigationManager.AttachMainMenuCompact(canvas, stackRT);
+    }
+
+    private static void CleanMainMenuMissingScripts()
+    {
+        GameObject canvas = GameObject.Find("NeonCanvas");
+        if (canvas == null)
+            return;
+
+        string[] staleNames =
+        {
+            "QUIT_BTN", "PRISM_STORE_BTN", "PRISM STORE_BTN",
+            "START_BTN", "CONTINUE_BTN", "MULTIPLAYER_BTN"
+        };
+
+        Transform[] all = canvas.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Transform t = all[i];
+            if (t == null)
+                continue;
+
+            string normalized = (t.name ?? string.Empty).Trim().Replace(' ', '_').ToUpperInvariant();
+            bool isStale = false;
+            for (int s = 0; s < staleNames.Length; s++)
+            {
+                if (normalized == staleNames[s])
+                {
+                    isStale = true;
+                    break;
+                }
+            }
+
+            if (!isStale)
+                continue;
+
+            if (t.GetComponentInParent<Transform>() != null &&
+                t.GetComponentInParent<Transform>().name == "MainMenuButtonStack")
+                continue;
+
+            if (t.parent != null && t.parent.name == "MainMenuButtonStack")
+                continue;
+
+            Button button = t.GetComponent<Button>();
+            if (button == null)
+                continue;
+
+#if UNITY_EDITOR
+            if (UnityEditor.GameObjectUtility.RemoveMonoBehavioursWithMissingScript(button.gameObject) > 0)
+                continue;
+#endif
+            if (button.gameObject != canvas && button.transform.parent == canvas.transform)
+                Object.Destroy(button.gameObject);
+        }
     }
 
     private static Transform CreatePairRow(Transform parent, string name)

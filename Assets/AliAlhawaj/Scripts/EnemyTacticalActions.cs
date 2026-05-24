@@ -1,6 +1,10 @@
 using UnityEngine;
 using UnityEngine.AI;
 
+#if PUN_2_OR_NEWER
+using Photon.Pun;
+#endif
+
 /// <summary>
 /// Tactical-action driver for enemies — Z (JumpOver), X (Slide), C (Prone)
 /// using the SAME Animator parameters as the player. Picks decisions from
@@ -136,6 +140,11 @@ public class EnemyTacticalActions : MonoBehaviour
 
     private void Update()
     {
+#if PUN_2_OR_NEWER
+        if (MultiplayerMode.IsMultiplayer && !PhotonNetwork.IsMasterClient)
+            return;
+#endif
+
         if (_enemy == null || !_enemy.IsAlive) { RestoreAgentSpeed(); return; }
         if (_anim == null) return;
 

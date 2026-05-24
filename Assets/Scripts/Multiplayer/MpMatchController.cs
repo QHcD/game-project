@@ -104,7 +104,7 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 0)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)0 } };
-            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            WriteRoomProperties(props, "MpMatchController.MasterLifecycle WaitingForPlayers");
             yield return new WaitForSeconds(3.0f);
             currentState = 1;
         }
@@ -113,7 +113,7 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 1)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)1 } };
-            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            WriteRoomProperties(props, "MpMatchController.MasterLifecycle ReadyCheck");
             
             bool allReady = false;
             while (!allReady)
@@ -144,7 +144,7 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 2)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)2 } };
-            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            WriteRoomProperties(props, "MpMatchController.MasterLifecycle Countdown");
             
             float startCountdown = MpRoomConfig.ReadTimerDuration();
             if (startCountdown <= 0 || startCountdown > 5) startCountdown = 5;
@@ -152,7 +152,7 @@ public class MpMatchController : MonoBehaviour
             for (int i = (int)startCountdown; i > 0; i--)
             {
                 var propsTimer = new Hashtable { { MpRoomConfig.KeyTimerDuration, (float)i } };
-                if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(propsTimer);
+                WriteRoomProperties(propsTimer, "MpMatchController.MasterLifecycle CountdownTimer");
                 yield return new WaitForSeconds(1.0f);
             }
             currentState = 3;
@@ -162,10 +162,10 @@ public class MpMatchController : MonoBehaviour
         if (currentState == 3)
         {
             var props = new Hashtable { { MpRoomConfig.KeyMatchState, (byte)3 } };
-            if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            WriteRoomProperties(props, "MpMatchController.MasterLifecycle InMatch");
 
             // Enable bots if active mode is not PurePvP
-            BootBotDirector(MultiplayerMode.ActiveMode);
+            BootBotDirector(MultiplayerRuntimeConfig.GetSelectedGameMode());
 
             float matchTimeRemaining = MpRoomConfig.ReadTimerDuration();
             if (matchTimeRemaining <= 0 || matchTimeRemaining > 300f) matchTimeRemaining = 300f;
@@ -183,7 +183,7 @@ public class MpMatchController : MonoBehaviour
                 if (matchTimeRemaining < 0) matchTimeRemaining = 0;
 
                 var propsTimer = new Hashtable { { MpRoomConfig.KeyTimerDuration, matchTimeRemaining } };
-                if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(propsTimer);
+                WriteRoomProperties(propsTimer, "MpMatchController.MasterLifecycle MatchTimer");
             }
 
             // 5. MatchEnded
@@ -209,9 +209,18 @@ public class MpMatchController : MonoBehaviour
                     { MpRoomConfig.KeyWinnerName, winner },
                     { MpRoomConfig.KeyMatchState, (byte)4 }
                 };
-                if (MultiplayerShutdownGuard.CanWriteProperties()) PhotonNetwork.CurrentRoom.SetCustomProperties(propsEnd);
+                WriteRoomProperties(propsEnd, "MpMatchController.MasterLifecycle MatchEnded");
             }
         }
+    }
+
+    private static void WriteRoomProperties(Hashtable props, string context)
+    {
+        if (!MultiplayerShutdownGuard.CanWriteProperties(context, requireRoom: true))
+            return;
+
+        MultiplayerShutdownGuard.LogPropertyWrite(context);
+        PhotonNetwork.CurrentRoom.SetCustomProperties(props);
     }
 
     private bool CheckMatchEnded(out string winner)
@@ -291,7 +300,16 @@ public class MpMatchController : MonoBehaviour
 
     private void BootBotDirector(MpGameMode mode)
     {
-        if (mode == MpGameMode.PurePvP) return;   // No bots in PvP
+        if (mode == MpGameMode.PurePvP)
+        {
+            Debug.Log("[MPMode] PurePvP active - skipping bot director");
+            return;
+        }
+
+        if (mode == MpGameMode.HybridChaos)
+            Debug.Log("[MPMode] AI enabled for mode = HybridChaos");
+        else if (mode == MpGameMode.CoopSurvival)
+            Debug.Log("[MPMode] AI enabled for mode = CoOpSurvival");
 
         int botCount = MpRoomConfig.ReadBotCount();
         MpBotDirector.EnsureExists(mode, botCount);
@@ -431,7 +449,7 @@ public class MpMatchController : MonoBehaviour
 
         EndMatchCinematic.Begin(playerWon, () => {
             Debug.Log("[MpMatch] EndMatchCinematic finished — returning to MainMenu");
-            if (PhotonNetwork.InRoom) PhotonNetwork.LeaveRoom();
+            if (PhotonNetwork.InRoom && PhotonNetwork.IsConnectedAndReady) PhotonNetwork.LeaveRoom();
             UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
         });
     }

@@ -910,10 +910,10 @@ public class SettingsBuilder : MonoBehaviour
 
     void CycleControl()
     {
-        int next = (ControlIndex() + 1) % controlOptions.Length;
-        if (controlValueLabel != null)
-            controlValueLabel.text = controlOptions[next];
+        int next = ControlIndex() == 0 ? 1 : 0;
         OnControlChanged(next);
+        if (controlValueLabel != null)
+            controlValueLabel.text = controlOptions[ControlIndex()];
     }
 
     void ToggleInvertY()
@@ -1190,7 +1190,18 @@ public class SettingsBuilder : MonoBehaviour
 
     int ControlIndex()
     {
-        return Mathf.Clamp(PlayerPrefs.GetInt("MovementScheme", 0), 0, 1);
+        GameManager.ControlStyleState state = GameManager.Instance != null
+            ? GameManager.Instance.GetControlStyleState()
+            : GameManager.LoadControlStyleState();
+
+        switch (state)
+        {
+            case GameManager.ControlStyleState.ArrowsMouse:
+                return 1;
+            case GameManager.ControlStyleState.WasdMouse:
+            default:
+                return 0;
+        }
     }
 
     string OnOffLabel(bool value)
@@ -1235,17 +1246,21 @@ public class SettingsBuilder : MonoBehaviour
 
     void OnControlChanged(int selectedIndex)
     {
-        GameManager.MovementScheme scheme = selectedIndex == 1
-            ? GameManager.MovementScheme.ArrowKeys
-            : GameManager.MovementScheme.Wasd;
+        GameManager.ControlStyleState state = selectedIndex == 1
+            ? GameManager.ControlStyleState.ArrowsMouse
+            : GameManager.ControlStyleState.WasdMouse;
 
         if (GameManager.Instance != null)
-            GameManager.Instance.SetMovementScheme(scheme);
+            GameManager.Instance.SetControlStyleState(state);
         else
         {
-            PlayerPrefs.SetInt("MovementScheme", (int)scheme);
+            PlayerPrefs.SetInt("MovementScheme", (int)GameManager.ToMovementScheme(state));
             PlayerPrefs.Save();
         }
+
+        PlayerController player = FindFirstObjectByType<PlayerController>();
+        if (player != null)
+            player.RefreshGameplayPreferences();
     }
 
     TextMeshProUGUI MakeText(Transform parent, string text, float size, Color color, Vector2 pos, Vector2 sizeDelta, bool addOutline, TextAlignmentOptions align)

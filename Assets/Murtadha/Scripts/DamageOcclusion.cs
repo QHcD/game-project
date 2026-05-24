@@ -72,6 +72,16 @@ public static class DamageOcclusion
         return EnvironmentSegmentBlocks(attackOriginWorld, to, attackerRoot.transform, victim.transform, mask);
     }
 
+    public static bool IsSegmentBlocked(GameObject attackerRoot, GameObject victim, Vector3 from, Vector3 to)
+    {
+        int mask = ResolveSolidOcclusionMask();
+        if (mask == 0) return false;
+
+        Transform attacker = attackerRoot != null ? attackerRoot.transform : null;
+        Transform target = victim != null ? victim.transform : null;
+        return EnvironmentSegmentBlocks(from, to, attacker, target, mask);
+    }
+
     private static bool EnvironmentSegmentBlocks(
         Vector3 from, Vector3 to,
         Transform attackerRoot, Transform victimRoot,

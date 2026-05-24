@@ -3,10 +3,6 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-/// <summary>
-/// Post-load 3 → 2 → 1 → GO: large centered numerals (no VO captions) + beeps via
-/// <see cref="VoClipAutoIndex"/> / <see cref="GameManager.PlayMatchUiOneShot"/>.
-/// </summary>
 public class MatchStartCountdownUI : MonoBehaviour
 {
     private const float StepHoldSeconds = 0.82f;
@@ -34,41 +30,32 @@ public class MatchStartCountdownUI : MonoBehaviour
         BuildOverlay();
         VoClipAutoIndex.EnsureLoaded();
 
-        for (int i = 3; i >= 1; i--)
+        string[] steps = { "3", "2", "1", "GO!" };
+        for (int i = 0; i < steps.Length; i++)
         {
-            SetBigText(i.ToString());
-            AudioClip beep = VoClipAutoIndex.ResolveCountdownBeep();
-            if (beep != null)
+            bool isGo = steps[i] == "GO!";
+            SetBigText(steps[i], isGo);
+            AudioClip clip = isGo ? VoClipAutoIndex.ResolveCountdownStart() : VoClipAutoIndex.ResolveCountdownBeep();
+            if (clip != null)
             {
                 if (GameManager.Instance != null)
-                    GameManager.Instance.PlayMatchUiOneShot(beep, 1f);
+                    GameManager.Instance.PlayMatchUiOneShot(clip, 1f);
                 else
-                    PlayFallbackOneShot(beep);
+                    PlayFallbackOneShot(clip);
             }
 
-            yield return new WaitForSecondsRealtime(StepHoldSeconds);
+            yield return new WaitForSecondsRealtime(isGo ? GoHoldSeconds : StepHoldSeconds);
         }
-
-        SetBigText("GO!");
-        AudioClip go = VoClipAutoIndex.ResolveCountdownStart();
-        if (go != null)
-        {
-            if (GameManager.Instance != null)
-                GameManager.Instance.PlayMatchUiOneShot(go, 1f);
-            else
-                PlayFallbackOneShot(go);
-        }
-
-        yield return new WaitForSecondsRealtime(GoHoldSeconds);
 
         if (pausedForCountdown)
             Time.timeScale = Mathf.Approximately(prevScale, 0f) ? 1f : prevScale;
     }
 
-    private void SetBigText(string t)
+    private void SetBigText(string t, bool isGo)
     {
-        if (_bigLabel != null)
-            _bigLabel.text = t;
+        if (_bigLabel == null) return;
+        _bigLabel.text = t;
+        PrismaticHudTypography.ApplyCountdownStyle(_bigLabel, isGo);
     }
 
     private void BuildOverlay()
@@ -78,7 +65,7 @@ public class MatchStartCountdownUI : MonoBehaviour
 
         _canvas = root.AddComponent<Canvas>();
         _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        _canvas.sortingOrder = 4000;
+        _canvas.sortingOrder = 9998;
         root.AddComponent<GraphicRaycaster>();
 
         var scaler = root.AddComponent<CanvasScaler>();
@@ -100,17 +87,14 @@ public class MatchStartCountdownUI : MonoBehaviour
         _bigLabel = labelGo.AddComponent<TextMeshProUGUI>();
         _bigLabel.text = "3";
         _bigLabel.fontSize = 220f;
-        _bigLabel.fontStyle = FontStyles.Bold;
         _bigLabel.alignment = TextAlignmentOptions.Center;
-        _bigLabel.color = new Color(1f, 1f, 1f, 0.96f);
-        TMP_FontAsset font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
-        if (font != null) _bigLabel.font = font;
+        PrismaticHudTypography.ApplyCountdownStyle(_bigLabel, false);
 
         RectTransform lr = _bigLabel.rectTransform;
         lr.anchorMin = new Vector2(0.5f, 0.5f);
         lr.anchorMax = new Vector2(0.5f, 0.5f);
         lr.pivot = new Vector2(0.5f, 0.5f);
-        lr.sizeDelta = new Vector2(900f, 360f);
+        lr.sizeDelta = new Vector2(800f, 400f);
         lr.anchoredPosition = Vector2.zero;
     }
 

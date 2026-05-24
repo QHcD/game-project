@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 
 #if PUN_2_OR_NEWER
@@ -19,6 +20,11 @@ public class NetworkPlayerSync : MonoBehaviour
     private PlayerHealth playerHealth;
     private PlayerController playerController;
     private bool deathRecorded;
+    private bool syncReleased;
+    private bool loggedHold;
+    private Vector3 holdPosition;
+    private Quaternion holdRotation;
+    private CharacterController characterController;
 
     private string CombatantId
     {
@@ -38,16 +44,73 @@ public class NetworkPlayerSync : MonoBehaviour
     {
         playerHealth = GetComponent<PlayerHealth>();
         playerController = GetComponent<PlayerController>();
+        characterController = GetComponent<CharacterController>();
         if (MultiplayerMode.IsMultiplayer && playerHealth != null)
             playerHealth.autoRegenEnabled = false;
-        networkPosition = transform.position;
-        networkRotation = transform.rotation;
+        holdPosition = transform.position;
+        holdRotation = transform.rotation;
+        networkPosition = holdPosition;
+        networkRotation = holdRotation;
     }
 
     private void Start()
     {
         EnsurePhotonNicknameFallback();
         RegisterForScoreboard();
+        if (MultiplayerMode.IsMultiplayer)
+            StartCoroutine(WaitForLocalMapBeforeSync());
+    }
+
+    private IEnumerator WaitForLocalMapBeforeSync()
+    {
+        int actor = GetActorNumber();
+        float timeoutAt = Time.realtimeSinceStartup + 25f;
+        bool loggedReady = false;
+
+        while (Time.realtimeSinceStartup < timeoutAt)
+        {
+            bool ready = LevelBuilder.IsLocalClientMapReadyForSync();
+            if (ready && !loggedReady)
+            {
+                loggedReady = true;
+                Debug.Log("[MPBuild] local client map ready before sync = true");
+            }
+
+            if (ready)
+            {
+                if (TryWarpToSafeGround(out Vector3 safe))
+                {
+                    holdPosition = safe;
+                    networkPosition = safe;
+                    transform.position = safe;
+                    Physics.SyncTransforms();
+                    Debug.Log($"[MPSpawn] safe ground found actor={actor} position={safe}");
+                }
+
+                syncReleased = true;
+                Debug.Log($"[MPSync] released transform sync actor={actor}");
+#if PUN_2_OR_NEWER
+                if (photonView != null && photonView.IsMine)
+                    FreezeMovement(false);
+#endif
+                yield break;
+            }
+
+            if (!loggedHold)
+            {
+                loggedHold = true;
+                Debug.Log($"[MPSync] holding transform until map ready actor={actor}");
+                Debug.Log("[MPBuild] local client map ready before sync = false");
+            }
+
+            FreezeMovement(true);
+            transform.position = holdPosition;
+            transform.rotation = holdRotation;
+            yield return null;
+        }
+
+        syncReleased = true;
+        Debug.LogWarning($"[MPSync] released transform sync actor={actor} after timeout");
     }
 
     private void Update()
@@ -55,8 +118,13 @@ public class NetworkPlayerSync : MonoBehaviour
 #if PUN_2_OR_NEWER
         if (photonView != null && !photonView.IsMine)
         {
-            // First serialization snap: stops the new joiner from "rubber
-            // banding" from (0,0,0) to the real position over a second.
+            if (!syncReleased)
+            {
+                transform.position = holdPosition;
+                transform.rotation = holdRotation;
+                return;
+            }
+
             if (!networkPoseInitialised ||
                 Vector3.Distance(transform.position, networkPosition) > remoteSnapDistance)
             {
@@ -90,7 +158,7 @@ public class NetworkPlayerSync : MonoBehaviour
                 if (MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival)
                     ff = false;
 
-                if (!ff) return; // Block friendly fire damage RPC
+                if (!ff) return;
             }
         }
 
@@ -105,6 +173,9 @@ public class NetworkPlayerSync : MonoBehaviour
     [PunRPC]
     private void RpcApplyDamage(int damage, int attackerActorNumber, string attackerName)
     {
+        if (photonView != null && !photonView.IsMine)
+            return;
+
         if (playerHealth == null)
             playerHealth = GetComponent<PlayerHealth>();
         if (playerHealth == null || !playerHealth.IsAlive)
@@ -140,11 +211,32 @@ public class NetworkPlayerSync : MonoBehaviour
 
     public void OnPhotonSerializeView(PhotonStream stream, PhotonMessageInfo info)
     {
+        if (!syncReleased)
+        {
+            if (stream.IsWriting)
+            {
+                stream.SendNext(holdPosition);
+                stream.SendNext(holdRotation);
+                stream.SendNext(playerHealth != null ? playerHealth.currentHealth : maxHealthFallback());
+                stream.SendNext(playerController != null ? playerController.GetEquippedWeaponLevel() : 1);
+                stream.SendNext(playerController != null ? playerController.equippedWeaponName : string.Empty);
+            }
+            else
+            {
+                networkPosition = (Vector3)stream.ReceiveNext();
+                networkRotation = (Quaternion)stream.ReceiveNext();
+                stream.ReceiveNext();
+                stream.ReceiveNext();
+                stream.ReceiveNext();
+            }
+            return;
+        }
+
         if (stream.IsWriting)
         {
             stream.SendNext(transform.position);
             stream.SendNext(transform.rotation);
-            stream.SendNext(playerHealth != null ? playerHealth.currentHealth : 100f);
+            stream.SendNext(playerHealth != null ? playerHealth.currentHealth : maxHealthFallback());
             stream.SendNext(playerController != null ? playerController.GetEquippedWeaponLevel() : 1);
             stream.SendNext(playerController != null ? playerController.equippedWeaponName : string.Empty);
         }
@@ -152,18 +244,20 @@ public class NetworkPlayerSync : MonoBehaviour
         {
             networkPosition = (Vector3)stream.ReceiveNext();
             networkRotation = (Quaternion)stream.ReceiveNext();
-            // Force the next Update on a remote ghost to teleport rather
-            // than lerp the very first time we ever hear from this owner.
-            // (We still snap on big future jumps via remoteSnapDistance.)
             float syncedHealth = (float)stream.ReceiveNext();
             int weaponLevel = (int)stream.ReceiveNext();
             string weaponName = (string)stream.ReceiveNext();
 
-            if (playerHealth != null)
-                playerHealth.currentHealth = syncedHealth;
+            if (playerHealth != null && photonView != null && !photonView.IsMine)
+                playerHealth.ApplySyncedHealth(syncedHealth, fromNetworkStream: true);
             if (playerController != null)
                 playerController.ApplyNetworkWeaponState(weaponLevel, weaponName);
         }
+    }
+
+    private float maxHealthFallback()
+    {
+        return playerHealth != null ? playerHealth.maxHealth : 100f;
     }
 #endif
 
@@ -173,11 +267,10 @@ public class NetworkPlayerSync : MonoBehaviour
             return;
 
         string displayName = "PLAYER";
-        int actorNumber = -1;
+        int actorNumber = GetActorNumber();
 #if PUN_2_OR_NEWER
         if (photonView != null && photonView.Owner != null)
         {
-            actorNumber = photonView.Owner.ActorNumber;
             displayName = string.IsNullOrWhiteSpace(photonView.Owner.NickName)
                 ? $"Player_{actorNumber}"
                 : photonView.Owner.NickName;
@@ -189,11 +282,45 @@ public class NetworkPlayerSync : MonoBehaviour
 
         MatchStatsManager.Instance.RegisterCombatant(CombatantId, displayName, isPlayer: true, transform: transform);
         Debug.Log($"[MPHUD] registered player actor={actorNumber} name={displayName}");
+    }
 
+    private int GetActorNumber()
+    {
 #if PUN_2_OR_NEWER
-        if (MultiplayerMode.IsMultiplayer && photonView != null && !photonView.IsMine && playerHealth != null)
-            Debug.Log($"[MPHUD] remote player ignored for local HP actor={actorNumber}");
+        if (photonView != null && photonView.Owner != null)
+            return photonView.Owner.ActorNumber;
 #endif
+        return -1;
+    }
+
+    private void FreezeMovement(bool freeze)
+    {
+        if (characterController == null)
+            characterController = GetComponent<CharacterController>();
+        if (characterController != null)
+            characterController.enabled = !freeze;
+
+        if (playerController != null && freeze)
+            playerController.enabled = false;
+        else if (playerController != null && photonView != null && photonView.IsMine && syncReleased)
+            playerController.enabled = true;
+    }
+
+    private bool TryWarpToSafeGround(out Vector3 safe)
+    {
+        safe = holdPosition;
+        if (!LevelBuilder.TryGetMultiplayerMapReadiness(out LevelBuilder.MapReadinessInfo info) || info.Root == null)
+            return false;
+
+        Vector3 origin = new Vector3(holdPosition.x, info.Root.position.y + 80f, holdPosition.z);
+        if (Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 300f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+        {
+            safe = hit.point + Vector3.up * 0.15f;
+            Debug.Log($"[MPSpawn] prevented void fall actor={GetActorNumber()}");
+            return true;
+        }
+
+        return false;
     }
 
     private void EnsurePhotonNicknameFallback()
@@ -202,9 +329,12 @@ public class NetworkPlayerSync : MonoBehaviour
         if (!MultiplayerMode.IsMultiplayer || photonView == null || !photonView.IsMine)
             return;
 
-        if (!MultiplayerShutdownGuard.CanWriteProperties()) return;
+        if (!MultiplayerShutdownGuard.CanWriteProperties("NetworkPlayerSync.EnsurePhotonNicknameFallback", requireRoom: true)) return;
         if (PhotonNetwork.LocalPlayer != null && string.IsNullOrWhiteSpace(PhotonNetwork.NickName))
+        {
+            MultiplayerShutdownGuard.LogPropertyWrite("NetworkPlayerSync.EnsurePhotonNicknameFallback");
             PhotonNetwork.NickName = $"Player_{PhotonNetwork.LocalPlayer.ActorNumber}";
+        }
 #endif
     }
 }
