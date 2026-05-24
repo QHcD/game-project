@@ -1,0 +1,65 @@
+# Unity-recommended .gitattributes
+
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Unity YAML files
+*.meta text eol=lf
+*.unity text eol=lf
+*.prefab text eol=lf
+*.asset text eol=lf
+*.mat text eol=lf
+*.anim text eol=lf
+*.controller text eol=lf
+*.overrideController text eol=lf
+*.physicMaterial text eol=lf
+*.physicsMaterial2D text eol=lf
+*.playable text eol=lf
+*.mask text eol=lf
+*.brush text eol=lf
+*.flare text eol=lf
+*.fontsettings text eol=lf
+*.guiskin text eol=lf
+*.lighting text eol=lf
+*.shadervariants text eol=lf
+*.spriteatlas text eol=lf
+*.terrainlayer text eol=lf
+*.mixer text eol=lf
+*.signal text eol=lf
+
+# Project Settings
+ProjectSettings/*.asset text eol=lf
+
+# Scripts
+*.cs text eol=lf
+*.shader text eol=lf
+*.cginc text eol=lf
+*.hlsl text eol=lf
+*.glsl text eol=lf
+
+# Binary files - no line ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.psd binary
+*.tga binary
+*.tif binary
+*.tiff binary
+*.bmp binary
+*.exr binary
+*.hdr binary
+*.fbx binary
+*.obj binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+*.mp4 binary
+*.mov binary
+*.avi binary
+*.dll binary
+*.exe binary
+*.so binary
+*.dylib binary
+*.unitypackage binary
+*.bytes binary
