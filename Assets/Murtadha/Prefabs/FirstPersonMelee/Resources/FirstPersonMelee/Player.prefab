@@ -219,8 +219,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -703,8 +703,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -2142,8 +2142,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -2556,8 +2556,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -3037,8 +3037,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -4499,8 +4499,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -5634,8 +5634,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -5799,8 +5799,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -6250,8 +6250,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
@@ -6635,8 +6635,8 @@ CharacterJoint:
   m_EnableProjection: 0
   m_ProjectionDistance: 0.1
   m_ProjectionAngle: 180
-  m_BreakForce: Infinity
-  m_BreakTorque: Infinity
+  m_BreakForce: 0
+  m_BreakTorque: 0
   m_EnableCollision: 0
   m_EnablePreprocessing: 0
   m_MassScale: 1
