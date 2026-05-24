@@ -1,10 +1,8 @@
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
-using UnityEngine.UI;
-#if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
-#endif
+using UnityEngine.UI;
 
 /// <summary>
 /// Raycast-based interaction controller for the player. Each frame it casts
@@ -67,8 +65,22 @@ public class PlayerInteractor : MonoBehaviour
         if (EndMatchCinematic.GameplayLocked)
         {
             HideReticle();
+            _currentTarget = null;
             return;
         }
+
+        // Block ALL interaction (prompt + input) when gameplay is gated: pause menu
+        // open, TAB full map held, time scale frozen, or cursor unlocked over UI.
+        // The reticle and Interact() must both stop — otherwise door prompts bleed
+        // through the pause menu and clicks register on doors behind UI.
+        if (IsInteractionGated())
+        {
+            HideReticle();
+            _currentTarget = null;
+            return;
+        }
+
+        bool fullMapHeld = IsFullMapHeld();
 
         Camera cam = ResolveInteractCamera();
         if (cam == null) { HideReticle(); return; }
@@ -76,6 +88,11 @@ public class PlayerInteractor : MonoBehaviour
         Vector2 screenPoint = GetInteractionScreenPoint();
         Ray ray = BuildInteractionRay(cam, screenPoint);
         bool pressedThisFrame = WasInteractPressedThisFrame();
+        bool mouseClickedThisFrame = Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
+        if (pressedThisFrame || mouseClickedThisFrame)
+        {
+            Debug.Log($"[DoorDebug] ePressed={pressedThisFrame} clickPressed={mouseClickedThisFrame} fullMapHeld={fullMapHeld} cursorLocked={Cursor.lockState == CursorLockMode.Locked}");
+        }
         if (debugDoorInteraction && pressedThisFrame)
         {
             Debug.Log($"[PlayerInteractor] E pressed. origin={ray.origin} dir={ray.direction} maxDist={maxDistance} mask=0x{interactionMask.value:X}");
@@ -92,19 +109,15 @@ public class PlayerInteractor : MonoBehaviour
             }
             _currentTarget = interactable;
             string clickHint = useMouseClick ? " / CLICK" : string.Empty;
-            ShowReticle("[" + interactKey + "]" + clickHint + "  " + interactable.GetPrompt());
+            if (fullMapHeld) HideReticle();
+            else ShowReticle("[" + interactKey + "]" + clickHint + "  " + interactable.GetPrompt());
 
             bool useUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
             bool pressed = pressedThisFrame;
             if (useMouseClick && !pressed && !useUi)
             {
-#if ENABLE_INPUT_SYSTEM
                 if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
                     pressed = true;
-#else
-                if (!pressed)
-                    pressed = UnityEngine.Input.GetMouseButtonDown(0);
-#endif
             }
 
             if (pressed)
@@ -125,19 +138,15 @@ public class PlayerInteractor : MonoBehaviour
             }
             _currentTarget = interactable;
             string clickHint = useMouseClick ? " / CLICK" : string.Empty;
-            ShowReticle("[" + interactKey + "]" + clickHint + "  " + interactable.GetPrompt());
+            if (fullMapHeld) HideReticle();
+            else ShowReticle("[" + interactKey + "]" + clickHint + "  " + interactable.GetPrompt());
 
             bool useUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
             bool pressed = pressedThisFrame;
             if (useMouseClick && !pressed && !useUi)
             {
-#if ENABLE_INPUT_SYSTEM
                 if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
                     pressed = true;
-#else
-                if (!pressed)
-                    pressed = UnityEngine.Input.GetMouseButtonDown(0);
-#endif
             }
 
             if (pressed)
@@ -205,15 +214,8 @@ public class PlayerInteractor : MonoBehaviour
     private Vector2 GetInteractionScreenPoint()
     {
         bool freeCursor = Cursor.lockState != CursorLockMode.Locked || Cursor.visible;
-        if (rayFromMouseWhenCursorUnlocked && freeCursor)
-        {
-#if ENABLE_INPUT_SYSTEM
-            if (Mouse.current != null)
-                return Mouse.current.position.ReadValue();
-#else
-            return UnityEngine.Input.mousePosition;
-#endif
-        }
+        if (rayFromMouseWhenCursorUnlocked && freeCursor && Mouse.current != null)
+            return Mouse.current.position.ReadValue();
 
         return new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
     }
@@ -258,18 +260,57 @@ public class PlayerInteractor : MonoBehaviour
         return t == playerRoot || t.IsChildOf(playerRoot);
     }
 
+    /// <summary>
+    /// True when gameplay input should be blocked — pause menu open, TAB full map
+    /// held, time scale frozen, or cursor unlocked over UI. Door prompt + Interact
+    /// both stop while this is true.
+    /// </summary>
+    private static PauseMenuController _cachedPause;
+    private static float _pauseLookupCooldown;
+    private bool IsInteractionGated()
+    {
+        // TAB held — full map active.
+        if (Keyboard.current != null && Keyboard.current.tabKey.isPressed)
+            return true;
+
+        // Time scale frozen by anything (pause, end-of-match, cinematic).
+        if (Time.timeScale <= 0.0001f)
+            return true;
+
+        // Pause menu open — cached lookup; PauseMenuController is a singleton-ish
+        // per scene and FindFirstObjectByType is too expensive to call every frame.
+        if (_cachedPause == null || Time.unscaledTime > _pauseLookupCooldown)
+        {
+            _cachedPause = Object.FindFirstObjectByType<PauseMenuController>(FindObjectsInactive.Include);
+            _pauseLookupCooldown = Time.unscaledTime + 0.5f;
+        }
+        if (_cachedPause != null && _cachedPause.IsPauseMenuOpen)
+            return true;
+
+        // Cursor unlocked over UI = some menu/settings panel is showing. Locked
+        // cursor = gameplay mode → not gated by this signal.
+        if (Cursor.lockState != CursorLockMode.Locked
+            && EventSystem.current != null
+            && EventSystem.current.IsPointerOverGameObject())
+            return true;
+
+        return false;
+    }
+
     private void PerformInteraction(Collider hitCollider, IInteractable interactable)
     {
         if (interactable == null)
             return;
 
+        Debug.Log($"[DoorDebug] PerformInteraction called target={interactable.GetType().Name} hitCollider={(hitCollider != null ? hitCollider.name : "<null>")}");
         interactable.Interact(gameObject);
 
         Transform doorRoot = FindDoorPassableRoot(hitCollider, interactable);
         if (doorRoot != null)
         {
+            if (doorRoot.GetComponentInChildren<SciFiSlidingDoor>(true) != null)
+                return;
             MakeDoorPassable(doorRoot);
-            Debug.Log($"[Door] E pressed -> opened/passable name={doorRoot.name}");
         }
     }
 
@@ -288,15 +329,29 @@ public class PlayerInteractor : MonoBehaviour
         if (door != null && door.enabled)
             return door;
 
+        // Walk up parents. At each level also scan that level's SUBTREE for an
+        // IInteractable. Critical for the SciFi kit: Wall_Door's BoxColliders live on
+        // a child node (LP_Door_Wall_snaps), while SciFiSlidingDoor lives on a sibling
+        // child pivot (SlidingDoor). A pure-parent walk misses the sibling; a pure-
+        // child walk from the collider misses it too (collider node has no children).
+        // Walking parents + subtree-scan at each parent hits the Wall_Door root level
+        // and finds SciFiSlidingDoor via the sibling pivot before climbing further.
         for (Transform tr = col.transform; tr != null; tr = tr.parent)
         {
-            MonoBehaviour[] mbs = tr.GetComponents<MonoBehaviour>();
-            for (int i = 0; i < mbs.Length; i++)
+            MonoBehaviour[] subtree = tr.GetComponentsInChildren<MonoBehaviour>(true);
+            for (int i = 0; i < subtree.Length; i++)
             {
-                if (mbs[i] == null || !mbs[i].enabled) continue;
-                if (mbs[i] is IInteractable intr)
+                MonoBehaviour mb = subtree[i];
+                if (mb == null || !mb.enabled) continue;
+                if (mb is IInteractable intr && intr.CanInteract)
                     return intr;
             }
+
+            // Stop climbing once we're past a "door-like" or kit-wall parent — prevents
+            // adopting an unrelated interactable from a far-away part of the arena.
+            string lower = tr.name.ToLowerInvariant();
+            if (lower.Contains("door") || lower.Contains("wall_") || lower.StartsWith("wall"))
+                break;
         }
 
         return null;
@@ -436,28 +491,33 @@ public class PlayerInteractor : MonoBehaviour
             && candidate.GetComponent<MeshFilter>() != null;
     }
 
+    /// <summary>
+    /// True while the TAB full-map key is held. Works for both old and new input systems.
+    /// </summary>
+    private static bool IsFullMapHeld()
+    {
+        // Project is on the New Input System exclusively — legacy UnityEngine.Input
+        // throws InvalidOperationException, so we never call it from this file.
+        if (Keyboard.current == null) return false;
+        return Keyboard.current.tabKey.isPressed;
+    }
+
     private bool WasInteractPressedThisFrame()
     {
-#if ENABLE_INPUT_SYSTEM
-        if (Keyboard.current != null)
+        if (Keyboard.current == null) return false;
+        switch (interactKey)
         {
-            switch (interactKey)
-            {
-                case KeyCode.E: return Keyboard.current.eKey.wasPressedThisFrame;
-                case KeyCode.F: return Keyboard.current.fKey.wasPressedThisFrame;
-                case KeyCode.Q: return Keyboard.current.qKey.wasPressedThisFrame;
-                case KeyCode.R: return Keyboard.current.rKey.wasPressedThisFrame;
-                case KeyCode.G: return Keyboard.current.gKey.wasPressedThisFrame;
-                case KeyCode.Space: return Keyboard.current.spaceKey.wasPressedThisFrame;
-                case KeyCode.LeftShift: return Keyboard.current.leftShiftKey.wasPressedThisFrame;
-                case KeyCode.RightShift: return Keyboard.current.rightShiftKey.wasPressedThisFrame;
-                case KeyCode.Return: return Keyboard.current.enterKey.wasPressedThisFrame;
-            }
+            case KeyCode.E: return Keyboard.current.eKey.wasPressedThisFrame;
+            case KeyCode.F: return Keyboard.current.fKey.wasPressedThisFrame;
+            case KeyCode.Q: return Keyboard.current.qKey.wasPressedThisFrame;
+            case KeyCode.R: return Keyboard.current.rKey.wasPressedThisFrame;
+            case KeyCode.G: return Keyboard.current.gKey.wasPressedThisFrame;
+            case KeyCode.Space: return Keyboard.current.spaceKey.wasPressedThisFrame;
+            case KeyCode.LeftShift: return Keyboard.current.leftShiftKey.wasPressedThisFrame;
+            case KeyCode.RightShift: return Keyboard.current.rightShiftKey.wasPressedThisFrame;
+            case KeyCode.Return: return Keyboard.current.enterKey.wasPressedThisFrame;
+            default: return Keyboard.current.eKey.wasPressedThisFrame;  // fall back to E
         }
-        return false;
-#else
-        return UnityEngine.Input.GetKeyDown(interactKey);
-#endif
     }
 
     private void EnsureReticle()

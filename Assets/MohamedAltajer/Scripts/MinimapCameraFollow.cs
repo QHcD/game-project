@@ -115,6 +115,16 @@ public class MinimapCameraFollow : MonoBehaviour
 
     private void CacheArenaBounds()
     {
+        // Prefer the SciFiArena's Floors group when present — it gives perfectly
+        // centered playable bounds without ceiling cap, perimeter overhangs, or
+        // decorative props skewing the result.
+        if (TryGetSciFiFloorBounds(out Bounds floorBounds))
+        {
+            _hasArenaBounds = true;
+            _arenaBounds = floorBounds;
+            return;
+        }
+
         Renderer[] renderers = FindObjectsByType<Renderer>(FindObjectsSortMode.None);
         bool hasBounds = false;
         Bounds combinedBounds = default;
@@ -131,6 +141,12 @@ public class MinimapCameraFollow : MonoBehaviour
             string lowerName = renderer.gameObject.name.ToLowerInvariant();
             if (lowerName.Contains("weapon") || lowerName.Contains("player") || lowerName.Contains("enemy"))
                 continue;
+            // Exclude items that intentionally extend past the playable footprint.
+            if (lowerName.Contains("ceiling_sealedcap") || lowerName.Contains("ceiling_opaquecap")
+                || lowerName.Contains("ceiling_detail") || lowerName.Contains("catwalk")
+                || lowerName.Contains("hanglight") || lowerName.Contains("sprinkler")
+                || lowerName.Contains("securitycam") || lowerName.StartsWith("cam_"))
+                continue;
 
             if (!hasBounds)
             {
@@ -145,5 +161,36 @@ public class MinimapCameraFollow : MonoBehaviour
 
         _hasArenaBounds = hasBounds;
         _arenaBounds = combinedBounds;
+    }
+
+    /// <summary>
+    /// Computes bounds from the SciFiArena's Floors group only, giving a clean
+    /// centered playable area. Returns false if the arena isn't loaded or the
+    /// Floors hierarchy isn't found.
+    /// </summary>
+    private bool TryGetSciFiFloorBounds(out Bounds bounds)
+    {
+        bounds = default;
+
+        GameObject arena = GameObject.Find("FbxMap")
+                        ?? GameObject.Find("SciFiArena")
+                        ?? GameObject.Find("SciFiArena(Clone)");
+        if (arena == null) return false;
+
+        Transform floors = arena.transform.Find("Floors");
+        if (floors == null) return false;
+
+        Renderer[] floorRenderers = floors.GetComponentsInChildren<Renderer>(true);
+        if (floorRenderers == null || floorRenderers.Length == 0) return false;
+
+        bool init = false;
+        for (int i = 0; i < floorRenderers.Length; i++)
+        {
+            Renderer r = floorRenderers[i];
+            if (r == null) continue;
+            if (!init) { bounds = r.bounds; init = true; }
+            else bounds.Encapsulate(r.bounds);
+        }
+        return init;
     }
 }

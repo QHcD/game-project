@@ -115,6 +115,11 @@ public class WeaponHitbox : MonoBehaviour
         if (!IsEnemyAttacker())
             return mask;
 
+        bool isCoopSurvival = MultiplayerMode.IsMultiplayer
+            && MultiplayerMode.ActiveMode == MpGameMode.CoopSurvival;
+        if (!isCoopSurvival)
+            return mask;
+
         int enemiesLayer = LayerMask.NameToLayer("Enemies");
         int enemyLayer = LayerMask.NameToLayer("Enemy");
         if (enemiesLayer >= 0) mask &= ~(1 << enemiesLayer);

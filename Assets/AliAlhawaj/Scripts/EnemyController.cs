@@ -26,10 +26,11 @@ using Photon.Pun;
 public class EnemyController : MonoBehaviour, IDamageable
 {
     private static readonly List<EnemyController> s_aliveEnemies = new List<EnemyController>(64);
+    public static IReadOnlyList<EnemyController> AliveEnemies => s_aliveEnemies;
     private static PlayerController s_scenePlayer;
     private static float s_scenePlayerRefreshTime = -999f;
-    private const float ChaseGateRecheckInterval = 0.65f;
-    private const float CombatStoppingDistance = 0.08f;
+    private const float ChaseGateRecheckInterval = 0.35f;
+    public const float CombatStoppingDistance = 0.08f;
     private const float StrictMeleeStrikeFactor = 0.88f;
 
     private const string PrefKeySicklePos = "Grip.Player.L13.Sickle.Pos";
@@ -267,6 +268,9 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _noPathReacquireSince = -1f;
     private bool _authorityLogged;
     private bool _destinationSuccessLogged;
+    private int _staticFrameCount;
+    private Vector3 _lastAntiFreezePosCheck;
+    private float _enemyMoveDebugTimer;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -306,10 +310,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Tooltip("Extra arc height while crossing OffMeshLinks.")]
     public float offMeshJumpHeight = 1.2f;
 
-    // ── State ────────────────────────────────────────────────────────────────
-  // ── State ────────────────────────────────────────────────────────────────
-    private enum State { Idle, Patrol, Chase, Approach, Attack, Evade, StuckRecovery, Flinch, Jumping, Dead }
-    private State _state = State.Idle;
+    private AIStateId _state = AIStateId.Idle;
+    private AIStateMachine _aiFsm;
 
     private NavMeshAgent _agent;
     private Animator     _anim;
@@ -330,6 +332,24 @@ public class EnemyController : MonoBehaviour, IDamageable
     // can react to incoming hits without polling every frame.
     public UnityEngine.AI.NavMeshAgent Agent => _agent;
     public Transform CurrentTarget => _target;
+    public bool AttackInProgress => _attackInProgress;
+    public float AttackTimer
+    {
+        get => _attackTimer;
+        set => _attackTimer = value;
+    }
+    public float IdleTimer
+    {
+        get => _idleTimer;
+        set => _idleTimer = value;
+    }
+    public float PatrolTimer
+    {
+        get => _patrolTimer;
+        set => _patrolTimer = value;
+    }
+    public float IdleToPatrolDelay => idleToPatrolDelay;
+    public bool IsTraversingOffMeshLink => _isTraversingOffMeshLink;
     public event System.Action<GameObject> OnDamaged;
     public void SuggestTarget(Transform t)
     {
@@ -338,6 +358,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (d == null || !d.IsAlive) return;
         _target = t;
         _targetLockTimer = Time.time + targetLockDuration;
+        if (!CanEngageChase(_target))
+            return;
+        InterruptPassiveBehavior();
+        if (_state != AIStateId.Chase && _state != AIStateId.Approach && _state != AIStateId.Attack
+            && _state != AIStateId.Jumping && _state != AIStateId.Dead)
+            TransitionTo(AIStateId.Chase);
     }
 
     // CharacterController is intentionally disabled at runtime — kept as a
@@ -378,7 +404,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     // Jump state
     private float _stuckTimer;
     private bool  _isGrounded = true;
-    private State _preJumpState;
+    private AIStateId _preJumpState;
     private float _jumpTimer;       // safety: max time allowed in Jumping state
     private const float MaxJumpDuration = 2.5f;
 
@@ -407,7 +433,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private bool _chaseGateResult;
     private float _idleTimer;
     private float _navStuckTimer;
-    private State _resumeAfterStuck = State.Patrol;
+    private AIStateId _resumeAfterStuck = AIStateId.Patrol;
     private NavMeshPath _pathScratch;
     private Transform _cachedPlayerTransform;
 
@@ -543,6 +569,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         LoadSavedRuntimeGripValues();
 
         _pathScratch = new NavMeshPath();
+        _aiFsm = new AIStateMachine();
+        _aiFsm.Bind(this);
     }
 
     private void Start()
@@ -550,7 +578,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         CombatVoiceSfx voice = CombatVoiceSfx.GetOrAdd(gameObject);
         voice.ApplyInspectorClips(hurtSounds, deathSounds, hitSound, deathSound);
 
-        detectionInterval = Mathf.Clamp(detectionInterval, 0.1f, 2.0f);
+        detectionInterval = Mathf.Clamp(detectionInterval, 0.05f, 2.0f);
         detectionRadius = Mathf.Clamp(detectionRadius, 4f, 500f);
         aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, Mathf.Max(detectionRadius * 2f, 24f));
         attackCooldown = Mathf.Min(attackCooldown, 0.65f);
@@ -585,6 +613,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         EvaluateTargets();
 
         _lastFramePosition = transform.position;
+        _lastAntiFreezePosCheck = transform.position;
         EnsureProperMaterial(gameObject);
         AssignMaterial();
 
@@ -614,7 +643,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         _repathTimer = Random.Range(0f, repathInterval);
         _idleTimer = 0f;
         CachePlayerTransform();
+        _aiFsm.SetState(_state, true);
     }
+
+    public void ClearTarget() => _target = null;
+
+    public void SyncAIStateId(AIStateId id) => _state = id;
 
     private void CachePlayerTransform()
     {
@@ -710,7 +744,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
-    private static PlayerController ResolveScenePlayer()
+    public static PlayerController ResolveScenePlayer()
     {
         float t = Time.unscaledTime;
         if (s_scenePlayer == null || t - s_scenePlayerRefreshTime > 1.5f)
@@ -753,7 +787,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Update()
     {
-        if (_state == State.Dead) return;
+        if (_state == AIStateId.Dead) return;
         LogAiAuthorityOnce();
 
         if (!HasAiDecisionAuthority())
@@ -781,18 +815,16 @@ public class EnemyController : MonoBehaviour, IDamageable
             RecoverOnlyIfOutOfMap();
         }
 
+        TryImmediateCombatInterrupt();
         TickCombatDrive();
 
-        // Fail-Safe Timer:
         if (_target == null)
         {
             _noTargetTimer += Time.deltaTime;
-            if (_noTargetTimer >= 0.85f)
+            if (_noTargetTimer >= 0.05f)
             {
                 _noTargetTimer = 0f;
                 EvaluateTargets();
-                if (_target != null && (_state == State.Idle || _state == State.Patrol) && CanEngageChase(_target))
-                    TransitionTo(State.Chase);
             }
         }
         else
@@ -804,28 +836,118 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _attackTimer -= Time.deltaTime;
 
-        // Hit flash recovery
         if (_flashTimer > 0f)
         {
             _flashTimer -= Time.deltaTime;
             if (_flashTimer <= 0f) RestoreOriginalColors();
         }
 
-        switch (_state)
-        {
-            case State.Idle:           UpdateIdle();           break;
-            case State.Patrol:         UpdatePatrol();         break;
-            case State.Chase:          UpdateChase();          break;
-            case State.Approach:       UpdateApproach();       break;
-            case State.Attack:         UpdateAttack();         break;
-            case State.Evade:          UpdateEvade();          break;
-            case State.StuckRecovery:  UpdateStuckRecovery(); break;
-            case State.Flinch:         UpdateFlinch();         break;
-            case State.Jumping:        UpdateJumping();        break;
-        }
+        if (_state == AIStateId.Jumping)
+            UpdateJumping();
+        else if (_state != AIStateId.Dead)
+            _aiFsm.Tick();
+
+        EnforceCombatMatrix();
 
         if (ShouldSyncAnimatorThisFrame())
             SyncAnimator();
+
+        TickAntiFreeze();
+        if (debugEnemyMovement)
+            TickDebugLog();
+    }
+
+    private void FixedUpdate()
+    {
+        if (!HasAiDecisionAuthority())
+            return;
+
+        if (_target != null && IsHostileAlive(_target) && _state != AIStateId.Dead && _state != AIStateId.Jumping)
+            AIMotor.EnforceSprintPursuit(this);
+
+        ApplyFlockingSteering();
+        EnforceStaticGeometryConstraint();
+    }
+
+    private void EnforceCombatMatrix()
+    {
+        if (_state == AIStateId.Dead || _state == AIStateId.Jumping || EndMatchCinematic.GameplayLocked)
+            return;
+
+        float scanRadius = Mathf.Max(detectionRadius, aggressiveScanRadius);
+        bool currentTargetLive = _target != null && IsHostileAlive(_target);
+        bool attackLocked = _state == AIStateId.Attack && _attackInProgress && currentTargetLive;
+        if (!attackLocked)
+        {
+            Transform closest = AISensing.FindClosestHostile(this, scanRadius);
+            if (closest != null && IsHostileAlive(closest))
+                _target = closest;
+        }
+
+        if (_target == null || !IsHostileAlive(_target))
+            return;
+
+        if (!PrepareAgentForCombatLocomotion())
+            return;
+
+        float combatDistance = GetCombatDistanceToTarget();
+        float attackRangeGate = Mathf.Max(0.65f, meleeAttackRange);
+
+        if (combatDistance > attackRangeGate)
+        {
+            AbortActiveAttack();
+            if (_state == AIStateId.Attack || _state == AIStateId.Idle || _state == AIStateId.Patrol
+                || _state == AIStateId.Evade || _state == AIStateId.StuckRecovery || _state == AIStateId.Flinch)
+                TransitionTo(AIStateId.Chase);
+
+            AIMotor.EnforceSprintPursuit(this);
+            return;
+        }
+
+        if (_state != AIStateId.Attack && CanBeginMeleeAttack() && !_attackInProgress)
+            TransitionTo(AIStateId.Attack);
+    }
+
+    public bool IsHostileAlive(Transform t)
+    {
+        if (t == null)
+            return false;
+
+        IDamageable dmg = t.GetComponentInParent<IDamageable>();
+        return dmg != null && dmg.IsAlive && dmg.gameObject != gameObject;
+    }
+
+    public float GetCombatDistanceToTarget()
+    {
+        if (_target == null)
+            return float.MaxValue;
+
+        Vector3 delta = _target.position - transform.position;
+        delta.y = 0f;
+        return delta.magnitude;
+    }
+
+    public bool PrepareAgentForCombatLocomotion()
+    {
+        if (_agent == null)
+            return false;
+
+        if (!_agent.enabled)
+            _agent.enabled = true;
+
+        if (!_agent.isOnNavMesh)
+            EnsureAgentOnNavMesh();
+
+        if (!_agent.isOnNavMesh)
+            return false;
+
+        _agent.isStopped = false;
+        _agent.updatePosition = true;
+        _agent.updateRotation = false;
+        _agent.autoBraking = false;
+        AIMotor.SuppressRootMotion(this);
+        AIMotor.ApplyBlackPlayerLocomotion(_agent, this);
+        return true;
     }
 
     private bool ShouldRunWatchdogThisFrame()
@@ -833,12 +955,12 @@ public class EnemyController : MonoBehaviour, IDamageable
         if ((Time.frameCount + GetInstanceID()) % 2 == 0)
             return true;
 
-        return _state == State.Chase || _state == State.Attack || _target != null;
+        return _state == AIStateId.Chase || _state == AIStateId.Attack || _target != null;
     }
 
     private bool ShouldSyncAnimatorThisFrame()
     {
-        if (_state == State.Chase || _state == State.Attack || _state == State.Evade)
+        if (_state == AIStateId.Chase || _state == AIStateId.Attack || _state == AIStateId.Evade)
             return true;
 
         if ((Time.frameCount + GetInstanceID()) % 2 == 0)
@@ -853,35 +975,48 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void TryGlobalAiTransitions()
     {
-        if (_state == State.Dead || EndMatchCinematic.GameplayLocked)
+        if (_state == AIStateId.Dead || EndMatchCinematic.GameplayLocked)
+            return;
+
+        if (_target != null && IsHostileAlive(_target) && GetCombatDistanceToTarget() > meleeAttackRange)
             return;
 
         if (ShouldEnterEvade())
         {
-            TransitionTo(State.Evade);
+            TransitionTo(AIStateId.Evade);
             return;
         }
 
         if (ShouldEnterStuckRecovery())
-            TransitionTo(State.StuckRecovery);
+            TransitionTo(AIStateId.StuckRecovery);
     }
 
     private bool ShouldEnterEvade()
     {
-        if (_state == State.Dead || _state == State.Evade || _state == State.StuckRecovery ||
-            _state == State.Jumping)
+        if (_state == AIStateId.Dead || _state == AIStateId.Evade || _state == AIStateId.StuckRecovery ||
+            _state == AIStateId.Jumping)
             return false;
 
         if (maxHealth <= 0)
             return false;
+
+        if (_target != null && IsTargetValid(_target))
+        {
+            float engageDist = Vector3.Distance(transform.position, _target.position);
+            if (engageDist <= detectionRadius)
+                return false;
+        }
 
         return (float)_currentHealth / maxHealth <= lowHealthPercent;
     }
 
     private bool ShouldEnterStuckRecovery()
     {
-        if (_state == State.Dead || _state == State.StuckRecovery || _state == State.Jumping ||
-            _state == State.Attack || _state == State.Flinch || _state == State.Idle)
+        if (_state == AIStateId.Dead || _state == AIStateId.StuckRecovery || _state == AIStateId.Jumping ||
+            _state == AIStateId.Attack || _state == AIStateId.Flinch || _state == AIStateId.Idle)
+            return false;
+
+        if (_target != null && IsHostileAlive(_target) && GetCombatDistanceToTarget() > meleeAttackRange)
             return false;
 
         if (!IsAgentReady())
@@ -901,15 +1036,6 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _navStuckTimer += Time.deltaTime;
         return _navStuckTimer >= stuckTimeThreshold;
-    }
-
-    private void FixedUpdate()
-    {
-        if (!HasAiDecisionAuthority())
-            return;
-
-        ApplyFlockingSteering();
-        EnforceStaticGeometryConstraint();
     }
 
     private void LateUpdate()
@@ -939,7 +1065,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_equippedWeaponLevel == 2 &&
             equippedWeaponObject  != null &&
             _activeWeaponHandBone != null &&
-            _state != State.Attack)          // ← let the swing anim run freely
+            _state != AIStateId.Attack)          // ← let the swing anim run freely
         {
             if (_cachedPlayer == null)
                 _cachedPlayer = ResolveScenePlayer();
@@ -997,7 +1123,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_equippedWeaponLevel == 12 &&
             equippedWeaponObject  != null &&
             _activeWeaponHandBone != null &&
-            _state                != State.Attack)
+            _state                != AIStateId.Attack)
         {
             if (_cachedPlayer == null)
                 _cachedPlayer = ResolveScenePlayer();
@@ -1047,7 +1173,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Tune axeAttackSwingCorrection in the Inspector during Play Mode if needed.
         if (_equippedWeaponLevel == 9 &&
             equippedWeaponObject  != null &&
-            _state                == State.Attack)
+            _state                == AIStateId.Attack)
         {
             // SET to a fixed value each frame — never compound/multiply current
             // localRotation or it oscillates every frame (base → corrected → base...).
@@ -1072,7 +1198,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         //   where handleInSawLocal = -(Inverse(playerLocalRot) * playerLocalPos)
         if (_equippedWeaponLevel == 12 &&
             equippedWeaponObject  != null &&
-            _state                == State.Attack)
+            _state                == AIStateId.Attack)
         {
             Quaternion attackLocalRot = _weaponBaseLocalRot * Quaternion.Euler(sawAttackSwingCorrection);
             equippedWeaponObject.transform.localRotation = attackLocalRot;
@@ -1102,7 +1228,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Excluded for level 2 (katana) and 12 (saw): dedicated blocks above.
         if (equippedWeaponObject  != null &&
             _activeWeaponHandBone != null &&
-            _state                != State.Attack &&
+            _state                != AIStateId.Attack &&
             _equippedWeaponLevel  == 1)
         {
             if (_cachedPlayer == null)
@@ -1134,10 +1260,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// </summary>
     private void ApplyMovementAlignedRotation()
     {
-        if (_state == State.Dead || EndMatchCinematic.GameplayLocked)
+        if (_state == AIStateId.Dead || EndMatchCinematic.GameplayLocked)
             return;
 
-        if (_state == State.Attack || _state == State.Flinch || _state == State.Jumping)
+        if (_state == AIStateId.Attack || _state == AIStateId.Flinch || _state == AIStateId.Jumping)
             return;
 
         if (_agent == null || !_agent.enabled)
@@ -1152,7 +1278,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        if (_state == State.Chase && _target != null)
+        if (_state == AIStateId.Chase && _target != null)
         {
             Vector3 toTarget = _target.position - transform.position;
             toTarget.y = 0f;
@@ -1169,169 +1295,14 @@ public class EnemyController : MonoBehaviour, IDamageable
     //  no velocity smoothing. The agent's internal acceleration curve drives
     //  the feel (and we tune it aggressively in Awake for snappy reactions).
     //
-    private void UpdateIdle()
-    {
-        if (IsAgentReady())
-            _agent.isStopped = true;
-
-        if (IsTargetValid(_target) && CanEngageChase(_target))
-        {
-            TransitionTo(State.Chase);
-            return;
-        }
-
-        _idleTimer += Time.deltaTime;
-        if (_idleTimer >= idleToPatrolDelay)
-            TransitionTo(State.Patrol);
-    }
-
-    private void UpdatePatrol()
-    {
-        if (!IsAgentReady())
-            return;
-
-        if (IsTargetValid(_target) && CanEngageChase(_target))
-        {
-            TransitionTo(State.Chase);
-            return;
-        }
-
-        _agent.isStopped = false;
-        _agent.speed = moveSpeed;
-        _agent.stoppingDistance = Mathf.Max(0.25f, attackRadius * 0.35f);
-
-        if (_isTraversingOffMeshLink || _agent.isOnOffMeshLink)
-            return;
-
-        _patrolTimer -= Time.deltaTime;
-        bool needsDestination = !_agent.hasPath || _agent.remainingDistance <= _agent.stoppingDistance + 0.35f;
-        if (_patrolTimer <= 0f || needsDestination)
-        {
-            _patrolTimer = patrolRetargetInterval;
-            SetRandomPatrolDestination();
-        }
-    }
-
-    private void UpdateChase()
-    {
-        if (HandleOffMeshLinkTraversal())
-            return;
-
-        if (!IsTargetValid(_target))
-        {
-            _target = null;
-            TransitionTo(State.Patrol);
-            return;
-        }
-
-        if (CanBeginMeleeAttack() && !_attackInProgress)
-        {
-            TransitionTo(State.Attack);
-            return;
-        }
-
-        float distSqr = GetTargetHorizontalDistanceSqr();
-        if (distSqr <= GetApproachEnterDistanceSqr())
-        {
-            TransitionTo(State.Approach);
-            return;
-        }
-
-        DriveTargetPursuit(ResolveChaseSpeed(), CombatStoppingDistance);
-        CheckAndJumpIfStuck();
-        CheckNoPathLedgeDrop();
-        TickCombatManeuver();
-    }
-
-    private void UpdateApproach()
-    {
-        if (HandleOffMeshLinkTraversal())
-            return;
-
-        if (!IsTargetValid(_target))
-        {
-            _target = null;
-            TransitionTo(State.Patrol);
-            return;
-        }
-
-        float distSqr = GetTargetHorizontalDistanceSqr();
-        if (distSqr > GetMeleeBreakDistanceSqr() || !HasCombatVisionTo(_target))
-        {
-            TransitionTo(State.Chase);
-            return;
-        }
-
-        if (CanBeginMeleeAttack() && !_attackInProgress)
-        {
-            TransitionTo(State.Attack);
-            return;
-        }
-
-        Vector3 toTarget = _target.position - transform.position;
-        toTarget.y = 0f;
-        if (toTarget.sqrMagnitude > 0.02f)
-            FaceDirection(toTarget);
-
-        DriveTargetPursuit(ResolveChaseSpeed(), CombatStoppingDistance);
-        CheckAndJumpIfStuck();
-        CheckNoPathLedgeDrop();
-    }
-
-    private void UpdateAttack()
-    {
-        if (HandleOffMeshLinkTraversal())
-            return;
-
-        if (!IsTargetValid(_target))
-        {
-            AbortActiveAttack();
-            _target = null;
-            TransitionTo(State.Patrol);
-            return;
-        }
-
-        float distSqr = GetTargetHorizontalDistanceSqr();
-        if (distSqr > GetMeleeBreakDistanceSqr() || !HasCombatVisionTo(_target))
-        {
-            AbortActiveAttack();
-            TransitionTo(State.Chase);
-            return;
-        }
-
-        if (GetTargetBodyDistance() > GetStrictMeleeStrikeRange())
-        {
-            AbortActiveAttack();
-            TransitionTo(State.Chase);
-            return;
-        }
-
-        if (IsAgentReady())
-        {
-            _agent.isStopped = true;
-            _agent.velocity = Vector3.zero;
-        }
-
-        Vector3 toTarget = _target.position - transform.position;
-        toTarget.y = 0f;
-        if (toTarget.sqrMagnitude > 0.02f)
-            FaceDirection(toTarget);
-
-        if (!_attackInProgress && _attackTimer <= 0f && CanBeginMeleeAttack())
-        {
-            _attackTimer = attackCooldown;
-            ExecuteAttack();
-        }
-    }
-
     private float _noPathLedgeTimer;
 
     // Called every chase frame: if the agent has no valid path at all and the
     // target is below, try to drop off a ledge to reach the lower NavMesh island.
-    private void CheckNoPathLedgeDrop()
+    public void CheckNoPathLedgeDrop()
     {
         if (!_isGrounded) return;
-        if (_state == State.Jumping) return;
+        if (_state == AIStateId.Jumping) return;
         if (!IsAgentReady()) return;
 
         // Only act when the agent genuinely has no path to the target
@@ -1353,7 +1324,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// <summary>
     /// Throttled NavMesh validation / destination refresh (see <see cref="repathInterval"/>).
     /// </summary>
-    private void TryRefreshChaseDestination()
+    public void TryRefreshChaseDestination()
     {
         _repathTimer -= Time.deltaTime;
         if (_repathTimer > 0f)
@@ -1406,7 +1377,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
-    private void UpdateEvade()
+    public void TickEvadeState()
     {
         if (HandleOffMeshLinkTraversal())
             return;
@@ -1414,7 +1385,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         float hpPct = (float)_currentHealth / Mathf.Max(1, maxHealth);
         if (hpPct > lowHealthPercent + 0.02f)
         {
-            TransitionTo(IsTargetValid(_target) && CanEngageChase(_target) ? State.Chase : State.Patrol);
+            TransitionTo(IsTargetValid(_target) && CanEngageChase(_target) ? AIStateId.Chase : AIStateId.Patrol);
             return;
         }
 
@@ -1443,7 +1414,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
-    private void UpdateStuckRecovery()
+    public void TickStuckRecoveryState()
     {
         if (!IsAgentReady())
         {
@@ -1471,7 +1442,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         TransitionTo(_resumeAfterStuck);
     }
 
-    private void UpdateFlinch()
+    public void TickFlinchState()
     {
         _flinchTimer -= Time.deltaTime;
 
@@ -1482,7 +1453,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         if (_flinchTimer <= 0f)
-            TransitionTo(IsTargetValid(_target) ? State.Chase : State.Patrol);
+            TransitionTo(IsHostileAlive(_target) ? AIStateId.Chase : AIStateId.Patrol);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1495,8 +1466,8 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void ApplyFlockingSteering()
     {
-        if (_state == State.Dead || _state == State.Attack || _state == State.Flinch ||
-            _state == State.Jumping || _state == State.StuckRecovery)
+        if (_state == AIStateId.Dead || _state == AIStateId.Attack || _state == AIStateId.Flinch ||
+            _state == AIStateId.Jumping || _state == AIStateId.StuckRecovery)
             return;
 
         if (EndMatchCinematic.GameplayLocked)
@@ -1664,7 +1635,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void EnforceStaticGeometryConstraint()
     {
-        if (_state == State.Dead || _state == State.Jumping)
+        if (_state == AIStateId.Dead || _state == AIStateId.Jumping)
             return;
         if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh)
             return;
@@ -1695,7 +1666,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void RecoverOnlyIfOutOfMap()
     {
-        if (_state == State.Dead) return;
+        if (_state == AIStateId.Dead) return;
         if (_agent == null || !_agent.enabled) return;
         if (transform.position.y < -5f)
         {
@@ -1721,7 +1692,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     //      verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity)
     // ════════════════════════════════════════════════════════════════════════
 
-    private void CheckAndJumpIfStuck()
+    public void CheckAndJumpIfStuck()
     {
         if (!IsAgentReady() || !_agent.hasPath) return;
 
@@ -1744,7 +1715,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (wallHit.normal.y < 0.5f)
             {
                 _stuckTimer = 0f;
-                if (_state == State.Chase || _state == State.Approach)
+                if (_state == AIStateId.Chase || _state == AIStateId.Approach)
                 {
                     _agent.ResetPath();
                     TrySetChaseDestinationValidated();
@@ -1800,7 +1771,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Execute drop: disable NavMeshAgent, push forward, let gravity handle the fall
         _preJumpState = _state;
         _jumpTimer = MaxJumpDuration;
-        TransitionTo(State.Jumping);
+        TransitionTo(AIStateId.Jumping);
 
         if (_agent != null) _agent.enabled = false;
         if (_controller != null) _controller.enabled = false;
@@ -1821,7 +1792,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _preJumpState = _state;
         _jumpTimer = MaxJumpDuration;
-        TransitionTo(State.Jumping);
+        TransitionTo(AIStateId.Jumping);
 
         // Hand movement over to physics
         if (_agent != null) _agent.enabled = false;
@@ -1863,9 +1834,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private float _maneuverTimer;
 
-    private void TickCombatManeuver()
+    public void TickCombatManeuver()
     {
-        if (_state != State.Chase) return;
+        if (_state != AIStateId.Chase) return;
         if (!_isGrounded) return;
         if (_target == null || _agent == null || !_agent.enabled) return;
 
@@ -1908,7 +1879,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Use the off-mesh physics path so we don't fight the agent.
         _preJumpState = _state;
         _jumpTimer = MaxJumpDuration;
-        TransitionTo(State.Jumping);
+        TransitionTo(AIStateId.Jumping);
         if (_agent != null) _agent.enabled = false;
         if (_controller != null) _controller.enabled = false;
         _rb.isKinematic = false;
@@ -1935,7 +1906,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _preJumpState = _state;
         _jumpTimer = MaxJumpDuration;
-        TransitionTo(State.Jumping);
+        TransitionTo(AIStateId.Jumping);
         if (_agent != null) _agent.enabled = false;
         if (_controller != null) _controller.enabled = false;
         _rb.isKinematic = false;
@@ -1964,7 +1935,7 @@ public class EnemyController : MonoBehaviour, IDamageable
                 _agent.Warp(landHit.position);
         }
         SetAnimatorBool(HashGrounded, true);
-        TransitionTo(_target != null ? _preJumpState : State.Idle);
+        TransitionTo(_target != null ? _preJumpState : AIStateId.Idle);
     }
 
     private void UpdateJumping()
@@ -2034,7 +2005,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             SetAnimatorBool(HashGrounded, true);
 
             // Resume what we were doing before the jump
-            TransitionTo(_target != null ? _preJumpState : State.Idle);
+            TransitionTo(_target != null ? _preJumpState : AIStateId.Idle);
         }
     }
 
@@ -2050,7 +2021,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         return strike * strike;
     }
 
-    private float GetTargetHorizontalDistanceSqr()
+    public float GetTargetHorizontalDistanceSqr()
     {
         if (_target == null)
             return float.MaxValue;
@@ -2060,7 +2031,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         return delta.sqrMagnitude;
     }
 
-    private float GetTargetBodyDistance()
+    public float GetTargetBodyDistance()
     {
         if (_target == null)
             return float.MaxValue;
@@ -2076,26 +2047,27 @@ public class EnemyController : MonoBehaviour, IDamageable
         return transform.position + transform.forward * 0.85f + Vector3.up * 1.1f;
     }
 
-    private float GetApproachEnterDistanceSqr()
+    public float GetApproachEnterDistanceSqr()
     {
         float enterDist = meleeAttackRange + Mathf.Max(0.15f, attackRangePadding * 0.5f);
         return enterDist * enterDist;
     }
 
-    private float GetMeleeBreakDistanceSqr()
+    public float GetMeleeBreakDistanceSqr()
     {
         float breakDist = meleeAttackRange + Mathf.Max(0.25f, breakAttackPadding * 0.5f);
         return breakDist * breakDist;
     }
 
-    private bool IsWithinMeleeAttackRange()
+    public bool IsWithinMeleeAttackRange()
     {
         return GetTargetBodyDistance() <= GetStrictMeleeStrikeRange();
     }
 
-    private bool CanBeginMeleeAttack()
+    public bool CanBeginMeleeAttack()
     {
         return _target != null
+            && GetCombatDistanceToTarget() <= Mathf.Max(0.65f, meleeAttackRange)
             && IsWithinMeleeAttackRange()
             && HasCombatVisionTo(_target)
             && IsFacingTarget(_target, attackFacingAngle);
@@ -2117,16 +2089,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void DriveTargetPursuit(float speed, float stoppingDistance)
     {
-        if (!IsAgentReady())
-            return;
-
-        _agent.isStopped = false;
-        _agent.speed = speed;
-        _agent.acceleration = agentAcceleration;
-        _agent.angularSpeed = agentAngularSpeed;
-        _agent.autoBraking = false;
-        _agent.stoppingDistance = stoppingDistance;
-        TryRefreshChaseDestination();
+        AIMotor.DrivePursuit(this, stoppingDistance);
     }
 
     public void RegisterMeleeHitLanded()
@@ -2136,17 +2099,17 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void NotifyMeleeAttackMissed()
     {
-        if (_state != State.Attack && !_attackInProgress)
+        if (_state != AIStateId.Attack && !_attackInProgress)
             return;
 
         AbortActiveAttack();
         if (_target != null && IsTargetValid(_target))
-            TransitionTo(State.Chase);
+            TransitionTo(AIStateId.Chase);
         else
-            TransitionTo(State.Patrol);
+            TransitionTo(AIStateId.Patrol);
     }
 
-    private void AbortActiveAttack()
+    public void AbortActiveAttack()
     {
         if (_attackHitboxRoutine != null)
         {
@@ -2165,6 +2128,9 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _attackInProgress = false;
         _attackSwingLanded = false;
+
+        if (_anim != null)
+            _anim.ResetTrigger(HashAttack);
     }
 
     private void CompleteAttackSwing(bool resumeChaseOnMiss)
@@ -2176,18 +2142,24 @@ public class EnemyController : MonoBehaviour, IDamageable
         _attackHitboxRoutine = null;
 
         if (resumeChaseOnMiss && !_attackSwingLanded && _target != null && IsTargetValid(_target))
-            TransitionTo(State.Chase);
+            TransitionTo(AIStateId.Chase);
 
         _attackSwingLanded = false;
     }
 
-    private void ExecuteAttack()
+    public void ExecuteAttack()
     {
-        if (!CanBeginMeleeAttack())
+        if (!CanBeginMeleeAttack() || !IsWithinMeleeAttackRange())
         {
             if (_target != null && IsTargetValid(_target))
-                TransitionTo(State.Chase);
+                TransitionTo(AIStateId.Chase);
             return;
+        }
+
+        if (IsAgentReady())
+        {
+            _agent.isStopped = true;
+            _agent.velocity = Vector3.zero;
         }
 
         _attackInProgress = true;
@@ -2267,43 +2239,66 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         _equippedWeaponHitbox.DisableHitbox();
 
-        if (attackHitboxWindup > 0f)
-            yield return new WaitForSeconds(attackHitboxWindup);
-
-        if (_target != null)
+        float windupElapsed = 0f;
+        while (windupElapsed < attackHitboxWindup)
         {
-            if (GetTargetBodyDistance() > GetStrictMeleeStrikeRange() || !HasCombatVisionTo(_target))
+            if (_target == null || !IsTargetValid(_target)
+                || GetTargetBodyDistance() > GetStrictMeleeStrikeRange()
+                || !HasCombatVisionTo(_target))
             {
                 CompleteAttackSwing(resumeChaseOnMiss: true);
                 yield break;
             }
+
+            windupElapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        if (_target == null || !IsTargetValid(_target)
+            || GetTargetBodyDistance() > GetStrictMeleeStrikeRange()
+            || !HasCombatVisionTo(_target))
+        {
+            CompleteAttackSwing(resumeChaseOnMiss: true);
+            yield break;
         }
 
         Physics.SyncTransforms();
         _equippedWeaponHitbox.meleeAttackRange = GetStrictMeleeStrikeRange();
-        _equippedWeaponHitbox.maxAttackRange = GetStrictMeleeStrikeRange() + 0.35f;
+        _equippedWeaponHitbox.maxAttackRange = GetStrictMeleeStrikeRange() + 0.15f;
         _equippedWeaponHitbox.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
         _equippedWeaponHitbox.SetAttackTarget(_target);
         _equippedWeaponHitbox.EnableHitbox();
 
-        if (attackHitboxActiveTime > 0f)
-            yield return new WaitForSeconds(attackHitboxActiveTime);
+        float activeElapsed = 0f;
+        while (activeElapsed < attackHitboxActiveTime)
+        {
+            if (_target == null || !IsTargetValid(_target)
+                || GetTargetBodyDistance() > GetStrictMeleeStrikeRange())
+            {
+                _equippedWeaponHitbox.DisableHitbox();
+                CompleteAttackSwing(resumeChaseOnMiss: true);
+                yield break;
+            }
+
+            activeElapsed += Time.deltaTime;
+            yield return null;
+        }
 
         CompleteAttackSwing(resumeChaseOnMiss: true);
     }
 
     public void TakeDamage(int amount, bool byPlayer = false)
     {
-        if (_state == State.Dead) return;
+        if (_state == AIStateId.Dead) return;
         if (byPlayer) _playerDamagedThisLife = true;
 
         _currentHealth -= amount;
 
         // Flinch
-        if (_state != State.Flinch)
+        if (_state != AIStateId.Flinch)
         {
             _flinchTimer = flinchDuration;
-            TransitionTo(State.Flinch);
+            TransitionTo(AIStateId.Flinch);
             if (IsAgentReady()) _agent.ResetPath();
         }
 
@@ -2320,7 +2315,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     // ── IDamageable ─────────────────────────────────────────────────────────
-    public bool IsAlive => _state != State.Dead;
+    public bool IsAlive => _state != AIStateId.Dead;
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
@@ -2377,9 +2372,15 @@ public class EnemyController : MonoBehaviour, IDamageable
                  Vector3.Distance(transform.position, attackerT.position) <
                  Vector3.Distance(transform.position, _target.position) - 0.5f))
             {
-                _target          = attackerT;
-                // Lock onto the recent attacker so retaliation actually sticks.
+                _target = attackerT;
                 _targetLockTimer = Time.time + targetLockDuration;
+            }
+
+            if (IsTargetValid(_target) && CanEngageChase(_target))
+            {
+                InterruptPassiveBehavior();
+                if (_state != AIStateId.Attack && _state != AIStateId.Jumping && _state != AIStateId.Dead)
+                    TransitionTo(AIStateId.Chase);
             }
         }
 
@@ -2404,6 +2405,9 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (MultiplayerMode.IsMultiplayer)
             Debug.Log("[AICombat] damage applied by MasterClient");
 
+        if (debugEnemyMovement)
+            Debug.Log($"[EnemyDamage] {name} took {appliedDamage} from {(attackerRoot != null ? attackerRoot.name : "unknown")} (hp={_currentHealth}->{_currentHealth - appliedDamage})", this);
+
         TakeDamage(appliedDamage, byPlayer: fromPlayer);
 
         if (CombatDebug.Enabled)
@@ -2421,7 +2425,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Die()
     {
-        _state = State.Dead;
+        _state = AIStateId.Dead;
         DisableMovementAndCollisionForDeath();
         CancelInvoke(nameof(EnableRagdoll));
         CancelInvoke(nameof(FreezeRagdoll));
@@ -2703,16 +2707,19 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         // Normalise by sprint cap so full-speed chases register ~1.0 on the blend tree; optional runAnimationMultiplier
         // nudges foot speed to match visible stride when the agent is at top chase velocity.
-        float refSpeed = Mathf.Max(0.01f, sprintChaseSpeed);
+        float refSpeed = sprintChaseSpeed;
+        PlayerController refPlayer = ResolveScenePlayer();
+        if (refPlayer != null)
+            refSpeed = Mathf.Max(0.01f, refPlayer.moveSpeed * refPlayer.sprintMultiplier);
         float normalizedSpeed = Mathf.Clamp01((actualSpeed * runAnimationMultiplier) / refSpeed);
+        if (actualSpeed < 0.1f)
+            normalizedSpeed = 0f;
 
         // Keep _lastFramePosition updated for any legacy callers.
         _lastFramePosition = transform.position;
 
-        // ── Drive the "Speed" parameter (Float → blend tree) ─────────────
-        // Tight damp (0.05) keeps the locomotion tree snappy — matches the
-        // player's position-delta responsiveness without visible jitter.
-        bool droveSpeed = SetAnimatorFloatChecked(HashSpeed, normalizedSpeed, 0.05f);
+        float speedDamp = normalizedSpeed < 0.01f ? 0f : 0.05f;
+        bool droveSpeed = SetAnimatorFloatChecked(HashSpeed, normalizedSpeed, speedDamp);
 
         // Fallback: if the animator has no "Speed" parameter, force-crossfade
         // into the correct state directly (same fallback PlayerController uses)
@@ -2720,7 +2727,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             ForceLocomotionState(normalizedSpeed);
 
         // ── Directional blend-tree params (VelocityX / VelocityZ) ────────
-        if (debugEnemyMovement && _state == State.Chase && _agent != null && (Time.frameCount % 15) == 0)
+        if (debugEnemyMovement && _state == AIStateId.Chase && _agent != null && (Time.frameCount % 15) == 0)
         {
             Debug.Log(
                 $"[EnemyMovement] enemy={name} velMag={actualSpeed:F2} agentSpeed={_agent.speed:F2} " +
@@ -2994,7 +3001,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ════════════════════════════════════════════════════════════════════════
 
     /// <summary>True if the transform points at something still alive we can damage.</summary>
-    private bool IsTargetValid(Transform t)
+    public bool IsTargetValid(Transform t)
     {
         if (t == null) return false;
         IDamageable dmg = t.GetComponentInParent<IDamageable>();
@@ -3103,7 +3110,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     }
 
     /// <summary>Chest-to-chest line test using environment-only layers.</summary>
-    private bool HasCombatVisionTo(Transform t)
+    public bool HasCombatVisionTo(Transform t)
     {
         if (t == null)
             return true;
@@ -3140,16 +3147,60 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// <summary>
     /// Patrol→Chase gate: range, FOV cone, AI vision, full NavMesh path.
     /// </summary>
-    private bool CanEngageChase(Transform t)
+    public void ResetChaseRepathClock()
+    {
+        _repathTimer = 0f;
+        _nextForceRetargetTime = 0f;
+    }
+
+    public void RefreshChaseDestinationImmediate()
+    {
+        ResetChaseRepathClock();
+        TrySetChaseDestinationValidated();
+    }
+
+    public void InterruptPassiveBehavior()
+    {
+        if (_isTraversingOffMeshLink && _agent != null && _agent.isOnOffMeshLink)
+            _agent.CompleteOffMeshLink();
+        _isTraversingOffMeshLink = false;
+        _patrolTimer = 0f;
+        _idleTimer = 0f;
+        if (IsAgentReady())
+            _agent.isStopped = false;
+    }
+
+    private void TryImmediateCombatInterrupt()
+    {
+        if (_state == AIStateId.Dead || _state == AIStateId.Jumping || EndMatchCinematic.GameplayLocked)
+            return;
+
+        if (_state == AIStateId.Attack && _attackInProgress && _target != null && IsHostileAlive(_target))
+            return;
+
+        float scanRadius = Mathf.Max(detectionRadius, aggressiveScanRadius);
+        Transform threat = AISensing.FindClosestHostile(this, scanRadius);
+        if (threat == null || !IsHostileAlive(threat))
+            return;
+
+        _target = threat;
+        _targetLockTimer = Time.time + targetLockDuration;
+        InterruptPassiveBehavior();
+
+        if (GetCombatDistanceToTarget() > meleeAttackRange)
+            TransitionTo(AIStateId.Chase);
+    }
+
+    public bool CanEngageChase(Transform t)
     {
         if (!IsTargetValid(t))
             return false;
 
         float d = Vector3.Distance(transform.position, t.position);
-        bool isPlayer = t.GetComponentInParent<PlayerHealth>() != null;
-        float maxRange = isPlayer
-            ? Mathf.Max(detectionRadius, aggressiveScanRadius)
-            : detectionRadius * 1.05f;
+        if (d <= detectionRadius)
+            return true;
+
+        float maxRange = Mathf.Max(detectionRadius, aggressiveScanRadius);
         if (d > maxRange)
             return false;
 
@@ -3169,73 +3220,88 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// </summary>
     private void TickCombatDrive()
     {
-        if (_state == State.Dead || EndMatchCinematic.GameplayLocked)
+        if (_state == AIStateId.Dead || EndMatchCinematic.GameplayLocked)
             return;
 
         if (_agent != null && _agent.enabled && !_agent.isOnNavMesh)
             EnsureAgentOnNavMesh();
 
-        if (_target == null)
+        if (_target == null || !IsHostileAlive(_target))
             return;
 
-        if (!IsTargetValid(_target))
+        if (GetCombatDistanceToTarget() > meleeAttackRange)
         {
-            _target = null;
-            EvaluateTargets();
-            if (_target == null)
-                return;
-        }
-
-        if ((_state == State.Idle || _state == State.Patrol) && CanEngageChase(_target))
-        {
-            TransitionTo(State.Chase);
-            return;
-        }
-
-        if (_state == State.Attack || _state == State.Flinch)
-            return;
-
-        if (_state != State.Chase && _state != State.Approach && _state != State.Evade
-            && _state != State.Jumping && _state != State.Flinch && _state != State.StuckRecovery)
-            return;
-
-        if (!IsAgentReady())
-            return;
-
-        _agent.isStopped = false;
-        _agent.updatePosition = true;
-        _agent.updateRotation = false;
-        _agent.speed = Mathf.Max(0.1f, _agent.speed);
-        _agent.acceleration = Mathf.Max(0.1f, _agent.acceleration);
-        _agent.angularSpeed = Mathf.Max(30f, _agent.angularSpeed);
-
-        bool needsDestination = !_agent.hasPath || _agent.pathPending
-            || (_agent.remainingDistance <= _agent.stoppingDistance + 0.15f && _agent.velocity.sqrMagnitude < 0.04f);
-        bool stalePartial = _agent.pathStatus == NavMeshPathStatus.PathPartial
-            && _agent.remainingDistance > 6f
-            && _agent.velocity.sqrMagnitude < stuckVelocityThreshold;
-
-        if (needsDestination || stalePartial || Time.time >= _nextForceRetargetTime)
-        {
-            if (!_agent.hasPath && _noPathReacquireSince < 0f)
-                _noPathReacquireSince = Time.time;
-            else if (!_agent.hasPath && Time.time - _noPathReacquireSince > 1.2f)
-            {
-                Debug.Log("[AIMove] no path, reacquiring target");
-                EvaluateTargets();
-                _noPathReacquireSince = Time.time;
-            }
-            else if (_agent.hasPath)
-            {
-                _noPathReacquireSince = -1f;
-            }
-
-            _nextForceRetargetTime = Time.time + Mathf.Max(0.25f, repathInterval);
-            TrySetChaseDestinationValidated();
+            if (_state != AIStateId.Chase && _state != AIStateId.Approach && _state != AIStateId.Jumping)
+                TransitionTo(AIStateId.Chase);
+            AIMotor.EnforceSprintPursuit(this);
         }
     }
 
-    private void TrySetChaseDestinationValidated()
+    private void TickDebugLog()
+    {
+        _enemyMoveDebugTimer -= Time.deltaTime;
+        if (_enemyMoveDebugTimer > 0f)
+            return;
+        _enemyMoveDebugTimer = 1f;
+
+        float vel = (_agent != null && _agent.enabled) ? _agent.velocity.magnitude : 0f;
+        float dist = _target != null ? Vector3.Distance(transform.position, _target.position) : -1f;
+        Debug.Log(
+            $"[EnemyMove] {name} state={_state} vel={vel:F2} isStopped={(_agent != null ? _agent.isStopped.ToString() : "N/A")} " +
+            $"target={(_target != null ? _target.name : "null")} dist={dist:F1}",
+            this);
+    }
+
+    private void TickAntiFreeze()
+    {
+        if (_state == AIStateId.Dead || _state == AIStateId.Jumping || _state == AIStateId.Flinch
+            || _state == AIStateId.Attack || _state == AIStateId.StuckRecovery
+            || EndMatchCinematic.GameplayLocked)
+        {
+            _staticFrameCount = 0;
+            _lastAntiFreezePosCheck = transform.position;
+            return;
+        }
+
+        if (_target == null || !IsHostileAlive(_target))
+        {
+            _staticFrameCount = 0;
+            _lastAntiFreezePosCheck = transform.position;
+            return;
+        }
+
+        if ((transform.position - _lastAntiFreezePosCheck).sqrMagnitude < 0.0004f)
+        {
+            _staticFrameCount++;
+        }
+        else
+        {
+            _staticFrameCount = 0;
+            _lastAntiFreezePosCheck = transform.position;
+        }
+
+        if (_staticFrameCount < 4)
+            return;
+
+        _staticFrameCount = 0;
+        _lastAntiFreezePosCheck = transform.position;
+
+        if (!IsAgentReady())
+        {
+            EnsureAgentOnNavMesh();
+            return;
+        }
+
+        _agent.isStopped = false;
+        _agent.ResetPath();
+        _agent.SetDestination(_target.position);
+
+        if (_state != AIStateId.Chase && _state != AIStateId.Approach)
+            TransitionTo(AIStateId.Chase);
+
+    }
+
+    public void TrySetChaseDestinationValidated()
     {
         if (_target == null || !IsAgentReady())
             return;
@@ -3347,85 +3413,78 @@ public class EnemyController : MonoBehaviour, IDamageable
         _agent.autoTraverseOffMeshLink = false;
     }
 
-    private void TransitionTo(State newState)
+    public void TransitionTo(AIStateId newState)
     {
-        State prevState = _state;
-        if (newState == State.StuckRecovery && prevState != State.StuckRecovery)
+        if (_state == newState && newState != AIStateId.Chase && newState != AIStateId.Approach)
+            return;
+
+        AIStateId prevState = _state;
+        if (newState == AIStateId.StuckRecovery && prevState != AIStateId.StuckRecovery)
             _resumeAfterStuck = MapResumeAfterStuck(prevState);
 
-        if (prevState == State.Attack && newState != State.Attack)
-            AbortActiveAttack();
+        if (newState == AIStateId.Chase || newState == AIStateId.Approach || newState == AIStateId.Attack)
+            InterruptPassiveBehavior();
 
-        _state = newState;
-        if (MultiplayerMode.IsMultiplayer && (newState == State.Patrol || newState == State.Chase || newState == State.Attack))
+        if (MultiplayerMode.IsMultiplayer && (newState == AIStateId.Patrol || newState == AIStateId.Chase || newState == AIStateId.Attack))
             Debug.Log("[AIState] enemy " + name + " state = " + newState);
 
         if (debugAICombat)
-        {
             Debug.Log($"[EnemyAI] {name} transitioned from {prevState} to {newState}. Target={(_target != null ? _target.name : "null")}");
+
+        if (newState == AIStateId.Jumping || newState == AIStateId.Dead)
+        {
+            OnAIStateExit(prevState, newState);
+            SyncAIStateId(newState);
+            OnAIStateEnter(prevState, newState);
+            return;
         }
 
-        if (!IsAgentReady()) return;
+        if (_aiFsm != null)
+            _aiFsm.SetState(newState, true);
+        else
+            SyncAIStateId(newState);
+    }
 
-        switch (newState)
+    public void OnAIStateExit(AIStateId previous, AIStateId next)
+    {
+        if (previous == AIStateId.Attack && next != AIStateId.Attack)
+            AbortActiveAttack();
+    }
+
+    public void OnAIStateEnter(AIStateId previous, AIStateId next)
+    {
+        if (!IsAgentReady())
+            return;
+
+        switch (next)
         {
-            case State.Patrol:
-                _agent.isStopped = false;
-                _agent.speed = moveSpeed;
-                SetRandomPatrolDestination();
-                break;
-
-            case State.Chase:
-                _agent.isStopped = false;
-                _idleTimer = 0f;
-                _repathTimer = 0f;
-                if (IsTargetValid(_target))
-                    TrySetChaseDestinationValidated();
-                break;
-
-            case State.Approach:
-                _agent.isStopped = false;
-                _idleTimer = 0f;
-                _repathTimer = 0f;
-                if (IsTargetValid(_target))
-                    TrySetChaseDestinationValidated();
-                break;
-
-            case State.Attack:
-                _agent.isStopped = true;
-                _agent.velocity  = Vector3.zero;
-                break;
-
-            case State.Idle:
-            case State.Flinch:
-                _agent.isStopped = true;
-                _agent.velocity  = Vector3.zero;
-                if (prevState != State.Flinch) _agent.ResetPath();
-                break;
-
-            case State.Jumping:
-                // Jump handler takes over the agent entirely.
-                break;
-
-            case State.Evade:
+            case AIStateId.Patrol:
                 _agent.isStopped = false;
                 _agent.speed = moveSpeed;
                 break;
-
-            case State.StuckRecovery:
+            case AIStateId.Chase:
+            case AIStateId.Approach:
+                _idleTimer = 0f;
+                ResetChaseRepathClock();
+                break;
+            case AIStateId.Evade:
+                _agent.isStopped = false;
+                _agent.speed = moveSpeed;
+                break;
+            case AIStateId.StuckRecovery:
                 _agent.isStopped = false;
                 break;
         }
     }
 
-    private static State MapResumeAfterStuck(State previous)
+    private static AIStateId MapResumeAfterStuck(AIStateId previous)
     {
         switch (previous)
         {
-            case State.Attack:
-            case State.Approach:
-            case State.Flinch:
-                return State.Chase;
+            case AIStateId.Attack:
+            case AIStateId.Approach:
+            case AIStateId.Flinch:
+                return AIStateId.Chase;
             default:
                 return previous;
         }
@@ -3437,7 +3496,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         FaceDirection(_target.position - transform.position);
     }
 
-    private void FaceDirection(Vector3 direction)
+    public void FaceDirection(Vector3 direction)
     {
         direction.y = 0f;
         if (direction.sqrMagnitude < 0.001f) return;
@@ -3480,7 +3539,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         var wait = new WaitForSeconds(detectionInterval);
         while (true)
         {
-            if (_state != State.Dead && HasAiDecisionAuthority())
+            if (_state != AIStateId.Dead && HasAiDecisionAuthority())
                 EvaluateTargets();
             yield return wait;
         }
@@ -3536,88 +3595,96 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void EvaluateTargets()
     {
-        // Co-op Survival: prefer the nearest living human player from the MP list.
         if (_mpHumanTargets != null && _mpHumanTargets.Count > 0)
         {
-            Transform nearest  = null;
-            float     nearestD = float.MaxValue;
+            Transform nearest = null;
+            float nearestD = float.MaxValue;
             foreach (Transform t in _mpHumanTargets)
             {
-                if (t == null) continue;
+                if (t == null)
+                    continue;
                 IDamageable dmg = t.GetComponentInParent<IDamageable>();
-                if (dmg == null || !dmg.IsAlive) continue;
+                if (dmg == null || !dmg.IsAlive)
+                    continue;
                 float d = Vector3.Distance(transform.position, t.position);
-                if (d < nearestD) { nearestD = d; nearest = t; }
+                if (d < nearestD)
+                {
+                    nearestD = d;
+                    nearest = t;
+                }
             }
+
             if (nearest != null && nearestD <= Mathf.Max(detectionRadius, aggressiveScanRadius))
             {
-                if (nearest != _target) { _target = nearest; _targetLockTimer = Time.time + targetLockDuration; }
-                if (MultiplayerMode.IsMultiplayer)
-                    Debug.Log("[AICombat] target acquired = PLAYER");
-                if ((_state == State.Idle || _state == State.Patrol || _state == State.Attack) && CanEngageChase(_target))
-                    TransitionTo(State.Chase);
+                ApplyTargetSelection(nearest);
                 return;
             }
         }
 
-        Transform candidate = FindFfaTarget(Mathf.Max(detectionRadius, aggressiveScanRadius));
-
-        // Minimal freeze fix: fall back to nearest living enemy/player (no hard player priority).
+        Transform candidate = AISensing.FindClosestHostile(this, detectionRadius);
+        if (candidate == null)
+            candidate = AISensing.FindClosestHostile(this, Mathf.Max(detectionRadius, aggressiveScanRadius));
         if (candidate == null)
             candidate = FindFallbackTarget();
 
         if (candidate == null)
         {
             _target = null;
-            if (_state != State.Dead && _state != State.Flinch && _state != State.Jumping &&
-                _state != State.Evade)
-                TransitionTo(State.Patrol);
+            if (_state != AIStateId.Dead && _state != AIStateId.Flinch && _state != AIStateId.Jumping
+                && _state != AIStateId.Chase && _state != AIStateId.Approach && _state != AIStateId.Attack)
+                TransitionTo(AIStateId.Patrol);
             return;
         }
 
-        // Target-commitment gate. While the lock timer is still running, keep
-        // the current valid target unless a new candidate is meaningfully
-        // closer (targetSwitchHysteresis metres). Previously _targetLockTimer
-        // was set but never read, so EvaluateTargets re-picked the nearest
-        // combatant every scan — that is what caused the per-scan target
-        // thrash and the all-enemies-swarm-the-player behaviour. With the gate
-        // active, an enemy that has locked onto another enemy keeps fighting
-        // it instead of re-snapping to the player.
-        if (IsTargetValid(_target) && _target != candidate && Time.time < _targetLockTimer)
+        if (IsTargetValid(_target) && _target != candidate)
         {
-            float currentDist   = Vector3.Distance(transform.position, _target.position);
-            float candidateDist = Vector3.Distance(transform.position, candidate.position);
-            if (candidateDist > currentDist - Mathf.Max(0f, targetSwitchHysteresis))
+            if (!AISensing.ShouldSwitchTarget(this, _target, candidate, targetSwitchHysteresis))
                 candidate = _target;
         }
 
-        if (candidate != _target)
+        ApplyTargetSelection(candidate);
+    }
+
+    private void ApplyTargetSelection(Transform candidate)
+    {
+        if (candidate == null)
+            return;
+
+        bool targetChanged = candidate != _target;
+        if (targetChanged)
         {
             _target = candidate;
             _targetLockTimer = Time.time + targetLockDuration;
+            bool isPlayer = _target.GetComponentInParent<PlayerController>() != null;
             if (MultiplayerMode.IsMultiplayer)
-                Debug.Log("[AICombat] target acquired = " + (_target.GetComponentInParent<PlayerController>() != null ? "PLAYER" : "ENEMY"));
+                Debug.Log("[AICombat] target acquired = " + (isPlayer ? "PLAYER" : "ENEMY"));
+            if (debugEnemyMovement)
+                Debug.Log($"[EnemyTarget] {name} acquired {_target.name} ({(isPlayer ? "PLAYER" : "ENEMY")}) dist={Vector3.Distance(transform.position, _target.position):F1}", this);
         }
 
-        if ((_state == State.Idle || _state == State.Patrol || _state == State.Attack) &&
-            CanEngageChase(_target))
-            TransitionTo(State.Chase);
+        if (!IsHostileAlive(_target))
+            return;
+
+        if (GetCombatDistanceToTarget() > meleeAttackRange)
+            TransitionTo(AIStateId.Chase);
+        else if (_state != AIStateId.Attack && CanBeginMeleeAttack())
+            TransitionTo(AIStateId.Attack);
     }
 
     private Transform FindFallbackTarget()
     {
         Transform player = FindPlayerTarget();
-        if (player != null && IsTargetValid(player))
+        if (player != null && IsHostileAlive(player))
             return player;
 
         Transform nearestEnemy = FindNearestLivingEnemy();
-        if (nearestEnemy != null && IsTargetValid(nearestEnemy))
+        if (nearestEnemy != null && IsHostileAlive(nearestEnemy))
             return nearestEnemy;
 
         return player;
     }
 
-    private void SetRandomPatrolDestination()
+    public void SetRandomPatrolDestination()
     {
         if (!IsAgentReady())
             return;
@@ -3632,7 +3699,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
-    private bool HandleOffMeshLinkTraversal()
+    public bool HandleOffMeshLinkTraversal()
     {
         if (!IsAgentReady() || _isTraversingOffMeshLink)
             return false;
@@ -3691,42 +3758,7 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private Transform FindFfaTarget(float radius)
     {
-        int hitCount = Physics.OverlapSphereNonAlloc(
-            transform.position,
-            radius,
-            _targetScanBuffer,
-            detectionMask,
-            QueryTriggerInteraction.Ignore);
-
-        Transform best      = null;
-        float     bestScore = float.MaxValue;
-        _ffaEvaluatedRoots.Clear();
-
-        for (int h = 0; h < hitCount; h++)
-        {
-            Collider hit = _targetScanBuffer[h];
-            if (hit == null || hit.transform == transform) continue;
-
-            IDamageable dmg = hit.GetComponentInParent<IDamageable>();
-            if (dmg == null || !dmg.IsAlive) continue;
-            if (dmg.gameObject == gameObject) continue;
-
-            int id = dmg.gameObject.GetInstanceID();
-            if (!_ffaEvaluatedRoots.Add(id)) continue;
-
-            Transform t  = dmg.transform;
-            float     d2 = (t.position - transform.position).sqrMagnitude;
-            bool isPlayer = t.GetComponentInParent<PlayerHealth>() != null;
-            float score = d2 * (isPlayer ? 0.72f : 1f);
-
-            if (score < bestScore)
-            {
-                bestScore = score;
-                best      = t;
-            }
-        }
-
-        return best;
+        return AISensing.FindClosestHostile(this, radius);
     }
 
     private Transform FindPlayerTarget()
@@ -3759,7 +3791,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
     }
 
-    private bool IsAgentReady()
+    public bool IsAgentReady()
     {
         return _agent != null && _agent.enabled && _agent.isOnNavMesh;
     }
@@ -4550,7 +4582,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     // ════════════════════════════════════════════════════════════════════════
     private void TickWatchdog()
     {
-        if (_state == State.Dead) return;
+        if (_state == AIStateId.Dead) return;
         if (_agent == null || !_agent.enabled) return;
 
         float now = Time.time;
@@ -4659,7 +4691,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             _target = null;
             EvaluateTargets();
         }
-        else if (_target != null && _state == State.Chase && !CanEngageChase(_target))
+        else if (_target != null && _state == AIStateId.Chase && !CanEngageChase(_target))
         {
             if (_idleMotionSinceTime < 0f) _idleMotionSinceTime = now;
             else if (now - _idleMotionSinceTime >= idleMotionTimeout)
@@ -4690,7 +4722,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private void CheckGroundAlignment()
     {
         if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh) return;
-        if (_state == State.Dead || _state == State.Jumping || _state == State.Flinch) return;
+        if (_state == AIStateId.Dead || _state == AIStateId.Jumping || _state == AIStateId.Flinch) return;
 
         // Stagger per instance so 20 enemies don't all raycast on the same frame.
         _groundAlignTimer -= Time.deltaTime;
