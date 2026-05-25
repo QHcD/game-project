@@ -1,139 +1,229 @@
+using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
-/// <summary>
-/// Level 9 weapon grip fixer.
-///
-/// The black player character has the authoritative, correct weapon grip.
-/// This script reads that grip's WeaponGripOffset at runtime and stamps
-/// the exact same localPosition / localEulerAngles / uniformScale onto every
-/// other character's weapon in the scene — without touching the player.
-///
-/// HOW TO USE
-/// ----------
-/// 1. Create an empty GameObject in your Level 9 scene, name it "WeaponGripMatcher".
-/// 2. Attach this script to it.
-/// 3. Play — it auto-runs on Awake, then again 0.5 s later to catch late-spawned weapons.
-/// 4. While playing, right-click the component → "Force Re-Apply All Grips" for a manual refresh.
-/// 5. Once the grip looks right, you may optionally bake it: right-click → "Log Source Grip Values"
-///    and manually copy those numbers into the WeaponGripOffset fields on your enemy prefabs.
-///
-/// REQUIREMENTS
-/// ------------
-/// - The player GameObject must be tagged "Player".
-/// - Enemy GameObjects must be tagged "Enemy".
-/// - Every weapon (player and enemy) must have a WeaponGripOffset component.
-///   WeaponGripSystem.AttachWeapon() adds one automatically via WeaponHitbox; if your
-///   weapons were attached manually, add WeaponGripOffset to the weapon prefab root.
-/// </summary>
+[DisallowMultipleComponent]
 public class WeaponGripMatcher : MonoBehaviour
 {
-    [Header("Optional — leave null to auto-find via 'Player' tag")]
-    [Tooltip("The black player's root GameObject. Auto-resolved from tag 'Player' if empty.")]
     [SerializeField] private GameObject sourcePlayerRoot;
+    [SerializeField] private bool logDetails = false;
+    [SerializeField] private bool continuousEnforce = true;
+    [SerializeField] private float discoveryInterval = 0.5f;
 
-    [Header("Debug")]
-    [SerializeField] private bool logDetails = true;
-
-    // ── Internal snapshot ────────────────────────────────────────────────────
-
-    private Vector3 _srcLocalPosition;
-    private Vector3 _srcLocalEuler;
-    private float   _srcUniformScale;
-    private bool    _hasSnapshot;
-
-    // ── Unity lifecycle ──────────────────────────────────────────────────────
-
-    private void Awake()
+    private struct GripSnapshot
     {
-        ApplyAll();
-
-        // Second pass after 0.5 s catches weapons spawned during LevelBuilder.Start().
-        Invoke(nameof(ApplyAll), 0.5f);
+        public Vector3 localPosition;
+        public Quaternion localRotation;
+        public Vector3 localScale;
+        public Vector3 bladeBoxHalfExtents;
+        public bool hasBladeBox;
     }
 
-    // ── Public API ───────────────────────────────────────────────────────────
-
-    [ContextMenu("Force Re-Apply All Grips")]
-    public void ApplyAll()
+    private class EnemyWeaponBinding
     {
-        if (!TakeSnapshot())
-            return;
+        public Transform target;
+        public WeaponBase weapon;
+        public string key;
+    }
 
-        int fixedCount = 0;
-        WeaponGripOffset[] all = FindObjectsByType<WeaponGripOffset>(FindObjectsSortMode.None);
+    private readonly Dictionary<string, GripSnapshot> _snapshots = new Dictionary<string, GripSnapshot>();
+    private readonly List<EnemyWeaponBinding> _bindings = new List<EnemyWeaponBinding>();
+    private GripSnapshot _fallback;
+    private bool _hasFallback;
+    private float _nextDiscovery;
 
-        foreach (WeaponGripOffset wgo in all)
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    private static void AutoAttach()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+        SceneManager.sceneLoaded += OnSceneLoaded;
+        Scene s = SceneManager.GetActiveScene();
+        if (s.IsValid() && s.isLoaded) OnSceneLoaded(s, LoadSceneMode.Single);
+    }
+
+    private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        if (!scene.IsValid() || !scene.isLoaded) return;
+        string lower = scene.name.ToLowerInvariant();
+        if (lower.Contains("menu") || lower.Contains("lobby") || lower.Contains("loading")) return;
+
+        GameObject host = GameObject.Find("WeaponGripMatcher_Auto");
+        if (host == null) host = new GameObject("WeaponGripMatcher_Auto");
+        WeaponGripMatcher m = host.GetComponent<WeaponGripMatcher>();
+        if (m == null) m = host.AddComponent<WeaponGripMatcher>();
+        m.ClearAndRescan();
+    }
+
+    private void Awake() { ClearAndRescan(); }
+
+    private void OnEnable() { _nextDiscovery = 0f; }
+
+    public void ClearAndRescan()
+    {
+        _snapshots.Clear();
+        _bindings.Clear();
+        _hasFallback = false;
+        _nextDiscovery = 0f;
+    }
+
+    private void LateUpdate()
+    {
+        if (Time.unscaledTime >= _nextDiscovery)
         {
-            if (wgo == null) continue;
-
-            // Skip the source player's own weapon.
-            GameObject root = wgo.transform.root.gameObject;
-            if (root.CompareTag("Player")) continue;
-
-            // Only touch weapons that belong to an Enemy.
-            if (!root.CompareTag("Enemy")) continue;
-
-            wgo.localPosition    = _srcLocalPosition;
-            wgo.localEulerAngles = _srcLocalEuler;
-            wgo.uniformScale     = _srcUniformScale;
-            wgo.Enforce();
-            fixedCount++;
-
-            if (logDetails)
-                Debug.Log($"[WeaponGripMatcher] Fixed grip on '{root.name}' → weapon '{wgo.name}'.");
+            _nextDiscovery = Time.unscaledTime + Mathf.Max(0.1f, discoveryInterval);
+            BuildSnapshots();
+            DiscoverEnemyWeapons();
         }
 
-        if (logDetails)
-            Debug.Log($"[WeaponGripMatcher] Done — {fixedCount} enemy weapon(s) updated.");
+        if (!_hasFallback) return;
+
+        for (int i = _bindings.Count - 1; i >= 0; i--)
+        {
+            EnemyWeaponBinding b = _bindings[i];
+            if (b == null || b.target == null || b.weapon == null)
+            {
+                _bindings.RemoveAt(i);
+                continue;
+            }
+
+            GripSnapshot snap;
+            if (!TryResolveSnapshotByKey(b.key, out snap)) continue;
+
+            b.target.localPosition = snap.localPosition;
+            b.target.localRotation = snap.localRotation;
+            b.target.localScale = snap.localScale;
+
+            if (snap.hasBladeBox)
+            {
+                WeaponGripOffset wgo = b.weapon.GetComponent<WeaponGripOffset>();
+                if (wgo == null) wgo = b.weapon.GetComponentInChildren<WeaponGripOffset>(true);
+                if (wgo != null) wgo.bladeBoxHalfExtents = snap.bladeBoxHalfExtents;
+            }
+        }
+
+        if (!continuousEnforce)
+            enabled = false;
+    }
+
+    private void DiscoverEnemyWeapons()
+    {
+        _bindings.Clear();
+        GameObject[] enemies = GameObject.FindGameObjectsWithTag("Enemy");
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            GameObject enemy = enemies[i];
+            if (enemy == null) continue;
+            WeaponBase[] weapons = enemy.GetComponentsInChildren<WeaponBase>(true);
+            for (int w = 0; w < weapons.Length; w++)
+            {
+                WeaponBase wb = weapons[w];
+                if (wb == null) continue;
+                _bindings.Add(new EnemyWeaponBinding
+                {
+                    target = wb.transform,
+                    weapon = wb,
+                    key = ResolveKey(wb)
+                });
+            }
+        }
+
+        if (logDetails && _bindings.Count > 0)
+            Debug.Log($"[WeaponGripMatcher] Discovered {_bindings.Count} enemy weapon transform(s).");
+    }
+
+    private bool TryResolveSnapshotByKey(string key, out GripSnapshot snap)
+    {
+        snap = default;
+        if (!string.IsNullOrEmpty(key) && _snapshots.TryGetValue(key, out snap))
+            return true;
+        if (_hasFallback) { snap = _fallback; return true; }
+        return false;
+    }
+
+    private static string ResolveKey(WeaponBase wb)
+    {
+        if (wb == null) return null;
+        if (!string.IsNullOrEmpty(wb.weaponName) && wb.weaponName != "Weapon")
+            return Normalize(wb.weaponName);
+        return Normalize(wb.gameObject.name);
+    }
+
+    private static string Normalize(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        string s = raw.ToLowerInvariant();
+        s = s.Replace("(clone)", "").Replace("weaponmodel", "").Replace(" ", "").Replace("_", "").Replace("-", "");
+        return s.Trim();
+    }
+
+    private void BuildSnapshots()
+    {
+        if (sourcePlayerRoot == null)
+            sourcePlayerRoot = GameObject.FindGameObjectWithTag("Player");
+        if (sourcePlayerRoot == null) return;
+
+        _snapshots.Clear();
+        _hasFallback = false;
+
+        WeaponBase[] playerWeapons = sourcePlayerRoot.GetComponentsInChildren<WeaponBase>(true);
+        for (int i = 0; i < playerWeapons.Length; i++)
+        {
+            WeaponBase wb = playerWeapons[i];
+            if (wb == null) continue;
+
+            Transform t = wb.transform;
+            GripSnapshot snap = new GripSnapshot
+            {
+                localPosition = t.localPosition,
+                localRotation = t.localRotation,
+                localScale = t.localScale
+            };
+
+            WeaponGripOffset wgo = wb.GetComponent<WeaponGripOffset>();
+            if (wgo == null) wgo = wb.GetComponentInChildren<WeaponGripOffset>(true);
+            if (wgo != null && wgo.bladeBoxHalfExtents.sqrMagnitude > 0f)
+            {
+                snap.bladeBoxHalfExtents = wgo.bladeBoxHalfExtents;
+                snap.hasBladeBox = true;
+            }
+
+            string key = ResolveKey(wb);
+            if (!string.IsNullOrEmpty(key))
+                _snapshots[key] = snap;
+
+            if (!_hasFallback) { _fallback = snap; _hasFallback = true; }
+        }
     }
 
     [ContextMenu("Log Source Grip Values")]
     public void LogSourceValues()
     {
-        if (!TakeSnapshot()) return;
-        Debug.Log($"[WeaponGripMatcher] Source grip snapshot:\n" +
-                  $"  localPosition    = {_srcLocalPosition}\n" +
-                  $"  localEulerAngles = {_srcLocalEuler}\n" +
-                  $"  uniformScale     = {_srcUniformScale}");
+        BuildSnapshots();
+        if (!_hasFallback) { Debug.LogWarning("[WeaponGripMatcher] No source player weapon found."); return; }
+        foreach (KeyValuePair<string, GripSnapshot> kv in _snapshots)
+        {
+            GripSnapshot s = kv.Value;
+            Debug.Log($"[WeaponGripMatcher] key='{kv.Key}' pos={s.localPosition} rotEuler={s.localRotation.eulerAngles} scale={s.localScale} blade={s.bladeBoxHalfExtents}");
+        }
     }
 
-    // ── Private helpers ──────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Reads the WeaponGripOffset from the player's weapon and stores the snapshot.
-    /// Returns true when a valid snapshot is ready.
-    /// </summary>
-    private bool TakeSnapshot()
+    [ContextMenu("Force Re-Apply All Grips")]
+    public void ApplyAllNow()
     {
-        // Resolve the source root on every call so it works after scene load.
-        if (sourcePlayerRoot == null)
-            sourcePlayerRoot = GameObject.FindGameObjectWithTag("Player");
+        BuildSnapshots();
+        DiscoverEnemyWeapons();
+        if (!_hasFallback) return;
 
-        if (sourcePlayerRoot == null)
+        for (int i = 0; i < _bindings.Count; i++)
         {
-            Debug.LogWarning("[WeaponGripMatcher] No GameObject tagged 'Player' found in scene.");
-            return false;
+            EnemyWeaponBinding b = _bindings[i];
+            if (b == null || b.target == null) continue;
+            GripSnapshot snap;
+            if (!TryResolveSnapshotByKey(b.key, out snap)) continue;
+            b.target.localPosition = snap.localPosition;
+            b.target.localRotation = snap.localRotation;
+            b.target.localScale = snap.localScale;
         }
-
-        // Find the WeaponGripOffset in the player's hierarchy.
-        WeaponGripOffset src = sourcePlayerRoot.GetComponentInChildren<WeaponGripOffset>(true);
-
-        if (src == null)
-        {
-            Debug.LogWarning($"[WeaponGripMatcher] Player '{sourcePlayerRoot.name}' has no " +
-                             "WeaponGripOffset in its hierarchy. Attach WeaponGripOffset to the " +
-                             "weapon prefab root so the grip can be read.");
-            return false;
-        }
-
-        _srcLocalPosition  = src.localPosition;
-        _srcLocalEuler     = src.localEulerAngles;
-        _srcUniformScale   = src.uniformScale;
-        _hasSnapshot       = true;
-
-        if (logDetails)
-            Debug.Log($"[WeaponGripMatcher] Snapshot taken from '{src.name}' on '{sourcePlayerRoot.name}': " +
-                      $"pos={_srcLocalPosition}  euler={_srcLocalEuler}  scale={_srcUniformScale:F3}");
-        return true;
     }
 }
