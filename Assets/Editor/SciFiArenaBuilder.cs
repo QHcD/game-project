@@ -20,7 +20,7 @@ public static class SciFiArenaBuilder
     private const string VersionFile = OutputDir + "/.builder_version";
 
     // Bump when layout/content meaningfully changes — forces auto-rebuild.
-    private const int BuilderVersion = 18;
+    private const int BuilderVersion = 19;
 
     private const float ModuleSize = 6f;
     private const int GridSize = 9;            // 54m x 54m arena
@@ -323,13 +323,12 @@ public static class SciFiArenaBuilder
 
     private static void BuildCeiling(Transform parent, KitRefs k)
     {
-        // GUARANTEED SEAL — the kit "Ceiling Closed" mesh has decorative cutouts the
-        // box collider doesn't cover (that's how sky was leaking in v9). We don't use
-        // it at all. The cap below IS the player's visible ceiling.
-        float footprint = GridSize * ModuleSize;      // 54
-        float overhang  = 3f;
-        float capThickness = 0.3f;
-        float capSize = footprint + overhang * 2f;    // 60
+        float footprint = GridSize * ModuleSize;
+        float overhang  = 6f;
+        float capThickness = 0.5f;
+        float capSize = footprint + overhang * 2f;
+        float capY = SealedCeilingY;
+        float tileY = 8.35f;
 
         Material ceilingMat = AssetDatabase.LoadAssetAtPath<Material>(
             "Assets/SciFi Warehouse Kit/Art/Materials/Ceiling Mat.mat");
@@ -340,29 +339,61 @@ public static class SciFiArenaBuilder
         GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Cube);
         cap.name = "Ceiling_SealedCap";
         cap.transform.SetParent(parent, false);
-        cap.transform.localPosition = new Vector3(0f, SealedCeilingY, 0f);
+        cap.transform.localPosition = new Vector3(0f, capY, 0f);
         cap.transform.localScale = new Vector3(capSize, capThickness, capSize);
         if (ceilingMat != null)
             cap.GetComponent<MeshRenderer>().sharedMaterial = ceilingMat;
 
-        // Optional decorative kit tiles ABOVE the cap (only visible from outside).
-        // Off by default since they were the original source of the leak.
-        const bool spawnKitTileDecor = false;
-        if (spawnKitTileDecor && k.ceilingClosed != null)
+        GameObject skirtN = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        skirtN.name = "Ceiling_SkirtN";
+        skirtN.transform.SetParent(parent, false);
+        skirtN.transform.localPosition = new Vector3(0f, capY - 0.6f, Half + 0.3f);
+        skirtN.transform.localScale = new Vector3(capSize, 1.2f, 0.6f);
+        if (ceilingMat != null) skirtN.GetComponent<MeshRenderer>().sharedMaterial = ceilingMat;
+
+        GameObject skirtS = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        skirtS.name = "Ceiling_SkirtS";
+        skirtS.transform.SetParent(parent, false);
+        skirtS.transform.localPosition = new Vector3(0f, capY - 0.6f, -Half - 0.3f);
+        skirtS.transform.localScale = new Vector3(capSize, 1.2f, 0.6f);
+        if (ceilingMat != null) skirtS.GetComponent<MeshRenderer>().sharedMaterial = ceilingMat;
+
+        GameObject skirtE = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        skirtE.name = "Ceiling_SkirtE";
+        skirtE.transform.SetParent(parent, false);
+        skirtE.transform.localPosition = new Vector3(Half + 0.3f, capY - 0.6f, 0f);
+        skirtE.transform.localScale = new Vector3(0.6f, 1.2f, capSize);
+        if (ceilingMat != null) skirtE.GetComponent<MeshRenderer>().sharedMaterial = ceilingMat;
+
+        GameObject skirtW = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        skirtW.name = "Ceiling_SkirtW";
+        skirtW.transform.SetParent(parent, false);
+        skirtW.transform.localPosition = new Vector3(-Half - 0.3f, capY - 0.6f, 0f);
+        skirtW.transform.localScale = new Vector3(0.6f, 1.2f, capSize);
+        if (ceilingMat != null) skirtW.GetComponent<MeshRenderer>().sharedMaterial = ceilingMat;
+
+        if (k.ceilingClosed != null)
         {
             float origin = -Half;
             for (int x = 0; x < GridSize; x++)
             for (int z = 0; z < GridSize; z++)
-                Spawn(k.ceilingClosed, parent,
-                    new Vector3(origin + x * ModuleSize, CeilingY, origin + z * ModuleSize),
-                    Quaternion.identity, $"Ceiling_Detail_{x}_{z}");
+            {
+                GameObject tile = Spawn(k.ceilingClosed, parent,
+                    new Vector3(origin + x * ModuleSize, tileY, origin + z * ModuleSize),
+                    Quaternion.identity, $"Ceiling_Tile_{x}_{z}");
+                if (tile != null)
+                {
+                    Unity.AI.Navigation.NavMeshModifier mod = tile.GetComponent<Unity.AI.Navigation.NavMeshModifier>();
+                    if (mod == null) mod = tile.AddComponent<Unity.AI.Navigation.NavMeshModifier>();
+                    mod.ignoreFromBuild = true;
+                }
+            }
         }
 
         Vector3 capMin = cap.transform.localPosition - cap.transform.localScale * 0.5f;
         Vector3 capMax = cap.transform.localPosition + cap.transform.localScale * 0.5f;
-        Debug.Log($"[SciFiArena] Ceiling sealed: cap centerY={SealedCeilingY:0.00}, " +
-                  $"footprint {capSize:0.0}x{capSize:0.0} xz, thickness {capThickness:0.00}, " +
-                  $"localMin={capMin} localMax={capMax}");
+        Debug.Log($"[SciFiArena] Ceiling built: capY={capY:0.00} size={capSize:0.0}x{capSize:0.0} thickness={capThickness:0.00} " +
+                  $"tileY={tileY:0.00} tiles={GridSize * GridSize} skirts=4 capMin={capMin} capMax={capMax}");
     }
 
     // ---------------- Perimeter Walls ----------------
