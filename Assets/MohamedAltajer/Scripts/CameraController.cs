@@ -1,12 +1,7 @@
+using System.Collections;
 using UnityEngine;
 
-/// <summary>
-/// Stable third-person shooter camera.
-///
-/// The camera follows a fixed shoulder-height pivot on the player root. It avoids
-/// animated-bone jitter and keeps the character framed consistently, closer to a
-/// Warzone-style readable gameplay camera.
-/// </summary>
+[DefaultExecutionOrder(20000)]
 public class CameraController : MonoBehaviour
 {
     // ── Target ───────────────────────────────────────────────────────────────
@@ -187,12 +182,104 @@ public class CameraController : MonoBehaviour
         }
         Instance = this;
 
-        if (target == null)
+        ResolvePlayerTarget();
+        Camera awakeCam = GetComponent<Camera>();
+        if (awakeCam != null)
+            awakeCam.enabled = true;
+        gameObject.SetActive(true);
+        ScrubOrphanCameras();
+        if (target != null)
+            SnapToTarget();
+    }
+
+    private void OnEnable()
+    {
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += HandleSceneLoaded;
+        ResolvePlayerTarget();
+        ScrubOrphanCameras();
+        if (target != null)
+            SnapToTarget();
+        if (isActiveAndEnabled)
+            StartCoroutine(FrameEndAuthoritativeSnap());
+    }
+
+    private void OnDisable()
+    {
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded -= HandleSceneLoaded;
+    }
+
+    private void HandleSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
+    {
+        ResolvePlayerTarget();
+        Camera cam = GetComponent<Camera>();
+        if (cam != null)
+            cam.enabled = true;
+        ScrubOrphanCameras();
+        if (target != null)
+            SnapToTarget();
+        if (isActiveAndEnabled)
+            StartCoroutine(FrameEndAuthoritativeSnap());
+    }
+
+    private IEnumerator FrameEndAuthoritativeSnap()
+    {
+        yield return null;
+        ResolvePlayerTarget();
+        ScrubOrphanCameras();
+        if (target != null)
+            SnapToTarget();
+        yield return new WaitForEndOfFrame();
+        ResolvePlayerTarget();
+        if (target != null)
+            SnapToTarget();
+    }
+
+    private void ScrubOrphanCameras()
+    {
+        Camera selfCam = GetComponent<Camera>();
+        if (selfCam == null) return;
+
+        selfCam.depth = 100f;
+        if (!selfCam.gameObject.CompareTag("MainCamera"))
+            selfCam.gameObject.tag = "MainCamera";
+
+        Camera[] all = Object.FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        for (int i = 0; i < all.Length; i++)
         {
-            GameObject playerGo = GameObject.FindWithTag("Player");
-            if (playerGo != null)
-                target = playerGo.transform;
+            Camera other = all[i];
+            if (other == null || other == selfCam) continue;
+            if (other.GetComponent<IntroCutsceneCamera>() != null)
+            {
+                other.enabled = false;
+                other.gameObject.SetActive(false);
+                continue;
+            }
+            if (other.targetTexture != null) continue;
+            if (other.clearFlags == CameraClearFlags.Depth || other.clearFlags == CameraClearFlags.Nothing) continue;
+
+            int uiLayer = LayerMask.NameToLayer("UI");
+            if (uiLayer >= 0)
+            {
+                int uiMask = 1 << uiLayer;
+                if ((other.cullingMask & ~uiMask) == 0) continue;
+            }
+
+            Vector3 pos = other.transform.position;
+            if (pos.sqrMagnitude < 0.25f)
+            {
+                other.enabled = false;
+                if (other.depth >= selfCam.depth)
+                    other.depth = selfCam.depth - 10f;
+            }
         }
+    }
+
+    private void ResolvePlayerTarget()
+    {
+        if (target != null) return;
+        GameObject playerGo = GameObject.FindWithTag("Player");
+        if (playerGo != null)
+            target = playerGo.transform;
     }
 
     private void Start()
@@ -202,26 +289,24 @@ public class CameraController : MonoBehaviour
         {
             cam.nearClipPlane = 0.08f;
             cam.useOcclusionCulling = false;
-        }
-
-        if (cam != null)
+            cam.enabled = true;
             defaultFieldOfView = cam.fieldOfView;
+        }
 
         _currentDistance = GetCurrentOffset().magnitude;
         collisionMask = BuildSolidCameraMask();
 
-        if (target == null)
-        {
-            GameObject playerGo = GameObject.FindWithTag("Player");
-            if (playerGo != null)
-                target = playerGo.transform;
-        }
+        ResolvePlayerTarget();
+        ScrubOrphanCameras();
 
         if (target != null)
         {
             collisionMask &= ~(1 << target.gameObject.layer);
             SnapToTarget();
         }
+
+        if (isActiveAndEnabled)
+            StartCoroutine(FrameEndAuthoritativeSnap());
     }
 
     private void IncludeLayerIfExists(string layerName)
