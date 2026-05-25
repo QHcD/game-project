@@ -89,10 +89,6 @@ public class PlayerInteractor : MonoBehaviour
         Ray ray = BuildInteractionRay(cam, screenPoint);
         bool pressedThisFrame = WasInteractPressedThisFrame();
         bool mouseClickedThisFrame = Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
-        if (pressedThisFrame || mouseClickedThisFrame)
-        {
-            Debug.Log($"[DoorDebug] ePressed={pressedThisFrame} clickPressed={mouseClickedThisFrame} fullMapHeld={fullMapHeld} cursorLocked={Cursor.lockState == CursorLockMode.Locked}");
-        }
         if (debugDoorInteraction && pressedThisFrame)
         {
             Debug.Log($"[PlayerInteractor] E pressed. origin={ray.origin} dir={ray.direction} maxDist={maxDistance} mask=0x{interactionMask.value:X}");
@@ -302,7 +298,6 @@ public class PlayerInteractor : MonoBehaviour
         if (interactable == null)
             return;
 
-        Debug.Log($"[DoorDebug] PerformInteraction called target={interactable.GetType().Name} hitCollider={(hitCollider != null ? hitCollider.name : "<null>")}");
         interactable.Interact(gameObject);
 
         Transform doorRoot = FindDoorPassableRoot(hitCollider, interactable);

@@ -20,7 +20,7 @@ public static class SciFiArenaBuilder
     private const string VersionFile = OutputDir + "/.builder_version";
 
     // Bump when layout/content meaningfully changes — forces auto-rebuild.
-    private const int BuilderVersion = 17;
+    private const int BuilderVersion = 18;
 
     private const float ModuleSize = 6f;
     private const int GridSize = 9;            // 54m x 54m arena
@@ -398,7 +398,7 @@ public static class SciFiArenaBuilder
         GameObject prefab = isDoor ? k.wallDoor : k.wallPlain;
         Transform parent = isDoor ? doorParent : wallParent;
         GameObject wall = Spawn(prefab, parent, pos, rot, (isDoor ? "WallDoor_" : "Wall_") + label);
-        if (isDoor && wall != null) AttachSlidingDoor(wall, k.doorMat, slide: 1.5f);
+        if (isDoor && wall != null) AttachSlidingDoor(wall, k.doorMat, slide: 1.9f);
     }
 
     private static void AttachSlidingDoor(GameObject wallDoor, Material doorMat, float slide)
@@ -491,8 +491,6 @@ public static class SciFiArenaBuilder
         d.rightPanel = right.transform;
         d.panelSlide = slide;
         d.interactiveToggle = true;
-        d.promptCanvas = canvas;
-        d.promptText = tmp;
     }
 
     // ---------------- Interior Room Walls ----------------
@@ -562,7 +560,7 @@ public static class SciFiArenaBuilder
             }
             GameObject seg = Spawn(prefab, parent, pos, rot, nm);
             if (asDoor && i == doorSegment && seg != null)
-                AttachSlidingDoor(seg, k.doorMat, slide: 1.5f);
+                AttachSlidingDoor(seg, k.doorMat, slide: 1.9f);
         }
     }
 
@@ -591,7 +589,7 @@ public static class SciFiArenaBuilder
             }
             GameObject seg = Spawn(prefab, parent, pos, rot, nm);
             if (asDoor && i == doorSegment && seg != null)
-                AttachSlidingDoor(seg, k.doorMat, slide: 1.5f);
+                AttachSlidingDoor(seg, k.doorMat, slide: 1.9f);
         }
     }
 
@@ -638,7 +636,7 @@ public static class SciFiArenaBuilder
         Transform parent = isDoor ? doorParent : wallParent;
         GameObject seg = Spawn(prefab, parent, new Vector3(x, 0f, z), Yaw(yaw),
             (isDoor ? "Door_" : "Wall_") + label);
-        if (isDoor && seg != null) AttachSlidingDoor(seg, k.doorMat, slide: 1.5f);
+        if (isDoor && seg != null) AttachSlidingDoor(seg, k.doorMat, slide: 1.9f);
     }
 
     private static void PlaceSegZ(Transform wallParent, Transform doorParent, KitRefs k,
@@ -648,7 +646,7 @@ public static class SciFiArenaBuilder
         Transform parent = isDoor ? doorParent : wallParent;
         GameObject seg = Spawn(prefab, parent, new Vector3(x, 0f, z), Yaw(yaw),
             (isDoor ? "Door_" : "Wall_") + label);
-        if (isDoor && seg != null) AttachSlidingDoor(seg, k.doorMat, slide: 1.5f);
+        if (isDoor && seg != null) AttachSlidingDoor(seg, k.doorMat, slide: 1.9f);
     }
 
     // ---------------- Structural Pillars ----------------
