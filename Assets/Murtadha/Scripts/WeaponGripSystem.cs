@@ -179,25 +179,19 @@ public class WeaponGripSystem : MonoBehaviour
 
     private void ApplyGrip(Transform weapon, GripProfile profile, bool isPlayer)
     {
+        // Enemies must grab weapons exactly like the player — same corner,
+        // direction, and grip pose. Always apply the player's grip values
+        // regardless of whether this is the player or an enemy.
         if (profile == null)
         {
-            weapon.localPosition = isPlayer ? defaultPlayerLocalPosition : defaultEnemyLocalPosition;
-            weapon.localRotation = Quaternion.Euler(isPlayer ? defaultPlayerLocalEuler : defaultEnemyLocalEuler);
+            weapon.localPosition = defaultPlayerLocalPosition;
+            weapon.localRotation = Quaternion.Euler(defaultPlayerLocalEuler);
             return;
         }
 
-        if (isPlayer)
-        {
-            weapon.localPosition = profile.playerLocalPosition;
-            weapon.localRotation = Quaternion.Euler(profile.playerLocalEuler);
-            weapon.localScale = Vector3.one * Mathf.Max(0.01f, profile.playerScale);
-        }
-        else
-        {
-            weapon.localPosition = profile.enemyLocalPosition;
-            weapon.localRotation = Quaternion.Euler(profile.enemyLocalEuler);
-            weapon.localScale = Vector3.one * Mathf.Max(0.01f, profile.enemyScale);
-        }
+        weapon.localPosition = profile.playerLocalPosition;
+        weapon.localRotation = Quaternion.Euler(profile.playerLocalEuler);
+        weapon.localScale = Vector3.one * Mathf.Max(0.01f, profile.playerScale);
     }
 
     private static Transform FindBoneExact(Transform root, string name)

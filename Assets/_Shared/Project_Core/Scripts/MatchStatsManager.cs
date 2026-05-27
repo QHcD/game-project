@@ -134,12 +134,61 @@ public class MatchStatsManager : MonoBehaviour
         }
     }
 
+    private static IEnumerable<CombatantData> DeduplicatePlayers(IEnumerable<CombatantData> source)
+    {
+        Dictionary<string, CombatantData> byKey = new Dictionary<string, CombatantData>();
+        List<CombatantData> nonPlayer = new List<CombatantData>();
+        foreach (CombatantData entry in source)
+        {
+            if (entry == null) continue;
+            if (!entry.IsPlayer)
+            {
+                nonPlayer.Add(entry);
+                continue;
+            }
+
+            string key = entry.DisplayName != null ? entry.DisplayName.Trim().ToUpperInvariant() : string.Empty;
+            if (string.IsNullOrEmpty(key))
+            {
+                nonPlayer.Add(entry);
+                continue;
+            }
+
+            if (!byKey.TryGetValue(key, out CombatantData existing))
+            {
+                byKey[key] = entry;
+                continue;
+            }
+
+            CombatantData winner = SelectCanonicalDuplicate(existing, entry);
+            CombatantData loser = winner == existing ? entry : existing;
+            winner.Kills = Mathf.Max(winner.Kills, loser.Kills);
+            winner.Deaths = Mathf.Max(winner.Deaths, loser.Deaths);
+            winner.IsAlive = winner.IsAlive || loser.IsAlive;
+            if (winner.Transform == null && loser.Transform != null)
+                winner.Transform = loser.Transform;
+            byKey[key] = winner;
+        }
+
+        foreach (CombatantData v in byKey.Values) yield return v;
+        for (int i = 0; i < nonPlayer.Count; i++) yield return nonPlayer[i];
+    }
+
+    private static CombatantData SelectCanonicalDuplicate(CombatantData a, CombatantData b)
+    {
+        if (a.IsAlive != b.IsAlive) return a.IsAlive ? a : b;
+        if (a.Transform != null && b.Transform == null) return a;
+        if (b.Transform != null && a.Transform == null) return b;
+        if (a.Kills != b.Kills) return a.Kills > b.Kills ? a : b;
+        return a;
+    }
+
     public IReadOnlyList<CombatantSnapshot> GetTopCombatants(int count)
     {
         if (count <= 0)
             return System.Array.Empty<CombatantSnapshot>();
 
-        return _combatants.Values
+        return DeduplicatePlayers(_combatants.Values)
             .OrderByDescending(entry => entry.Kills)
             .ThenBy(entry => entry.Deaths)
             .ThenByDescending(entry => entry.IsPlayer)
@@ -164,7 +213,7 @@ public class MatchStatsManager : MonoBehaviour
         if (count <= 0)
             return System.Array.Empty<CombatantSnapshot>();
 
-        return _combatants.Values
+        return DeduplicatePlayers(_combatants.Values)
             .Where(entry => entry.IsPlayer)
             .OrderByDescending(entry => entry.Kills)
             .ThenBy(entry => entry.Deaths)
@@ -186,12 +235,12 @@ public class MatchStatsManager : MonoBehaviour
 
     public int GetRegisteredCombatantCount()
     {
-        return _combatants.Count;
+        return DeduplicatePlayers(_combatants.Values).Count();
     }
 
     public int GetRegisteredPlayerCount()
     {
-        return _combatants.Values.Count(entry => entry.IsPlayer);
+        return DeduplicatePlayers(_combatants.Values).Count(entry => entry.IsPlayer);
     }
 
     private void NotifyStatsChanged()
