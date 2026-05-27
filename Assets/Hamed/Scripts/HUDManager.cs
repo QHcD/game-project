@@ -1021,7 +1021,8 @@ public class HUDManager : MonoBehaviour
                     minimapArrow.sizeDelta = new Vector2(40f, 50f);
             }
 
-            EnsureEnemyArrowPool(minimapRoot.transform, enemyMinimapArrows, "EnemyMiniArrow_", 24f);
+            DestroyAllPoolArrows(enemyMinimapArrows);
+            PurgeChildrenByPrefix(minimapRoot.transform, "EnemyMiniArrow_");
             EnsureMinimapReferences();
             Debug.Log("[MPHUD] EnsureMinimap created/found minimap");
         }
@@ -1088,7 +1089,10 @@ public class HUDManager : MonoBehaviour
             fullMapPlayerArrow = fullPlayerArrow.GetComponent<RectTransform>();
         }
         if (frameTransform != null)
-            EnsureEnemyArrowPool(frameTransform, enemyFullMapArrows, "EnemyFullMapArrow_", 34f);
+        {
+            DestroyAllPoolArrows(enemyFullMapArrows);
+            PurgeChildrenByPrefix(frameTransform, "EnemyFullMapArrow_");
+        }
 
         isFullMapVisible = false;
         fullMapOverlay.SetActive(false);
@@ -1238,12 +1242,8 @@ public class HUDManager : MonoBehaviour
         if (minimapArrow != null)
             minimapArrow.gameObject.SetActive(!isFullMapVisible);
 
-        _mapArrowTimer -= Time.deltaTime;
-        if (_mapArrowTimer <= 0f)
-        {
-            _mapArrowTimer = MapArrowRefreshInterval;
-            UpdateMapArrows(minimap);
-        }
+        _mapArrowTimer = 0f;
+        UpdateMapArrows(minimap);
     }
 
     private const int MaxEnemyMapArrows = 32;
@@ -1251,6 +1251,24 @@ public class HUDManager : MonoBehaviour
     private void EnsureEnemyArrowPool(Transform parent, List<RectTransform> pool, string prefix, float size)
     {
         if (parent == null || pool == null) return;
+
+        for (int i = pool.Count - 1; i >= 0; i--)
+        {
+            RectTransform existing = pool[i];
+            if (existing == null || existing.gameObject == null || existing.parent != parent)
+                pool.RemoveAt(i);
+        }
+
+        for (int i = 0; i < parent.childCount; i++)
+        {
+            Transform child = parent.GetChild(i);
+            if (child == null) continue;
+            if (!child.name.StartsWith(prefix)) continue;
+            RectTransform rt = child as RectTransform;
+            if (rt == null) continue;
+            if (!pool.Contains(rt))
+                pool.Add(rt);
+        }
 
         for (int i = pool.Count; i < MaxEnemyMapArrows; i++)
         {
@@ -1260,6 +1278,14 @@ public class HUDManager : MonoBehaviour
             arrow.GetComponent<Image>().sprite = GetOrCreateTriangleSprite();
             arrow.SetActive(false);
             pool.Add(arrow.GetComponent<RectTransform>());
+        }
+
+        while (pool.Count > MaxEnemyMapArrows)
+        {
+            int lastIndex = pool.Count - 1;
+            RectTransform extra = pool[lastIndex];
+            pool.RemoveAt(lastIndex);
+            if (extra != null) Destroy(extra.gameObject);
         }
     }
 
@@ -1292,34 +1318,36 @@ public class HUDManager : MonoBehaviour
 
     private void UpdateEnemyArrowPool(List<RectTransform> pool, List<EnemyController> enemies, MinimapCameraFollow minimap, RectTransform mapRect, bool fullMap)
     {
-        if (pool == null || mapRect == null || enemies == null)
-            return;
+        DestroyAllPoolArrows(pool);
+    }
 
-        Camera mapCamera = _cachedMinimapCamera != null ? _cachedMinimapCamera : minimap.GetComponent<Camera>();
-        if (mapCamera == null)
-            return;
-
-        float halfSize = Mathf.Min(mapRect.rect.width, mapRect.rect.height) * 0.5f;
-        int used = 0;
-
-        for (int i = 0; i < enemies.Count && used < pool.Count; i++)
+    private static void DestroyAllPoolArrows(List<RectTransform> pool)
+    {
+        if (pool == null) return;
+        for (int i = 0; i < pool.Count; i++)
         {
-            EnemyController enemy = enemies[i];
-            if (enemy == null || !enemy.IsAlive)
-                continue;
-
-            RectTransform arrow = pool[used++];
-            Vector2 pos = WorldToMapPosition(enemy.transform.position, minimap.transform.position, mapCamera.orthographicSize, halfSize);
-            bool inside = pos.sqrMagnitude <= halfSize * halfSize;
-            arrow.gameObject.SetActive(inside && (fullMap ? isFullMapVisible : !isFullMapVisible));
-            if (!inside) continue;
-
-            arrow.anchoredPosition = pos;
-            arrow.localEulerAngles = new Vector3(0f, 0f, -enemy.transform.eulerAngles.y);
+            RectTransform arrow = pool[i];
+            if (arrow == null) continue;
+            if (arrow.gameObject != null) Destroy(arrow.gameObject);
         }
+        pool.Clear();
+    }
 
-        for (int i = used; i < pool.Count; i++)
-            if (pool[i] != null) pool[i].gameObject.SetActive(false);
+    private static void DeactivateAllPoolArrows(List<RectTransform> pool)
+    {
+        DestroyAllPoolArrows(pool);
+    }
+
+    private static void PurgeChildrenByPrefix(Transform parent, string prefix)
+    {
+        if (parent == null || string.IsNullOrEmpty(prefix)) return;
+        for (int i = parent.childCount - 1; i >= 0; i--)
+        {
+            Transform child = parent.GetChild(i);
+            if (child == null) continue;
+            if (child.name.StartsWith(prefix))
+                Destroy(child.gameObject);
+        }
     }
 
     private static Vector2 WorldToMapPosition(Vector3 world, Vector3 mapCenter, float orthographicSize, float halfSize)

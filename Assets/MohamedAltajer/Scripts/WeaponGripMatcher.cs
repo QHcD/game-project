@@ -69,41 +69,16 @@ public class WeaponGripMatcher : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (Time.unscaledTime >= _nextDiscovery)
-        {
-            _nextDiscovery = Time.unscaledTime + Mathf.Max(0.1f, discoveryInterval);
-            BuildSnapshots();
-            DiscoverEnemyWeapons();
-        }
-
-        if (!_hasFallback) return;
-
-        for (int i = _bindings.Count - 1; i >= 0; i--)
-        {
-            EnemyWeaponBinding b = _bindings[i];
-            if (b == null || b.target == null || b.weapon == null)
-            {
-                _bindings.RemoveAt(i);
-                continue;
-            }
-
-            GripSnapshot snap;
-            if (!TryResolveSnapshotByKey(b.key, out snap)) continue;
-
-            b.target.localPosition = snap.localPosition;
-            b.target.localRotation = snap.localRotation;
-            b.target.localScale = snap.localScale;
-
-            if (snap.hasBladeBox)
-            {
-                WeaponGripOffset wgo = b.weapon.GetComponent<WeaponGripOffset>();
-                if (wgo == null) wgo = b.weapon.GetComponentInChildren<WeaponGripOffset>(true);
-                if (wgo != null) wgo.bladeBoxHalfExtents = snap.bladeBoxHalfExtents;
-            }
-        }
-
-        if (!continuousEnforce)
-            enabled = false;
+        // Per-frame enforcement disabled. The previous behaviour copied the
+        // player's *local* weapon pose (relative to j_wrist_ri) onto enemy
+        // weapons (parented under bip_hand_R) — but because those two bones
+        // have different local axes, the resulting world pose was wrong and
+        // the enemy katana stuck out at the wrong angle.
+        //
+        // EnemyController.LateUpdate now performs a rig-independent
+        // character-root-space copy from the player every frame, which is the
+        // single source of truth. This matcher is left as a no-op so it does
+        // not fight that copy.
     }
 
     private void DiscoverEnemyWeapons()

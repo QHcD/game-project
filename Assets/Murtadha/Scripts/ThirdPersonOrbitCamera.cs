@@ -210,6 +210,13 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
     {
         _cam = GetComponent<Camera>();
 
+        if (_cam != null)
+        {
+            int minimapIconsLayer = LayerMask.NameToLayer("MinimapIcons");
+            if (minimapIconsLayer >= 0)
+                _cam.cullingMask &= ~(1 << minimapIconsLayer);
+        }
+
         // ── Multiplayer: disable on remote players ────────────────────────────
         // We walk up to the player root (up to 6 levels) and check if the
         // PhotonView belongs to the local machine. Remote cameras must be

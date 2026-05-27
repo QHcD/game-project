@@ -18,13 +18,6 @@ public sealed class HoldTabMinimapCamera : MonoBehaviour
 
     private void Update()
     {
-        if (minimapCamera == null) return;
-
-        if (Input.GetKeyDown(KeyCode.Tab))
-            minimapCamera.enabled = true;
-
-        if (Input.GetKeyUp(KeyCode.Tab))
-            minimapCamera.enabled = false;
     }
 }
 

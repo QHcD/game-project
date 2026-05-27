@@ -52,6 +52,25 @@ public class UniversalCeilingSealer : MonoBehaviour
         _routine = null;
     }
 
+    private static int s_minimapHiddenLayer = -2;
+
+    private static int GetMinimapHiddenLayer()
+    {
+        if (s_minimapHiddenLayer == -2)
+            s_minimapHiddenLayer = LayerMask.NameToLayer("MinimapHidden");
+        return s_minimapHiddenLayer;
+    }
+
+    private static void AssignMinimapHiddenLayer(GameObject g)
+    {
+        if (g == null) return;
+        int layer = GetMinimapHiddenLayer();
+        if (layer < 0) return;
+        g.layer = layer;
+        for (int i = 0; i < g.transform.childCount; i++)
+            AssignMinimapHiddenLayer(g.transform.GetChild(i).gameObject);
+    }
+
     private void BuildCap()
     {
         Bounds b;
@@ -75,6 +94,7 @@ public class UniversalCeilingSealer : MonoBehaviour
         cap.transform.rotation = Quaternion.identity;
         cap.transform.localScale = new Vector3(sizeX, Thickness, sizeZ);
         StripColliders(cap);
+        AssignMinimapHiddenLayer(cap);
 
         MeshRenderer mr = cap.GetComponent<MeshRenderer>();
         Material mat = null;
@@ -120,6 +140,7 @@ public class UniversalCeilingSealer : MonoBehaviour
         s.transform.position = pos;
         s.transform.localScale = scale;
         StripColliders(s);
+        AssignMinimapHiddenLayer(s);
         MeshRenderer mr = s.GetComponent<MeshRenderer>();
         if (mr != null)
         {

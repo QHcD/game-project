@@ -129,8 +129,14 @@ public class FPSCameraRig : MonoBehaviour
         // already set in the Inspector) and clear only the PlayerBody bit.
         _cam.cullingMask &= ~(1 << _playerBodyLayerIndex);
 
-        // Weapon overlay camera (if enabled) must also exclude PlayerBody
-        // so its depth-only pass doesn't re-introduce the head mesh.
+        int minimapIconsLayer = LayerMask.NameToLayer("MinimapIcons");
+        if (minimapIconsLayer >= 0)
+        {
+            _cam.cullingMask &= ~(1 << minimapIconsLayer);
+            if (_weaponCam != null)
+                _weaponCam.cullingMask &= ~(1 << minimapIconsLayer);
+        }
+
         if (_weaponCam != null)
             _weaponCam.cullingMask &= ~(1 << _playerBodyLayerIndex);
     }
