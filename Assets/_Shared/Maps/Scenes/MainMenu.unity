@@ -7788,11 +7788,15 @@ MonoBehaviour:
   movementScheme: 0
   totalEnemiesSpawned: 0
   enemiesKilledThisLevel: 0
+  totalWaves: 0
+  currentWave: 0
   isCustomMatch: 0
   customEnemyCount: 12
   customMatchTimeSeconds: 300
   customDifficulty: Normal
   victoryDelaySeconds: 2.5
+  wavesPerLevel: 3
+  waveIntervalSeconds: 3
   loadingScreenMinSeconds: 5.5
   enforceSingleMainCameraTag: 1
 --- !u!21 &2068985679

@@ -49,8 +49,12 @@ public class PlayerController : MonoBehaviour, IDamageable
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static readonly Vector3 ChainsawSocketLocalPosition = Vector3.zero;
     private static readonly Vector3 ChainsawSocketLocalEuler = new Vector3(0f, 0f, 0f);
-    private static readonly Vector3 DefaultLevel13SickleGripLocalPosition = new Vector3(0.006f, 0.002f, 0.026f);
-    private static readonly Vector3 DefaultLevel13SickleGripLocalEuler = new Vector3(86f, 5f, 98f);
+    // Pose tuned so the blade tip points away from the body instead of curling
+    // back into the player's torso/head. The previous Y=5° kept the curve
+    // facing inward — visually the player looked like he was trying to hook
+    // himself. Flipping Y by 180° + nudging the grip outward gives clearance.
+    private static readonly Vector3 DefaultLevel13SickleGripLocalPosition = new Vector3(0.05f, 0.002f, 0.08f);
+    private static readonly Vector3 DefaultLevel13SickleGripLocalEuler = new Vector3(86f, 185f, 98f);
     private static readonly Vector3 DefaultLevel12SawGripLocalPosition = WeaponLoadoutCatalog.ChainsawPlayerLocalPosition;
     private static readonly Vector3 DefaultLevel12SawGripLocalEuler = WeaponLoadoutCatalog.ChainsawPlayerLocalEuler;
     private static readonly Vector3 PlayerChainsawGripLocalPosition = new Vector3(-0.066f, -0.39f, 0.044f);
@@ -727,6 +731,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         _playerHealth = GetComponent<PlayerHealth>() ?? gameObject.AddComponent<PlayerHealth>();
         EnsureCriticalComponents();
+        if (GetComponent<PlayerSfx>() == null)
+            gameObject.AddComponent<PlayerSfx>();
         ResetLevelOneWeaponOffsets();
 
         // ── 1. Snap player above the floor ──
@@ -2152,8 +2158,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     }
 
     /// <summary>
-    /// Body yaw target. Backward input (S / down arrow) still moves the character
-    /// backward but keeps facing camera-forward so the model does not spin 180°.
+    /// Body yaw target. The body faces the actual movement direction, so
+    /// pressing down arrow / S rotates the character 180° toward the camera —
+    /// the player walks toward the camera with his FACE visible, instead of
+    /// moonwalking backward with the camera looking at his back.
     /// </summary>
     private Vector3 GetCameraRelativeFacingDirection(Vector2 input)
     {
@@ -2161,14 +2169,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (input.sqrMagnitude < 0.0001f)
             return Vector3.zero;
 
-        Vector2 facingInput = input;
-        if (facingInput.y < -0.01f)
-            facingInput.y = 0f;
-
-        if (facingInput.sqrMagnitude < 0.0001f)
-            facingInput = Vector2.up;
-
-        return GetCameraRelativeMoveDirection(facingInput);
+        return GetCameraRelativeMoveDirection(input);
     }
 
     private void DebugMovementInput(Vector3 moveDirection)
@@ -2436,9 +2437,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             if (live != null) live.PlayAttack(attackSpeed, attackDelay);
         }
 
-        bool immediateHit = TryImmediateMeleeStrike();
-
-        if (!immediateHit && equippedWeaponHitbox != null)
+        if (equippedWeaponHitbox != null)
         {
             if (weaponHitboxRoutine != null)
                 StopCoroutine(weaponHitboxRoutine);
@@ -2453,6 +2452,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (attackDelay > 0f)
             yield return new WaitForSeconds(attackDelay);
 
+        equippedWeaponHitbox.damage = Mathf.Max(1, attackDamage);
+        equippedWeaponHitbox.maxAttackRange = 0f;
+        equippedWeaponHitbox.meleeAttackRange = 0f;
         equippedWeaponHitbox.EnableHitbox();
 
         yield return new WaitForSeconds(0.12f);
@@ -2998,12 +3000,75 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private void ApplyAttackLunge()
     {
         if (controller == null || !controller.enabled) return;
-        Vector3 lunge = transform.forward * attackLungeDistance;
+
+        Vector3 forwardFlat = transform.forward;
+        forwardFlat.y = 0f;
+        if (forwardFlat.sqrMagnitude < 0.0001f) return;
+        forwardFlat.Normalize();
+
+        Vector3 dir = forwardFlat;
+        float distance = attackLungeDistance;
+
+        Transform target = FindLungeTarget(forwardFlat);
+        if (target != null)
+        {
+            Vector3 toTarget = target.position - transform.position;
+            toTarget.y = 0f;
+            float gap = toTarget.magnitude;
+            if (toTarget.sqrMagnitude > 0.0001f)
+            {
+                dir = toTarget / gap;
+                float targetYaw = Quaternion.LookRotation(dir, Vector3.up).eulerAngles.y;
+                transform.rotation = Quaternion.Euler(0f, targetYaw, 0f);
+            }
+
+            float desiredReach = Mathf.Max(0.6f, attackDistance * 0.6f);
+            float close = gap - desiredReach;
+            distance = Mathf.Clamp(close, 0f, Mathf.Max(attackLungeDistance, attackDistance));
+        }
+
+        if (distance <= 0.001f) return;
+
+        Vector3 lunge = dir * distance;
         lunge.y = 0f;
         if (staticObstacleMask.value != 0)
             lunge = ClampHorizontalMoveAgainstStatics(lunge);
         controller.Move(lunge);
         ClampInsideArena();
+    }
+
+    private Transform FindLungeTarget(Vector3 forwardFlat)
+    {
+        Vector3 center = transform.position + Vector3.up * 1.0f;
+        float searchRange = Mathf.Max(attackDistance + 1.5f, 3.0f);
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            center, searchRange, meleeOverlapHits, ResolveHittableMask(), QueryTriggerInteraction.Ignore);
+
+        Transform best = null;
+        float bestDistSqr = float.PositiveInfinity;
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider hit = meleeOverlapHits[i];
+            if (hit == null) continue;
+            if (hit.transform == transform || hit.transform.IsChildOf(transform)) continue;
+
+            Transform root = GetDamageTargetTransform(hit.transform);
+            if (root == null) continue;
+
+            Vector3 to = root.position - transform.position;
+            to.y = 0f;
+            if (to.sqrMagnitude < 0.0001f) continue;
+            if (Vector3.Angle(forwardFlat, to.normalized) > 75f) continue;
+
+            float d2 = to.sqrMagnitude;
+            if (d2 < bestDistSqr)
+            {
+                bestDistSqr = d2;
+                best = root;
+            }
+        }
+
+        return best;
     }
 
     private void AttackRaycast()
@@ -3641,6 +3706,34 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.1f);
         if (!droveSpeedParameter)
             ForceLocomotionState(anim, normalizedSpeed);
+
+        // ── Signed locomotion for backward / strafe blend trees ─────────────
+        // The body yaw keeps facing the camera-forward direction even when the
+        // player presses S (see GetCameraRelativeFacingDirection). Without a
+        // signed forward axis the animator can only play a forward run — the
+        // model "moonwalks" backward showing its back. Convert the world-space
+        // move vector into BODY-LOCAL space so:
+        //   forward (W) → +Z  → forward run animation, face visible
+        //   backward (S) → -Z → backward walk animation, face visible
+        //   strafe right (D) → +X, strafe left (A) → -X
+        // Damp slightly so the blend tree doesn't snap between cells.
+        Vector3 worldMove = GetCameraRelativeMoveDirection(moveInputSmoothed)
+                            * Mathf.Clamp01(moveInputSmoothed.magnitude);
+        Vector3 bodyLocalMove = Quaternion.Inverse(transform.rotation) * worldMove;
+        float signedForward = Mathf.Clamp(bodyLocalMove.z, -1f, 1f);
+        float signedRight = Mathf.Clamp(bodyLocalMove.x, -1f, 1f);
+
+        AnimSetFloat(anim, "FreeLookForward", signedForward, 0.1f);
+        AnimSetFloat(anim, "FreeLookRight", signedRight, 0.1f);
+        AnimSetFloat(anim, "CombatFreeForward", signedForward, 0.1f);
+        AnimSetFloat(anim, "CombatFreeRight", signedRight, 0.1f);
+        AnimSetFloat(anim, "TargetForward", signedForward, 0.1f);
+        AnimSetFloat(anim, "TargetRight", signedRight, 0.1f);
+        // Generic names some controllers expect — silent no-op if absent.
+        AnimSetFloat(anim, "MoveZ", signedForward, 0.1f);
+        AnimSetFloat(anim, "MoveX", signedRight, 0.1f);
+        AnimSetFloat(anim, "VelocityZ", signedForward, 0.1f);
+        AnimSetFloat(anim, "VelocityX", signedRight, 0.1f);
 
         // ── Bool params (Player Controller.controller style) ────────────────
         AnimSetBool(anim, "IsAttacking", isAttacking);

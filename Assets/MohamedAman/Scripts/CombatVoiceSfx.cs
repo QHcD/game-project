@@ -61,11 +61,11 @@ public class CombatVoiceSfx : MonoBehaviour
         if (source == null)
             source = gameObject.AddComponent<AudioSource>();
 
-        source.spatialBlend = 0.65f;
+        source.spatialBlend = 1f;
         source.playOnAwake = false;
         source.loop = false;
-        source.minDistance = 1.5f;
-        source.maxDistance = 35f;
+        source.minDistance = 2f;
+        source.maxDistance = 8f;
         source.rolloffMode = AudioRolloffMode.Linear;
         source.dopplerLevel = 0f;
     }
@@ -133,7 +133,7 @@ public class CombatVoiceSfx : MonoBehaviour
             return;
         }
 
-        AudioSource.PlayClipAtPoint(clip, pos, vol);
+        PlayClipAtPoint3D(clip, pos, vol);
         Debug.Log($"[CombatVoiceSfx] Death sound played on {gameObject.name}");
     }
 
@@ -141,12 +141,30 @@ public class CombatVoiceSfx : MonoBehaviour
     {
         if (source == null)
         {
-            AudioSource.PlayClipAtPoint(clip, transform.position, volume);
+            PlayClipAtPoint3D(clip, transform.position, volume);
             return;
         }
 
         source.pitch = pitch;
         source.PlayOneShot(clip, volume);
+    }
+
+    private static void PlayClipAtPoint3D(AudioClip clip, Vector3 pos, float volume)
+    {
+        if (clip == null) return;
+        GameObject tmp = new GameObject("CombatVoice3D");
+        tmp.transform.position = pos;
+        AudioSource src = tmp.AddComponent<AudioSource>();
+        src.clip = clip;
+        src.volume = volume;
+        src.spatialBlend = 1f;
+        src.minDistance = 2f;
+        src.maxDistance = 8f;
+        src.rolloffMode = AudioRolloffMode.Linear;
+        src.dopplerLevel = 0f;
+        src.playOnAwake = false;
+        src.Play();
+        Destroy(tmp, clip.length + 0.1f);
     }
 
     private static AudioClip PickRandom(AudioClip[] clips)

@@ -7,12 +7,17 @@ public static class AISensing
 
     public static Transform FindClosestHostile(EnemyController self, float radius)
     {
+        return FindClosestHostile(self, radius, requireLineOfSight: true);
+    }
+
+    public static Transform FindClosestHostile(EnemyController self, float radius, bool requireLineOfSight)
+    {
         if (self == null || radius <= 0f)
             return null;
 
-        Transform overlapBest = ScanOverlapSphere(self, radius);
-        Transform registryBest = ScanAliveEnemyRegistry(self, radius);
-        Transform playerBest = ScanPlayer(self, radius);
+        Transform overlapBest = ScanOverlapSphere(self, radius, requireLineOfSight);
+        Transform registryBest = ScanAliveEnemyRegistry(self, radius, requireLineOfSight);
+        Transform playerBest = ScanPlayer(self, radius, requireLineOfSight);
 
         Transform best = null;
         float bestDistSqr = float.MaxValue;
@@ -37,7 +42,7 @@ public static class AISensing
         }
     }
 
-    private static Transform ScanOverlapSphere(EnemyController self, float radius)
+    private static Transform ScanOverlapSphere(EnemyController self, float radius, bool requireLineOfSight)
     {
         int hitCount = Physics.OverlapSphereNonAlloc(
             self.transform.position,
@@ -69,6 +74,12 @@ public static class AISensing
                 continue;
 
             Transform t = dmg.transform;
+            if (!self.IsHostileFaction(t))
+                continue;
+
+            if (requireLineOfSight && !self.HasCombatVisionTo(t))
+                continue;
+
             float d2 = (t.position - self.transform.position).sqrMagnitude;
             if (d2 < bestDistSqr)
             {
@@ -80,7 +91,7 @@ public static class AISensing
         return best;
     }
 
-    private static Transform ScanAliveEnemyRegistry(EnemyController self, float radius)
+    private static Transform ScanAliveEnemyRegistry(EnemyController self, float radius, bool requireLineOfSight)
     {
         Transform best = null;
         float bestDistSqr = float.MaxValue;
@@ -94,6 +105,12 @@ public static class AISensing
             if (other == null || other == self || !other.IsAlive)
                 continue;
 
+            if (!self.IsHostileFaction(other.transform))
+                continue;
+
+            if (requireLineOfSight && !self.HasCombatVisionTo(other.transform))
+                continue;
+
             float d2 = (other.transform.position - origin).sqrMagnitude;
             if (d2 <= radiusSqr && d2 < bestDistSqr)
             {
@@ -105,7 +122,7 @@ public static class AISensing
         return best;
     }
 
-    private static Transform ScanPlayer(EnemyController self, float radius)
+    private static Transform ScanPlayer(EnemyController self, float radius, bool requireLineOfSight)
     {
         PlayerController pc = EnemyController.ResolveScenePlayer();
         if (pc == null)
@@ -121,6 +138,9 @@ public static class AISensing
 
         float d2 = (health.transform.position - self.transform.position).sqrMagnitude;
         if (d2 > radius * radius)
+            return null;
+
+        if (requireLineOfSight && !self.HasCombatVisionTo(health.transform))
             return null;
 
         return health.transform;

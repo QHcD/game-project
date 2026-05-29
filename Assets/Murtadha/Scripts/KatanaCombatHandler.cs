@@ -202,7 +202,6 @@ public class KatanaCombatHandler : MonoBehaviour
 
         bool landedHit = false;
         EnemyController enemyController = isAI ? GetComponent<EnemyController>() : null;
-        Transform aiTarget = enemyController != null ? enemyController.CurrentTarget : null;
         float aiStrikeRange = enemyController != null ? enemyController.GetStrictMeleeStrikeRange() : 0f;
 
         foreach (Collider col in hits)
@@ -216,6 +215,16 @@ public class KatanaCombatHandler : MonoBehaviour
             if (target == null || !target.IsAlive) continue;
 
             GameObject targetRoot = ((MonoBehaviour)target).gameObject;
+
+            Vector3 toTarget = targetRoot.transform.position - transform.position;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude > 0.0001f)
+            {
+                Vector3 fwd = transform.forward;
+                fwd.y = 0f;
+                if (fwd.sqrMagnitude > 0.0001f && Vector3.Angle(fwd.normalized, toTarget.normalized) > 80f)
+                    continue;
+            }
 
             if (enemyController != null)
             {
@@ -241,22 +250,6 @@ public class KatanaCombatHandler : MonoBehaviour
             ApplyDamageToTarget(col.transform.root.gameObject, damage);
             landedHit = true;
             break;
-        }
-
-        if (!landedHit && enemyController != null && aiTarget != null)
-        {
-            PlayerHealth player = aiTarget.GetComponentInParent<PlayerHealth>();
-            if (player != null && player.IsAlive)
-            {
-                float reach = MeleeBodyTargeting.GetClosestBodyDistance(bladePoint, player.transform);
-                if (reach <= aiStrikeRange + 0.25f
-                    && !DamageOcclusion.IsBlockedFromPoint(gameObject, player.gameObject, bladePoint)
-                    && EnemyKatanaStrikePathIsClear(enemyController, player.gameObject, bladePoint))
-                {
-                    ApplyDamageToTarget(player.gameObject, damage);
-                    landedHit = true;
-                }
-            }
         }
 
         _hitRegisteredThisSwing = true;

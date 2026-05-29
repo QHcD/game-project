@@ -1,8 +1,34 @@
 using UnityEngine;
+using UnityEngine.AI;
 
 public sealed class AIAttackState : AIStateBase
 {
     public override AIStateId Id => AIStateId.Attack;
+
+    public override void Enter(EnemyController host)
+    {
+        if (!host.IsAgentReady())
+            return;
+
+        NavMeshAgent agent = host.Agent;
+        if (agent.hasPath)
+            agent.ResetPath();
+        agent.velocity = Vector3.zero;
+        agent.isStopped = true;
+        agent.updateRotation = false;
+        agent.autoBraking = true;
+        agent.updatePosition = true;
+    }
+
+    public override void Exit(EnemyController host)
+    {
+        if (!host.IsAgentReady())
+            return;
+
+        NavMeshAgent agent = host.Agent;
+        agent.isStopped = false;
+        agent.autoBraking = false;
+    }
 
     public override void Tick(EnemyController host)
     {
@@ -17,18 +43,15 @@ public sealed class AIAttackState : AIStateBase
             return;
         }
 
-        if (host.GetCombatDistanceToTarget() > host.meleeAttackRange)
+        if (!host.IsWithinMeleeAttackRange() || !host.HasCombatVisionTo(host.CurrentTarget))
         {
             host.AbortActiveAttack();
             host.TransitionTo(AIStateId.Chase);
             return;
         }
 
-        if (host.IsAgentReady())
-        {
+        if (host.IsAgentReady() && !host.Agent.isStopped)
             host.Agent.isStopped = true;
-            host.Agent.velocity = Vector3.zero;
-        }
 
         Vector3 toTarget = host.CurrentTarget.position - host.transform.position;
         toTarget.y = 0f;

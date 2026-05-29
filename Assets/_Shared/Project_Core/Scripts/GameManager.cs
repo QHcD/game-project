@@ -131,6 +131,10 @@ public class GameManager : MonoBehaviour
     /// <summary>Fired whenever <see cref="enemiesRemaining"/> is updated (spawn init or kill).</summary>
     public event Action<int> OnEnemiesRemainingChanged;
 
+    public int totalWaves   = 0;
+    public int currentWave  = 0;
+    public event Action<int> OnWaveStarted;
+
     // ── Custom Match (set by the Custom Match menu) ──────────────────────────
     // When IsCustomMatch is true, GetEnemyCount/LevelTimeLimitSeconds and the
     // active difficulty switch over to these per-session overrides instead of
@@ -147,11 +151,15 @@ public class GameManager : MonoBehaviour
     public const int CustomMatchTimeMax     = 1800; // 30 minutes (defensive cap)
 
     [SerializeField] private float victoryDelaySeconds = 2.5f;
+    [SerializeField] private int wavesPerLevel = 1;
+    [SerializeField] private float waveIntervalSeconds = 3f;
     [SerializeField] private float loadingScreenMinSeconds = 5.5f;
     [Tooltip("If multiple cameras keep the MainCamera tag, extras are disabled so only one renders (prefers CameraController).")]
     [SerializeField] private bool enforceSingleMainCameraTag = true;
 
     private bool _levelCompleteTriggered = false;
+    private bool _waveModeActive = false;
+    private bool _waveSpawnPending = false;
     private Coroutine _sceneLoadRoutine;
 
     private static string _cachedRetrySceneName = "GameScene";
@@ -166,6 +174,49 @@ public class GameManager : MonoBehaviour
     {
         Instance = null;
         PendingMenuScreen = MenuScreen.MainMenu;
+    }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void EnforcePhysicsCollisionMatrix()
+    {
+        int defaultLayer    = LayerMask.NameToLayer("Default");
+        int envLayer        = LayerMask.NameToLayer("Environment");
+        int mapLayer        = LayerMask.NameToLayer("Map");
+        int wallLayer       = LayerMask.NameToLayer("Wall");
+        int buildingLayer   = LayerMask.NameToLayer("Building");
+        int groundLayer     = LayerMask.NameToLayer("Ground");
+        int obstacleLayer   = LayerMask.NameToLayer("StaticObstacle");
+        int levelLayer      = LayerMask.NameToLayer("LevelContent");
+        int playerLayer     = LayerMask.NameToLayer("Player");
+        int enemiesLayer    = LayerMask.NameToLayer("Enemies");
+        int enemyLayer      = LayerMask.NameToLayer("Enemy");
+        int characterLayer  = LayerMask.NameToLayer("Character");
+        int hittableLayer   = LayerMask.NameToLayer("Hittable");
+
+        int[] charLayers  = { playerLayer, enemiesLayer, enemyLayer, characterLayer, hittableLayer };
+        int[] solidLayers = { defaultLayer, envLayer, mapLayer, wallLayer, buildingLayer,
+                              groundLayer, obstacleLayer, levelLayer };
+
+        for (int c = 0; c < charLayers.Length; c++)
+        {
+            if (charLayers[c] < 0) continue;
+            for (int s = 0; s < solidLayers.Length; s++)
+            {
+                if (solidLayers[s] < 0) continue;
+                Physics.IgnoreLayerCollision(charLayers[c], solidLayers[s], false);
+            }
+            for (int c2 = 0; c2 < charLayers.Length; c2++)
+            {
+                if (charLayers[c2] < 0) continue;
+                Physics.IgnoreLayerCollision(charLayers[c], charLayers[c2], false);
+            }
+        }
+
+        Physics.autoSyncTransforms = true;
+        Physics.defaultContactOffset = 0.01f;
+        Physics.defaultSolverIterations = 8;
+
+        Debug.Log("[Physics] Collision matrix enforced: all character↔solid and character↔character layers enabled.");
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -643,8 +694,8 @@ public class GameManager : MonoBehaviour
         float baseSpeed = 1.85f + ((currentLevel - 1) * 0.045f);
         switch (ActiveDifficulty)
         {
-            case "Easy":    return baseSpeed * 0.88f;
-            case "Hard":    return baseSpeed * 1.05f;
+            case "Easy":    return baseSpeed * 0.75f;
+            case "Hard":    return baseSpeed * 1.12f;
             case "Veteran": return baseSpeed * 1.18f;
             default:        return baseSpeed;
         }
@@ -655,8 +706,8 @@ public class GameManager : MonoBehaviour
         float baseDamage = 7.5f + ((currentLevel - 1) * 0.45f);
         switch (ActiveDifficulty)
         {
-            case "Easy":    return baseDamage * 0.82f;
-            case "Hard":    return baseDamage * 1.15f;
+            case "Easy":    return baseDamage * 0.55f;
+            case "Hard":    return baseDamage * 1.25f;
             case "Veteran": return baseDamage * 1.40f;
             default:        return baseDamage;
         }
@@ -667,8 +718,8 @@ public class GameManager : MonoBehaviour
     {
         switch (ActiveDifficulty)
         {
-            case "Easy":    return 0.85f;
-            case "Hard":    return 1.15f;
+            case "Easy":    return 0.60f;
+            case "Hard":    return 1.30f;
             case "Veteran": return 1.45f;
             default:        return 1.00f;
         }
@@ -685,6 +736,7 @@ public class GameManager : MonoBehaviour
 
     public void InitializeEnemyCount(int count)
     {
+        _waveModeActive        = false;
         totalEnemiesSpawned    = count;
         enemiesRemaining       = count;
         enemiesKilledThisLevel = 0;
@@ -694,14 +746,57 @@ public class GameManager : MonoBehaviour
         Debug.Log($"[GameManager] InitializeEnemyCount: {count} enemies registered for this level.");
     }
 
+    public int WavesPerLevel => 1;
+
+    public void BeginWaves(int waveCount)
+    {
+        totalWaves             = Mathf.Max(1, waveCount);
+        currentWave            = 0;
+        totalEnemiesSpawned    = 0;
+        enemiesRemaining       = 0;
+        enemiesKilledThisLevel = 0;
+        _waveModeActive        = true;
+        _waveSpawnPending      = false;
+        _levelCompleteTriggered = false;
+
+        OnEnemiesRemainingChanged?.Invoke(enemiesRemaining);
+    }
+
+    public void RegisterWaveSpawned(int count)
+    {
+        currentWave++;
+        totalEnemiesSpawned += count;
+        enemiesRemaining    += count;
+        _waveSpawnPending    = false;
+
+        OnEnemiesRemainingChanged?.Invoke(enemiesRemaining);
+        OnWaveStarted?.Invoke(currentWave);
+
+        if (HUDManager.Instance != null)
+            HUDManager.Instance.UpdateEnemyCount(enemiesRemaining);
+
+        Debug.Log($"[GameManager] Wave {currentWave}/{totalWaves} spawned: {count} enemies ({enemiesRemaining} alive).");
+    }
+
+    private IEnumerator SpawnNextWaveDelayed()
+    {
+        yield return new WaitForSeconds(waveIntervalSeconds);
+        if (_levelCompleteTriggered) yield break;
+
+        if (LevelBuilder.Instance != null)
+            LevelBuilder.Instance.SpawnNextWave();
+        else
+            _waveSpawnPending = false;
+    }
+
     /// <summary>Enemy hits to kill the player from full health (with 100 HP, Normal = 10 damage per hit).</summary>
     public int GetPlayerHitsToKill()
     {
         switch (ActiveDifficulty)
         {
-            case "Easy":    return 15;
-            case "Hard":    return 7;
-            case "Veteran": return 6;
+            case "Easy":    return 20;
+            case "Hard":    return 6;
+            case "Veteran": return 5;
             default:        return 10;
         }
     }
@@ -710,10 +805,10 @@ public class GameManager : MonoBehaviour
     {
         switch (ActiveDifficulty)
         {
-            case "Easy":    return 3;
-            case "Hard":    return 7;
+            case "Easy":    return 2;
+            case "Hard":    return 6;
             case "Veteran": return 8;
-            default:        return 5;
+            default:        return 4;
         }
     }
 
@@ -750,9 +845,29 @@ public class GameManager : MonoBehaviour
 
         Debug.Log($"[GameManager] EnemyKilled: {enemiesKilledThisLevel}/{totalEnemiesSpawned} killed, {enemiesRemaining} remaining.");
 
-        if (totalEnemiesSpawned > 0
-            && enemiesKilledThisLevel >= totalEnemiesSpawned
-            && !_levelCompleteTriggered)
+        if (_levelCompleteTriggered)
+            return;
+
+        if (_waveModeActive)
+        {
+            if (enemiesRemaining > 0 || _waveSpawnPending)
+                return;
+
+            if (currentWave < totalWaves)
+            {
+                _waveSpawnPending = true;
+                Debug.Log($"[GameManager] Wave {currentWave}/{totalWaves} cleared — next wave in {waveIntervalSeconds}s.");
+                StartCoroutine(SpawnNextWaveDelayed());
+                return;
+            }
+
+            _levelCompleteTriggered = true;
+            Debug.Log($"[GameManager] Final wave cleared — waiting {victoryDelaySeconds}s before level complete.");
+            StartCoroutine(LevelCompleteDelayed());
+            return;
+        }
+
+        if (totalEnemiesSpawned > 0 && (enemiesKilledThisLevel >= totalEnemiesSpawned || enemiesRemaining <= 0))
         {
             _levelCompleteTriggered = true;
             Debug.Log($"[GameManager] All enemies eliminated — waiting {victoryDelaySeconds}s before level complete.");
@@ -796,9 +911,11 @@ public class GameManager : MonoBehaviour
             return;
         }
 
-        if (totalEnemiesSpawned > 0 && enemiesKilledThisLevel >= totalEnemiesSpawned)
+        if (totalEnemiesSpawned > 0
+            && (enemiesKilledThisLevel >= totalEnemiesSpawned || enemiesRemaining <= 0)
+            && (!_waveModeActive || currentWave >= totalWaves))
         {
-            Debug.Log("[EndUI] outcome = Victory reason = all enemies eliminated before timer");
+            Debug.Log("[EndUI] outcome = Victory reason = all waves cleared before timer");
             LevelComplete();
             return;
         }
@@ -892,7 +1009,8 @@ public class GameManager : MonoBehaviour
             return PendingMenuScreen;
 
         if (Instance.totalEnemiesSpawned > 0 &&
-            Instance.enemiesKilledThisLevel >= Instance.totalEnemiesSpawned)
+            (Instance.enemiesKilledThisLevel >= Instance.totalEnemiesSpawned || Instance.enemiesRemaining <= 0) &&
+            (!Instance._waveModeActive || Instance.currentWave >= Instance.totalWaves))
             return MenuScreen.LevelComplete;
 
         PlayerHealth localHealth = UnityEngine.Object.FindFirstObjectByType<PlayerHealth>();
@@ -938,6 +1056,10 @@ public class GameManager : MonoBehaviour
         totalEnemiesSpawned      = 0;
         enemiesKilledThisLevel   = 0;
         enemiesRemaining         = 0;
+        totalWaves               = 0;
+        currentWave              = 0;
+        _waveModeActive          = false;
+        _waveSpawnPending        = false;
         _levelCompleteTriggered  = false;
     }
 

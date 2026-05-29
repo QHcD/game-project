@@ -31,4 +31,6 @@ MonoBehaviour:
   - {fileID: 8300000, guid: 073e1e8f94692134c9d0e38aebb0f57a, type: 3}
   victoryClip: {fileID: 8300000, guid: 58fe86906eb8854498de22708c44d39b, type: 3}
   uiClickClip: {fileID: 8300000, guid: a92a01b93db4e6a47a18a596f9850b9f, type: 3}
-  uiHoverClip: {fileID: 8300000, guid: deea8b095b80f58489729e60677c8f8d, type: 3}
+  uiHoverClip: {fileID: 8300000, guid: 8fc731d1687fab44596ab9f1c1471204, type: 3}
+  footstepClip: {fileID: 8300000, guid: d3228779fb42a804092683799cc0293e, type: 3}
+  countdownClip: {fileID: 8300000, guid: 584dc3ef3fd9af04fa74b9063952e531, type: 3}

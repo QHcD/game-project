@@ -105,6 +105,9 @@ public class RobustThirdPersonMovement : MonoBehaviour
 
         if (cameraTransform == null)
             Debug.LogWarning("[RobustThirdPersonMovement] No camera found — movement will be world-space, not camera-relative.", this);
+
+        if (GetComponent<PlayerSfx>() == null)
+            gameObject.AddComponent<PlayerSfx>();
     }
 
     private void Update()
