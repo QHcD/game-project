@@ -28,8 +28,10 @@ public static class WeaponHitAudioDatabaseBuilder
     private const string DatabaseAssetPath = "Assets/MohamedAman/Resources/WeaponHitAudioDatabase.asset";
     private static readonly Regex LevelRx  = new Regex(@"^level(\d{1,2})", RegexOptions.IgnoreCase);
     private static readonly Regex VictoryRx = new Regex(@"v[ic]+tro?y|victroy", RegexOptions.IgnoreCase);
-    private static readonly Regex UIHoverRx  = new Regex(@"ui_clicksound", RegexOptions.IgnoreCase);
+    private static readonly Regex UIHoverRx  = new Regex(@"ui_clicksound|uiclickmenusound", RegexOptions.IgnoreCase);
     private static readonly Regex UIClickRx  = new Regex(@"tapclick", RegexOptions.IgnoreCase);
+    private static readonly Regex FootstepRx = new Regex(@"footstep", RegexOptions.IgnoreCase);
+    private static readonly Regex CountdownRx = new Regex(@"3\s*2\s*1\s*go|countdown", RegexOptions.IgnoreCase);
 
     // Editor-load safety net: make sure the database exists the moment the
     // project is opened so the very first Play Mode session has clips ready.
@@ -44,7 +46,8 @@ public static class WeaponHitAudioDatabaseBuilder
             var db = AssetDatabase.LoadAssetAtPath<WeaponHitAudioDatabase>(DatabaseAssetPath);
             if (db == null || db.levelClips == null || db.levelClips.Length == 0 ||
                 AllSlotsEmpty(db.levelClips) || db.victoryClip == null ||
-                db.uiClickClip == null || db.uiHoverClip == null)
+                db.uiClickClip == null || db.uiHoverClip == null ||
+                db.footstepClip == null)
             {
                 BuildOrUpdate(verbose: false);
             }
@@ -97,6 +100,10 @@ public static class WeaponHitAudioDatabaseBuilder
         string uiHoverPath = null;
         AudioClip uiClickHit = null;
         string uiClickPath = null;
+        AudioClip footstepHit = null;
+        string footstepPath = null;
+        AudioClip countdownHit = null;
+        string countdownPath = null;
 
         foreach (var g in clipGuids)
         {
@@ -136,6 +143,26 @@ public static class WeaponHitAudioDatabaseBuilder
                 continue;
             }
 
+            if (FootstepRx.IsMatch(fileName))
+            {
+                if (footstepPath == null || string.CompareOrdinal(path, footstepPath) > 0)
+                {
+                    var fClip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                    if (fClip != null) { footstepHit = fClip; footstepPath = path; }
+                }
+                continue;
+            }
+
+            if (CountdownRx.IsMatch(fileName))
+            {
+                if (countdownPath == null || string.CompareOrdinal(path, countdownPath) > 0)
+                {
+                    var cdClip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                    if (cdClip != null) { countdownHit = cdClip; countdownPath = path; }
+                }
+                continue;
+            }
+
             int level = ExtractLevel(fileName);
             if (level < 1 || level > WeaponHitAudioDatabase.MaxLevel) continue;
 
@@ -166,6 +193,16 @@ public static class WeaponHitAudioDatabaseBuilder
         if (db.uiHoverClip != uiHoverHit)
         {
             db.uiHoverClip = uiHoverHit;
+            changed = true;
+        }
+        if (db.footstepClip != footstepHit)
+        {
+            db.footstepClip = footstepHit;
+            changed = true;
+        }
+        if (db.countdownClip != countdownHit)
+        {
+            db.countdownClip = countdownHit;
             changed = true;
         }
 

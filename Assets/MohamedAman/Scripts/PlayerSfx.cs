@@ -37,7 +37,7 @@ public class PlayerSfx : MonoBehaviour
     [Header("Mixing")]
     [Range(0f, 2f)] public float jumpVolume      = 0.9f;
     [Range(0f, 2f)] public float slideVolume     = 0.9f;
-    [Range(0f, 2f)] public float footstepVolume  = 0.55f;
+    [Range(0f, 2f)] public float footstepVolume  = 0.75f;
     [Range(0f, 2f)] public float victoryVolume   = 1.0f;
     public Vector2 pitchJitter = new Vector2(0.95f, 1.05f);
 
@@ -57,7 +57,7 @@ public class PlayerSfx : MonoBehaviour
 
     private void Awake()
     {
-        Instance = this; // last one wins; PlayerSfx is per-player and gameplay scenes have one local player
+        Instance = this;
 
         _source = GetComponent<AudioSource>();
         if (_source == null)
@@ -65,13 +65,45 @@ public class PlayerSfx : MonoBehaviour
             _source = gameObject.AddComponent<AudioSource>();
             _source.playOnAwake = false;
             _source.loop = false;
-            _source.spatialBlend = 0.4f;
+            _source.spatialBlend = 0f;
         }
+        else
+        {
+            _source.spatialBlend = 0f;
+        }
+
+        ResolveFootstepClip();
 
         if (uiClickOverride != null && UIClickAudio.Instance != null)
             UIClickAudio.Instance.SetClickClip(uiClickOverride);
         if (uiHoverOverride != null && UIClickAudio.Instance != null)
             UIClickAudio.Instance.SetHoverClip(uiHoverOverride);
+    }
+
+    private void ResolveFootstepClip()
+    {
+        if (footstepClip != null) return;
+
+        if (WeaponHitAudioDatabase.Instance != null && WeaponHitAudioDatabase.Instance.footstepClip != null)
+        {
+            footstepClip = WeaponHitAudioDatabase.Instance.footstepClip;
+            return;
+        }
+
+        footstepClip = Resources.Load<AudioClip>("Audio/footsteps");
+
+#if UNITY_EDITOR
+        if (footstepClip == null)
+            footstepClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/footsteps.mp3");
+#endif
+
+        if (footstepClip == null)
+            footstepClip = Resources.Load<AudioClip>("Audio/footstep");
+
+        if (footstepClip != null)
+            Debug.Log($"[PlayerSfx] Footstep clip loaded: {footstepClip.name}");
+        else
+            Debug.LogWarning("[PlayerSfx] Footstep clip could not be resolved from any source.");
     }
 
     private void OnDestroy()

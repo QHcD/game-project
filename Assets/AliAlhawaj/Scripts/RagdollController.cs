@@ -337,14 +337,23 @@ public class RagdollController : MonoBehaviour
 
     private void EnsureGroundCollisionLayers()
     {
-        int enemyLayer = gameObject.layer;
-        int defaultLayer = LayerMask.NameToLayer("Default");
-        int environmentLayer = LayerMask.NameToLayer("Environment");
+        int layer = gameObject.layer;
+        int[] solidLayers = {
+            LayerMask.NameToLayer("Default"),
+            LayerMask.NameToLayer("Environment"),
+            LayerMask.NameToLayer("Map"),
+            LayerMask.NameToLayer("Wall"),
+            LayerMask.NameToLayer("Building"),
+            LayerMask.NameToLayer("Ground"),
+            LayerMask.NameToLayer("StaticObstacle"),
+            LayerMask.NameToLayer("LevelContent")
+        };
 
-        if (defaultLayer >= 0)
-            Physics.IgnoreLayerCollision(enemyLayer, defaultLayer, false);
-        if (environmentLayer >= 0)
-            Physics.IgnoreLayerCollision(enemyLayer, environmentLayer, false);
+        for (int i = 0; i < solidLayers.Length; i++)
+        {
+            if (solidLayers[i] >= 0)
+                Physics.IgnoreLayerCollision(layer, solidLayers[i], false);
+        }
     }
 
     private void EnsureRagdollFrictionMaterial()

@@ -91,11 +91,11 @@ public class WeaponCombatAudio : MonoBehaviour
             _source.playOnAwake = false;
             _source.loop = false;
         }
-        // Force spatial 3D audio blend between 0.8 and 1.0 (default to 0.9f)
-        _source.spatialBlend = 0.9f;
-        _source.minDistance = 1.0f;
-        _source.maxDistance = 50.0f;
+        _source.spatialBlend = 1f;
+        _source.minDistance = 2f;
+        _source.maxDistance = 10f;
         _source.rolloffMode = AudioRolloffMode.Linear;
+        _source.dopplerLevel = 0f;
     }
 
     private void OnEnable()
@@ -275,20 +275,35 @@ public class WeaponCombatAudio : MonoBehaviour
     private void PlayOneShotScaled(AudioClip clip, float baseVol, Vector3 worldPos)
     {
         if (clip == null) return;
-        
+
+        float scaledVol = AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol));
+
         if (_source != null)
         {
-            _source.spatialBlend = 0.9f;
-            float scaledVol = AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol));
-            float finalVolume = Mathf.Clamp(scaledVol, 0.7f, 1.0f);
-            
             _source.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
-            _source.PlayOneShot(clip, finalVolume);
+            _source.PlayOneShot(clip, scaledVol);
         }
         else
         {
-            AudioSource.PlayClipAtPoint(clip, worldPos, AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol)));
+            PlayClipAtPoint3D(clip, worldPos, scaledVol);
         }
+    }
+
+    private static void PlayClipAtPoint3D(AudioClip clip, Vector3 pos, float volume)
+    {
+        GameObject tmp = new GameObject("CombatHit3D");
+        tmp.transform.position = pos;
+        AudioSource src = tmp.AddComponent<AudioSource>();
+        src.clip = clip;
+        src.volume = volume;
+        src.spatialBlend = 1f;
+        src.minDistance = 2f;
+        src.maxDistance = 15f;
+        src.rolloffMode = AudioRolloffMode.Linear;
+        src.dopplerLevel = 0f;
+        src.playOnAwake = false;
+        src.Play();
+        Object.Destroy(tmp, clip.length + 0.1f);
     }
 
     private void SpawnTimed(GameObject prefab, Vector3 pos, Quaternion rot, Transform parent)

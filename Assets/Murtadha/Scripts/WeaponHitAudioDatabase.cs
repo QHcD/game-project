@@ -34,6 +34,12 @@ public class WeaponHitAudioDatabase : ScriptableObject
     [Tooltip("Auto-discovered UI hover sound clip (filename contains 'ui_clicksound').")]
     public AudioClip uiHoverClip;
 
+    [Tooltip("Auto-discovered footstep clip (filename contains 'footstep').")]
+    public AudioClip footstepClip;
+
+    [Tooltip("Auto-discovered countdown clip (filename contains '3 2 1 go' or 'countdown').")]
+    public AudioClip countdownClip;
+
     // ── Runtime accessor ────────────────────────────────────────────────────
     private static WeaponHitAudioDatabase _cached;
     private static bool _loadAttempted;

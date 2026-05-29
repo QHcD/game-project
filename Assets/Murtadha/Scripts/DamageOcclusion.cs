@@ -49,6 +49,12 @@ public static class DamageOcclusion
         if (attackerRoot == null || victim == null) return false;
         if (attackerRoot == victim) return false;
 
+        float horizontalDist = Vector3.Distance(
+            new Vector3(attackerRoot.transform.position.x, 0f, attackerRoot.transform.position.z),
+            new Vector3(victim.transform.position.x, 0f, victim.transform.position.z));
+        if (horizontalDist < 3f)
+            return false;
+
         int mask = ResolveSolidOcclusionMask();
         if (mask == 0) return false;
 
@@ -64,6 +70,12 @@ public static class DamageOcclusion
         if (attackerRoot == null || victim == null) return false;
         if (attackerRoot == victim) return false;
 
+        float horizontalDist = Vector3.Distance(
+            new Vector3(attackOriginWorld.x, 0f, attackOriginWorld.z),
+            new Vector3(victim.transform.position.x, 0f, victim.transform.position.z));
+        if (horizontalDist < 3f)
+            return false;
+
         int mask = ResolveSolidOcclusionMask();
         if (mask == 0) return false;
 
@@ -74,6 +86,15 @@ public static class DamageOcclusion
 
     public static bool IsSegmentBlocked(GameObject attackerRoot, GameObject victim, Vector3 from, Vector3 to)
     {
+        if (attackerRoot != null && victim != null)
+        {
+            float horizontalDist = Vector3.Distance(
+                new Vector3(attackerRoot.transform.position.x, 0f, attackerRoot.transform.position.z),
+                new Vector3(victim.transform.position.x, 0f, victim.transform.position.z));
+            if (horizontalDist < 3f)
+                return false;
+        }
+
         int mask = ResolveSolidOcclusionMask();
         if (mask == 0) return false;
 

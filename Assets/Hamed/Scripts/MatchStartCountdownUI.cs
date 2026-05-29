@@ -5,20 +5,40 @@ using UnityEngine.UI;
 
 public class MatchStartCountdownUI : MonoBehaviour
 {
-    private const float StepHoldSeconds = 0.82f;
-    private const float GoHoldSeconds   = 0.72f;
+    private const float StepHoldSeconds = 0.95f;
+    private const float GoHoldSeconds   = 0.80f;
 
     public static IEnumerator Play()
     {
+        CleanupStrayOverlays();
+
         GameObject host = new GameObject("MatchStartCountdown");
-        DontDestroyOnLoad(host);
-        var runner = host.AddComponent<MatchStartCountdownUI>();
-        yield return runner.RunSequence();
-        Destroy(host);
+        var ui = host.AddComponent<MatchStartCountdownUI>();
+
+        EndMatchCinematic.GameplayLocked = true;
+
+        yield return ui.StartCoroutine(ui.RunSequence());
+
+        EndMatchCinematic.GameplayLocked = false;
+
+        if (ui != null)
+            Destroy(ui.gameObject);
+    }
+
+    public static void CleanupStrayOverlays()
+    {
+        GameObject stray = GameObject.Find("MatchStartCountdown");
+        if (stray != null)
+            Destroy(stray);
+
+        GameObject canvas = GameObject.Find("CountdownCanvas");
+        if (canvas != null)
+            Destroy(canvas);
     }
 
     private Canvas _canvas;
     private TextMeshProUGUI _bigLabel;
+    private CanvasGroup _canvasGroup;
 
     private IEnumerator RunSequence()
     {
@@ -28,27 +48,70 @@ public class MatchStartCountdownUI : MonoBehaviour
             Time.timeScale = 0f;
 
         BuildOverlay();
-        VoClipAutoIndex.EnsureLoaded();
+
+        AudioClip countdownClip = ResolveCountdownClip();
+        if (countdownClip != null)
+        {
+            if (GameManager.Instance != null)
+                GameManager.Instance.PlayMatchUiOneShot(countdownClip, 1f);
+            else
+                PlayFallbackOneShot(countdownClip);
+        }
 
         string[] steps = { "3", "2", "1", "GO!" };
         for (int i = 0; i < steps.Length; i++)
         {
             bool isGo = steps[i] == "GO!";
             SetBigText(steps[i], isGo);
-            AudioClip clip = isGo ? VoClipAutoIndex.ResolveCountdownStart() : VoClipAutoIndex.ResolveCountdownBeep();
-            if (clip != null)
-            {
-                if (GameManager.Instance != null)
-                    GameManager.Instance.PlayMatchUiOneShot(clip, 1f);
-                else
-                    PlayFallbackOneShot(clip);
-            }
-
-            yield return new WaitForSecondsRealtime(isGo ? GoHoldSeconds : StepHoldSeconds);
+            yield return AnimateStep(isGo);
+            yield return new WaitForSecondsRealtime(isGo ? GoHoldSeconds * 0.4f : StepHoldSeconds * 0.5f);
         }
+
+        yield return FadeOut(0.3f);
 
         if (pausedForCountdown)
             Time.timeScale = Mathf.Approximately(prevScale, 0f) ? 1f : prevScale;
+    }
+
+    private IEnumerator AnimateStep(bool isGo)
+    {
+        if (_bigLabel == null) yield break;
+
+        RectTransform rt = _bigLabel.rectTransform;
+        float duration = isGo ? 0.25f : 0.18f;
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            float scale = Mathf.Lerp(1.6f, 1f, t * t);
+            rt.localScale = new Vector3(scale, scale, 1f);
+
+            Color c = _bigLabel.color;
+            c.a = Mathf.Lerp(0.3f, 1f, t);
+            _bigLabel.color = c;
+
+            yield return null;
+        }
+
+        rt.localScale = Vector3.one;
+        Color final_ = _bigLabel.color;
+        final_.a = 1f;
+        _bigLabel.color = final_;
+    }
+
+    private IEnumerator FadeOut(float duration)
+    {
+        if (_canvasGroup == null) yield break;
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            _canvasGroup.alpha = Mathf.Lerp(1f, 0f, elapsed / duration);
+            yield return null;
+        }
+        _canvasGroup.alpha = 0f;
     }
 
     private void SetBigText(string t, bool isGo)
@@ -56,6 +119,11 @@ public class MatchStartCountdownUI : MonoBehaviour
         if (_bigLabel == null) return;
         _bigLabel.text = t;
         PrismaticHudTypography.ApplyCountdownStyle(_bigLabel, isGo);
+
+        if (isGo)
+            _bigLabel.fontSize = 260f;
+        else
+            _bigLabel.fontSize = 220f;
     }
 
     private void BuildOverlay()
@@ -67,6 +135,7 @@ public class MatchStartCountdownUI : MonoBehaviour
         _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
         _canvas.sortingOrder = 9998;
         root.AddComponent<GraphicRaycaster>();
+        _canvasGroup = root.AddComponent<CanvasGroup>();
 
         var scaler = root.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -96,6 +165,23 @@ public class MatchStartCountdownUI : MonoBehaviour
         lr.pivot = new Vector2(0.5f, 0.5f);
         lr.sizeDelta = new Vector2(800f, 400f);
         lr.anchoredPosition = Vector2.zero;
+    }
+
+    private static AudioClip ResolveCountdownClip()
+    {
+        if (WeaponHitAudioDatabase.Instance != null && WeaponHitAudioDatabase.Instance.countdownClip != null)
+            return WeaponHitAudioDatabase.Instance.countdownClip;
+
+#if UNITY_EDITOR
+        AudioClip editorClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>(
+            "Assets/MohamedAman/Materials/3 2 1 go sound effect.mp3");
+        if (editorClip != null) return editorClip;
+#endif
+
+        AudioClip res = Resources.Load<AudioClip>("Audio/3 2 1 go sound effect");
+        if (res != null) return res;
+
+        return VoClipAutoIndex.ResolveCountdownStart();
     }
 
     private static void PlayFallbackOneShot(AudioClip clip)

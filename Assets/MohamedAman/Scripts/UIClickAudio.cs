@@ -204,6 +204,8 @@ public class UIClickAudio : MonoBehaviour
         if (_clickClip == null)
             _clickClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/TapClick.mp3");
         if (_hoverClip == null)
+            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UIClickMenuSound.mp3");
+        if (_hoverClip == null)
             _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UI_clickSound.mp3");
 #endif
 
@@ -224,6 +226,10 @@ public class UIClickAudio : MonoBehaviour
             _clickClip = SynthesiseClick();
         }
 
+        if (_hoverClip == null)
+        {
+            _hoverClip = Resources.Load<AudioClip>("Audio/UIClickMenuSound");
+        }
         if (_hoverClip == null)
         {
             _hoverClip = Resources.Load<AudioClip>("Audio/UI_clickSound");

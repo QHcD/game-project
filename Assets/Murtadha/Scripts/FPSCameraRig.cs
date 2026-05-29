@@ -67,6 +67,13 @@ public class FPSCameraRig : MonoBehaviour
     [Range(30f, 90f)]
     public float weaponOverrideFOV = 55f;
 
+    [Header("Idle Stabilization")]
+    [Range(0f, 1f)]
+    public float idleSwayAmount = 0.12f;
+    public float maxSway = 0.05f;
+    public float eyeHeightFollow = 0.6f;
+    public float positionSmoothTime = 0.05f;
+
     // ── Runtime ───────────────────────────────────────────────────────────────
 
     private Camera _cam;
@@ -74,6 +81,13 @@ public class FPSCameraRig : MonoBehaviour
     private Transform _anchor;
     private int _playerBodyLayerIndex = -1;
     private int _weaponLayerIndex     = -1;
+
+    private Transform _cameraRoot;
+    private float _eyeHeight;
+    private bool _eyeHeightInit;
+    private Vector3 _smoothedPos;
+    private Vector3 _posVel;
+    private bool _smoothedInit;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -189,9 +203,6 @@ public class FPSCameraRig : MonoBehaviour
     {
         if (_anchor == null) return;
 
-        // Compute offset in anchor-local space:
-        //   forward = the direction the head faces (bone local +Z after rig-normalisation)
-        //   up      = world up, not the bone up, so the camera never tilts with head lean
         Vector3 forward = _anchor.forward;
         forward.y = 0f;
         if (forward.sqrMagnitude < 0.001f)
@@ -200,13 +211,59 @@ public class FPSCameraRig : MonoBehaviour
 
         Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
 
-        Vector3 worldAnchor = _anchor.position
+        Transform root = ResolveStableRoot();
+        if (root == null)
+        {
+            transform.position = _anchor.position
+                + forward * forwardOffset
+                + right   * lateralOffset
+                + Vector3.up * verticalOffset;
+            return;
+        }
+
+        float dt = Time.deltaTime;
+        float rawEyeHeight = _anchor.position.y - root.position.y;
+        if (!_eyeHeightInit)
+        {
+            _eyeHeight = rawEyeHeight;
+            _eyeHeightInit = true;
+        }
+        else
+        {
+            _eyeHeight = Mathf.Lerp(_eyeHeight, rawEyeHeight, 1f - Mathf.Exp(-eyeHeightFollow * dt));
+        }
+
+        Vector3 stableBase = new Vector3(root.position.x, root.position.y + _eyeHeight, root.position.z);
+
+        Vector3 headDeviation = Vector3.ClampMagnitude(_anchor.position - stableBase, maxSway);
+
+        Vector3 target = stableBase
+            + headDeviation * idleSwayAmount
             + forward * forwardOffset
             + right   * lateralOffset
             + Vector3.up * verticalOffset;
 
-        transform.position = worldAnchor;
-        // Rotation is driven externally by PlayerController.ApplyLook — do not overwrite it here.
+        if (!_smoothedInit)
+        {
+            _smoothedPos = target;
+            _posVel = Vector3.zero;
+            _smoothedInit = true;
+        }
+        else
+        {
+            _smoothedPos = Vector3.SmoothDamp(_smoothedPos, target, ref _posVel, Mathf.Max(0f, positionSmoothTime));
+        }
+
+        transform.position = _smoothedPos;
+    }
+
+    private Transform ResolveStableRoot()
+    {
+        if (_cameraRoot != null)
+            return _cameraRoot;
+
+        _cameraRoot = playerRoot != null ? playerRoot : ResolvePlayerRoot();
+        return _cameraRoot;
     }
 
     // ── Weapon Overlay Camera ─────────────────────────────────────────────────

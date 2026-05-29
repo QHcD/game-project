@@ -201,9 +201,15 @@ public class UIHoverSelectAudio : MonoBehaviour
 
 #if UNITY_EDITOR
         if (_hoverClip == null)
+            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UIClickMenuSound.mp3");
+        if (_hoverClip == null)
             _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UI_clickSound.mp3");
 #endif
 
+        if (_hoverClip == null)
+        {
+            _hoverClip = Resources.Load<AudioClip>("Audio/UIClickMenuSound");
+        }
         if (_hoverClip == null)
         {
             _hoverClip = Resources.Load<AudioClip>("Audio/UI_clickSound");

@@ -847,6 +847,18 @@ public class RuntimeMenuBuilder : MonoBehaviour
     {
         EnsureGameManager();
 
+        MatchStartCountdownUI.CleanupStrayOverlays();
+        Time.timeScale = 1f;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        if (UnityEngine.EventSystems.EventSystem.current == null)
+        {
+            GameObject es = new GameObject("EventSystem");
+            es.AddComponent<UnityEngine.EventSystems.EventSystem>();
+            es.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
+        }
+
         if (MultiplayerMode.IsMultiplayer)
         {
             Debug.Log("[EndUI] blocked stale/invalid outcome in multiplayer");

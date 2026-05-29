@@ -135,6 +135,14 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         if (_deathHandled) return;
         _deathHandled = true;
 
+        // Guarantee the HUD shows exactly 0 at the moment of death. Without
+        // this an overkill blow (e.g. a 30-damage hit at HP=20) could clamp
+        // currentHealth to 0 internally but the previous HUD push may have
+        // shown 20 still on screen when HandleDeath fires — producing the
+        // user-reported "died at 20" perception.
+        currentHealth = 0f;
+        PushHealthToHud(false);
+
         SpawnCorpse();
 
         CombatVoiceSfx.GetOrAdd(gameObject).PlayDeath();
@@ -340,15 +348,17 @@ public class PlayerHealth : MonoBehaviour, IDamageable
                 _lastAttackerStatsId = MatchStatsManager.BuildCombatantId(attackerEnemy);
         }
 
-        bool fromEnemyAttacker = attackerRoot != null && attackerRoot.GetComponentInParent<EnemyController>() != null;
-        if (fromEnemyAttacker && GameManager.Instance != null)
-        {
-            int hitsToKill = Mathf.Max(1, GameManager.Instance.GetPlayerHitsToKill());
-            float perHitDamage = maxHealth / hitsToKill;
-            TakeDamage(perHitDamage);
-            return;
-        }
-
+        // Use the real damage value the weapon hitbox passes in. The previous
+        // path overrode it with maxHealth/hitsToKill, which produced large
+        // fixed chunks (16-20 HP per hit). That made the bar visually "die
+        // at 20" — the killing blow would jump from HP=20 straight past 0
+        // in one frame, with the Game-Over overlay hiding the brief 0 state.
+        //
+        // Using the actual amount (typically 8-13 from GetEnemyDamage()) gives
+        // finer granularity so the bar smoothly drops all the way to 0 before
+        // HandleDeath fires. Difficulty scaling is preserved because
+        // GameManager.GetEnemyDamage() already applies the per-difficulty
+        // multipliers (Easy 0.82x, Hard 1.15x, Veteran 1.40x) at the source.
         TakeDamage((float)Mathf.Max(1, amount));
     }
 

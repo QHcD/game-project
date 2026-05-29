@@ -15,7 +15,7 @@ public class WorldArenaStabilizer : MonoBehaviour
     [Header("Arena envelope")]
     public float arenaHalfSize = 80f;
     [Tooltip("Y below which entities are recovered to the nearest NavMesh point.")]
-    public float killYThreshold = -12f;
+    public float killYThreshold = -5f;
     [Tooltip("Seconds between recovery warps per entity (prevents warp spam).")]
     public float recoveryCooldown = 2.5f;
 
@@ -106,16 +106,16 @@ public class WorldArenaStabilizer : MonoBehaviour
     {
         float full = arenaHalfSize * 2f;
         float wallHeight = 42f;
-        float wallInset = 0.35f;
+        float wallInset = 0.1f;
 
         EnsureBoxColliderWall(arenaRoot, "PhysicsWall_N", new Vector3(0f, wallHeight * 0.5f, arenaHalfSize + wallInset),
-            new Vector3(full + 4f, wallHeight, 2f));
+            new Vector3(full + 4f, wallHeight, 4f));
         EnsureBoxColliderWall(arenaRoot, "PhysicsWall_S", new Vector3(0f, wallHeight * 0.5f, -arenaHalfSize - wallInset),
-            new Vector3(full + 4f, wallHeight, 2f));
+            new Vector3(full + 4f, wallHeight, 4f));
         EnsureBoxColliderWall(arenaRoot, "PhysicsWall_E", new Vector3(arenaHalfSize + wallInset, wallHeight * 0.5f, 0f),
-            new Vector3(2f, wallHeight, full + 4f));
+            new Vector3(4f, wallHeight, full + 4f));
         EnsureBoxColliderWall(arenaRoot, "PhysicsWall_W", new Vector3(-arenaHalfSize - wallInset, wallHeight * 0.5f, 0f),
-            new Vector3(2f, wallHeight, full + 4f));
+            new Vector3(4f, wallHeight, full + 4f));
 
         // Corner pillars close diagonal sight-lines into the void.
         float corner = arenaHalfSize * 0.98f;

@@ -10,6 +10,8 @@ public class WeaponHitbox : MonoBehaviour
     public float enemyTipForwardOverride = 0f;
     public LayerMask meleeVictimMask;
 
+    private const float MeleeForwardAngle = 80f;
+
     private readonly System.Collections.Generic.HashSet<int> hitThisSwing = new System.Collections.Generic.HashSet<int>();
     private bool _meleeMissNotifiedThisSwing;
 
@@ -19,8 +21,6 @@ public class WeaponHitbox : MonoBehaviour
     private bool isActive;
     private GameObject ownerRoot;
     private Transform attackTarget;
-    private Vector3 _lastWeaponTip;
-    private bool _hasLastWeaponTip;
 
     public static LayerMask BuildDefaultMeleeVictimMask()
     {
@@ -72,18 +72,18 @@ public class WeaponHitbox : MonoBehaviour
         hitThisSwing.Clear();
         _meleeMissNotifiedThisSwing = false;
         isActive = true;
-        _lastWeaponTip = GetWeaponTipWorldPosition();
-        _hasLastWeaponTip = true;
         if (hitboxCollider != null)
+        {
             hitboxCollider.enabled = false;
-        DealOverlapSphereDamage();
+            hitboxCollider.enabled = true;
+        }
+        ScanWeaponColliderContacts();
     }
 
     public void DisableHitbox()
     {
         isActive = false;
         attackTarget = null;
-        _hasLastWeaponTip = false;
         if (hitboxCollider != null)
             hitboxCollider.enabled = false;
         hitThisSwing.Clear();
@@ -94,13 +94,46 @@ public class WeaponHitbox : MonoBehaviour
         if (!isActive)
             return;
 
-        DealOverlapSphereDamage();
+        ScanWeaponColliderContacts();
     }
 
     private void OnTriggerEnter(Collider other)
     {
         if (!isActive) return;
         TryDamageCollider(other);
+    }
+
+    private void OnTriggerStay(Collider other)
+    {
+        if (!isActive) return;
+        TryDamageCollider(other);
+    }
+
+    private void ScanWeaponColliderContacts()
+    {
+        if (hitboxCollider == null)
+            return;
+
+        GameObject resolvedOwner = ownerRoot != null ? ownerRoot : ResolveOwnerRoot();
+        Transform attackerRoot = resolvedOwner != null ? resolvedOwner.transform : null;
+
+        Transform t = hitboxCollider.transform;
+        Vector3 center = t.TransformPoint(hitboxCollider.center);
+        Vector3 lossy = t.lossyScale;
+        Vector3 halfExtents = new Vector3(
+            Mathf.Abs(hitboxCollider.size.x * lossy.x),
+            Mathf.Abs(hitboxCollider.size.y * lossy.y),
+            Mathf.Abs(hitboxCollider.size.z * lossy.z)) * 0.5f;
+
+        int mask = BuildQueryMask();
+        int hitCount = Physics.OverlapBoxNonAlloc(center, halfExtents, OverlapHits, t.rotation, mask, QueryTriggerInteraction.Ignore);
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider col = OverlapHits[i];
+            if (IsAttackerCollider(col, attackerRoot))
+                continue;
+            TryDamageCollider(col);
+        }
     }
 
     private bool IsEnemyAttacker()
@@ -135,133 +168,6 @@ public class WeaponHitbox : MonoBehaviour
         return other.transform == attackerRoot || other.transform.IsChildOf(attackerRoot);
     }
 
-    private void DealOverlapSphereDamage()
-    {
-        GameObject resolvedOwner = ownerRoot != null ? ownerRoot : ResolveOwnerRoot();
-        Transform attackerRoot = resolvedOwner != null ? resolvedOwner.transform : null;
-        bool isEnemyAttacker = IsEnemyAttacker();
-        Vector3 tip = GetWeaponTipWorldPosition();
-        Vector3 previousTip = _hasLastWeaponTip ? _lastWeaponTip : tip;
-        float probeRadius = Mathf.Max(0.1f, overlapRadius);
-        int mask = BuildQueryMask();
-
-        int hitCount = Physics.OverlapSphereNonAlloc(tip, probeRadius, OverlapHits, mask, QueryTriggerInteraction.Ignore);
-        for (int i = 0; i < hitCount; i++)
-        {
-            Collider col = OverlapHits[i];
-            if (IsAttackerCollider(col, attackerRoot))
-                continue;
-            TryDamageCollider(col);
-        }
-
-        Vector3 sweep = tip - previousTip;
-        float sweepLength = sweep.magnitude;
-        if (sweepLength > 0.03f)
-        {
-            hitCount = Physics.OverlapCapsuleNonAlloc(
-                previousTip,
-                tip,
-                probeRadius,
-                OverlapHits,
-                mask,
-                QueryTriggerInteraction.Ignore);
-
-            for (int i = 0; i < hitCount; i++)
-            {
-                Collider col = OverlapHits[i];
-                if (IsAttackerCollider(col, attackerRoot))
-                    continue;
-                TryDamageCollider(col);
-            }
-        }
-
-        if (!isEnemyAttacker || attackTarget == null)
-        {
-            _lastWeaponTip = tip;
-            _hasLastWeaponTip = true;
-            return;
-        }
-
-        Vector3 torso = MeleeBodyTargeting.GetTorsoWorldPoint(attackTarget);
-        Vector3 mid = Vector3.Lerp(tip, torso, 0.5f);
-        hitCount = Physics.OverlapSphereNonAlloc(mid, probeRadius * 0.95f, OverlapHits, mask, QueryTriggerInteraction.Ignore);
-        for (int i = 0; i < hitCount; i++)
-        {
-            Collider col = OverlapHits[i];
-            if (IsAttackerCollider(col, attackerRoot))
-                continue;
-            TryDamageCollider(col);
-        }
-
-        if (MeleeBodyTargeting.TryGetBodyCapsule(attackTarget, out Vector3 capA, out Vector3 capB, out float capRadius))
-        {
-            hitCount = Physics.OverlapCapsuleNonAlloc(
-                capA,
-                capB,
-                capRadius + probeRadius * 0.35f,
-                OverlapHits,
-                mask,
-                QueryTriggerInteraction.Ignore);
-
-            for (int i = 0; i < hitCount; i++)
-            {
-                Collider col = OverlapHits[i];
-                if (IsAttackerCollider(col, attackerRoot))
-                    continue;
-                TryDamageCollider(col);
-            }
-        }
-
-        TryEnemyDirectBodyContact(tip, probeRadius);
-        _lastWeaponTip = tip;
-        _hasLastWeaponTip = true;
-    }
-
-    private bool TryEnemyDirectBodyContact(Vector3 weaponTip, float probeRadius)
-    {
-        if (attackTarget == null)
-            return false;
-
-        GameObject resolvedOwner = ownerRoot != null ? ownerRoot : ResolveOwnerRoot();
-        if (resolvedOwner == null || resolvedOwner.GetComponent<EnemyController>() == null)
-            return false;
-
-        PlayerHealth player = attackTarget.GetComponentInParent<PlayerHealth>();
-        if (player == null || !player.IsAlive)
-            return false;
-
-        int id = player.gameObject.GetInstanceID();
-        if (hitThisSwing.Contains(id))
-            return false;
-
-        if (!EnemyStrikePathIsClear(resolvedOwner, player.gameObject, weaponTip))
-            return false;
-
-        float bodyReach = meleeAttackRange > 0f ? meleeAttackRange : 2f;
-        float tipToBody = MeleeBodyTargeting.GetClosestBodyDistance(weaponTip, player.transform);
-        float rootReach = HorizontalDistance(resolvedOwner.transform.position, player.transform.position);
-        if (tipToBody > bodyReach + probeRadius * 0.55f || rootReach > bodyReach + 0.65f)
-            return false;
-
-        if (DamageOcclusion.IsBlockedFromPoint(resolvedOwner, player.gameObject, weaponTip))
-            return false;
-
-        int dmg = damage > 0 ? damage : 25;
-        player.ReceiveDamage(dmg, resolvedOwner);
-        hitThisSwing.Add(id);
-
-        EnemyController ec = resolvedOwner.GetComponent<EnemyController>();
-        if (ec != null)
-            ec.RegisterMeleeHitLanded();
-
-        WeaponCombatAudio.PlayHitAt(
-            resolvedOwner,
-            ec != null ? ec.GetEquippedWeaponLevel() : 0,
-            MeleeBodyTargeting.GetTorsoWorldPoint(player.transform));
-
-        return true;
-    }
-
     private bool TryDamageCollider(Collider other)
     {
         if (other == null)
@@ -288,6 +194,23 @@ public class WeaponHitbox : MonoBehaviour
 
         if (!target.IsAlive)
             return false;
+
+        if (isEnemyAttacker && IsCoopFriendly(target.gameObject))
+            return false;
+
+        if (resolvedOwner != null)
+        {
+            Vector3 toTarget = target.gameObject.transform.position - resolvedOwner.transform.position;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude > 0.0001f)
+            {
+                Vector3 attackerForward = resolvedOwner.transform.forward;
+                attackerForward.y = 0f;
+                if (attackerForward.sqrMagnitude > 0.0001f &&
+                    Vector3.Angle(attackerForward.normalized, toTarget.normalized) > MeleeForwardAngle)
+                    return false;
+            }
+        }
 
         if (maxAttackRange > 0f && resolvedOwner != null)
         {
@@ -346,6 +269,14 @@ public class WeaponHitbox : MonoBehaviour
         return true;
     }
 
+    private static bool IsCoopFriendly(GameObject victim)
+    {
+        if (!MultiplayerMode.IsMultiplayer || MultiplayerMode.ActiveMode != MpGameMode.CoopSurvival)
+            return false;
+
+        return victim != null && victim.GetComponentInParent<EnemyController>() != null;
+    }
+
     private float GetStrikeReachDistance(Transform attacker, Transform victim)
     {
         Vector3 weaponTip = GetWeaponTipWorldPosition();
@@ -364,20 +295,7 @@ public class WeaponHitbox : MonoBehaviour
             return transform.position;
 
         Vector3 localTip = hitboxCollider.center + Vector3.forward * (hitboxCollider.size.z * 0.5f);
-        Vector3 weaponTip = hitboxCollider.transform.TransformPoint(localTip);
-
-        if (IsEnemyAttacker() && attackTarget != null)
-        {
-            Vector3 torso = MeleeBodyTargeting.GetTorsoWorldPoint(attackTarget);
-            Vector3 toTorso = torso - weaponTip;
-            if (toTorso.sqrMagnitude > 0.0001f)
-            {
-                float extend = Mathf.Clamp(toTorso.magnitude * 0.45f, 0.12f, 0.65f);
-                weaponTip += toTorso.normalized * extend;
-            }
-        }
-
-        return weaponTip;
+        return hitboxCollider.transform.TransformPoint(localTip);
     }
 
     private bool HasMeleeLineOfSight(GameObject attacker, GameObject target)
@@ -412,13 +330,6 @@ public class WeaponHitbox : MonoBehaviour
             return false;
 
         return true;
-    }
-
-    private static float HorizontalDistance(Vector3 a, Vector3 b)
-    {
-        Vector3 delta = b - a;
-        delta.y = 0f;
-        return delta.magnitude;
     }
 
     private bool NotifyEnemyMeleeMiss(GameObject resolvedOwner, bool resumeChase)

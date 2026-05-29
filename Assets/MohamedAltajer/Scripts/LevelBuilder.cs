@@ -19,6 +19,7 @@ public class LevelBuilder : MonoBehaviour
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
     private bool _navMeshReady;
+    private Transform _enemyRoot;
     private static bool _multiplayerBuildComplete;
 #if UNITY_EDITOR
     private static bool _editorPreviewQueued;
@@ -53,8 +54,12 @@ public class LevelBuilder : MonoBehaviour
     private int _lastBuiltFrame = -1;
 
     [Header("Enemy spawn spacing")]
-    [Tooltip("Preferred minimum horizontal distance between enemy spawn positions.")]
-    public float minEnemySpawnSpacing = 4f;
+    [Tooltip("Preferred minimum horizontal distance between enemy spawn positions. " +
+             "Raised to 16 so 20+ enemies spread widely across the large map instead " +
+             "of clustering. The scatter spawner falls back to the most spread-out " +
+             "valid point when this exact spacing can't be met, so a high value here " +
+             "improves distribution without causing spawn failures.")]
+    public float minEnemySpawnSpacing = 16f;
     [Tooltip("Minimum horizontal distance from the player at spawn time. " +
              "Prevents enemies materialising on top of the player.")]
     public float minEnemyToPlayerDistance = 12f;
@@ -627,8 +632,8 @@ public class LevelBuilder : MonoBehaviour
         GameObject floor = GameObject.CreatePrimitive(PrimitiveType.Cube);
         floor.name = "Ground_PhysicsFloor";
         floor.transform.SetParent(parent, false);
-        floor.transform.localPosition = new Vector3(0f, -0.3f, 0f);  // slightly below map ground
-        floor.transform.localScale    = new Vector3(full, 0.1f, full);
+        floor.transform.localPosition = new Vector3(0f, -0.05f, 0f);
+        floor.transform.localScale    = new Vector3(full, 0.5f, full);
         Renderer floorRend = floor.GetComponent<Renderer>();
         if (floorRend != null) floorRend.enabled = false;  // invisible — industrial map ground shows instead
         HideNavOnlySurface(floor);
@@ -977,11 +982,37 @@ public class LevelBuilder : MonoBehaviour
         // Replacing materials would wipe all industrial textures and make the
         // map appear as flat grey geometry.
 
-        // ── Add colliders only where none exist (for NavMesh + physics) ────
+        // ── Add colliders where none exist + fix existing ones ────
         foreach (MeshFilter mf in mapInstance.GetComponentsInChildren<MeshFilter>(true))
         {
-            if (mf.GetComponent<Collider>() != null) continue;
             if (mf.sharedMesh == null) continue;
+
+            Collider existingCol = mf.GetComponent<Collider>();
+            if (existingCol != null)
+            {
+                existingCol.enabled = true;
+                if (existingCol.isTrigger)
+                    existingCol.isTrigger = false;
+
+                MeshCollider existingMc = existingCol as MeshCollider;
+                if (existingMc != null)
+                {
+                    if (existingMc.sharedMesh == null && mf.sharedMesh.isReadable)
+                        existingMc.sharedMesh = mf.sharedMesh;
+
+                    Rigidbody existingRb = mf.GetComponent<Rigidbody>();
+                    if (existingRb != null && !existingRb.isKinematic && !existingMc.convex && mf.sharedMesh.isReadable)
+                        existingMc.convex = true;
+                }
+
+                Rigidbody rbExisting = mf.GetComponent<Rigidbody>();
+                if (rbExisting != null)
+                {
+                    rbExisting.isKinematic = true;
+                    rbExisting.useGravity = false;
+                }
+                continue;
+            }
 
             if (mf.sharedMesh.isReadable)
             {
@@ -994,6 +1025,13 @@ public class LevelBuilder : MonoBehaviour
                 BoxCollider box = mf.gameObject.AddComponent<BoxCollider>();
                 box.center = mf.sharedMesh.bounds.center;
                 box.size   = mf.sharedMesh.bounds.size;
+            }
+
+            Rigidbody rb = mf.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                rb.isKinematic = true;
+                rb.useGravity = false;
             }
         }
 
@@ -1026,9 +1064,57 @@ public class LevelBuilder : MonoBehaviour
             bool car = n == "car" || n.StartsWith("car_") || n.Contains(" car ");
             bool woodenBoxes = n.Contains("woodenboxes") || n.Contains("wooden_boxes") || n.Contains("wooden_box") || n.Contains("wooden boxes");
 
-            if (redBuilding || car || woodenBoxes)
+            bool trashBin = n.Contains("trash") || n.Contains("dustbin") || n.Contains("garbage")
+                          || n.Contains("bin_") || n == "bin" || n.StartsWith("bin ")
+                          || n.Contains("can_") || n.StartsWith("trashcan") || n.Contains("trash_can");
+            bool cartShelf = n.Contains("cart") || n.Contains("trolley") || n.Contains("shelf")
+                           || n.Contains("rack") || n.Contains("dolly") || n.Contains("pushcart");
+            bool grateHatch = n.Contains("grate") || n.Contains("hatch") || n.Contains("manhole")
+                            || n.Contains("vent_cover") || n.Contains("floor_vent")
+                            || n.Contains("floorhatch") || n.Contains("floor_hatch")
+                            || n.Contains("groundgrate") || n.Contains("ground_grate")
+                            || n.Contains("ventgrate") || n.Contains("vent_grate");
+
+            bool pillarPole = n.Contains("pillar") || n.Contains("pole_") || n == "pole"
+                            || n.StartsWith("pole ") || n.Contains("yellowpole") || n.Contains("yellow_pole")
+                            || n.Contains("yellowpost") || n.Contains("yellow_post")
+                            || n.Contains("yellowpillar") || n.Contains("yellow_pillar")
+                            || n.Contains("column_") || n == "column" || n.StartsWith("column ")
+                            || n.Contains("post_") || n == "post" || n.StartsWith("post ")
+                            || n.Contains("support_beam") || n.Contains("supportbeam")
+                            || n.Contains("beam_yellow") || n.Contains("yellow_beam");
+
+            bool barrelDrum = n.Contains("barrel") || n.Contains("drum_") || n == "drum"
+                            || n.StartsWith("drum ") || n.Contains("oildrum") || n.Contains("oil_drum")
+                            || n.Contains("canister") || n.Contains("fueltank") || n.Contains("fuel_tank");
+
+            bool floatingBox = n.Contains("floatingbox") || n.Contains("floating_box")
+                             || n.Contains("airbox") || n.Contains("air_box")
+                             || n.Contains("hangingbox") || n.Contains("hanging_box")
+                             || n.Contains("suspendedbox") || n.Contains("suspended_box")
+                             || n.Contains("smallcube") || n.Contains("small_cube")
+                             || n.Contains("flycube") || n.Contains("fly_cube")
+                             || n.Contains("floatingprop") || n.Contains("floating_prop")
+                             || n.Contains("floatingdecor") || n.Contains("floating_decor")
+                             || n.Contains("hovering") || n.Contains("levitating");
+
+            bool crateProp = n.Contains("crate") || n.Contains("pallet")
+                           || n.Contains("container_small") || n.Contains("smallcontainer")
+                           || n.Contains("small_container") || n.Contains("cargobox")
+                           || n.Contains("cargo_box") || n.Contains("storagebox")
+                           || n.Contains("storage_box") || n.Contains("ammobox")
+                           || n.Contains("ammo_box") || n.Contains("supplybox")
+                           || n.Contains("supply_box") || n.Contains("loot_crate")
+                           || n.Contains("decor_box") || n.Contains("decorbox")
+                           || n.Contains("propbox") || n.Contains("prop_box")
+                           || n.Contains("metalbox") || n.Contains("metal_box");
+
+            if (redBuilding || car || woodenBoxes || trashBin || cartShelf || grateHatch
+                || pillarPole || barrelDrum || floatingBox || crateProp)
                 toRemove.Add(child.gameObject);
         }
+
+        HideFloatingSmallProps(mapRoot, toRemove);
 
         for (int i = 0; i < toRemove.Count; i++)
         {
@@ -1037,7 +1123,62 @@ public class LevelBuilder : MonoBehaviour
         }
 
         if (toRemove.Count > 0)
-            Debug.Log($"[LevelBuilder] Hid {toRemove.Count} unwanted map prop(s): Car, WoodenBoxes, and RedBuilding only.");
+            Debug.Log($"[LevelBuilder] Hid {toRemove.Count} unwanted map prop(s).");
+    }
+
+    private static void HideFloatingSmallProps(Transform mapRoot, System.Collections.Generic.List<GameObject> toRemove)
+    {
+        float floorY = float.MaxValue;
+        foreach (Renderer r in mapRoot.GetComponentsInChildren<Renderer>(true))
+        {
+            if (r is ParticleSystemRenderer) continue;
+            string ln = r.gameObject.name.ToLowerInvariant();
+            if (ln.Contains("skybox") || ln.Contains("reflection")) continue;
+            if (r.bounds.min.y < floorY)
+                floorY = r.bounds.min.y;
+        }
+        if (floorY >= float.MaxValue)
+            return;
+
+        var seen = new System.Collections.Generic.HashSet<int>();
+        for (int i = 0; i < toRemove.Count; i++)
+            if (toRemove[i] != null) seen.Add(toRemove[i].GetInstanceID());
+
+        foreach (MeshRenderer mr in mapRoot.GetComponentsInChildren<MeshRenderer>(true))
+        {
+            if (mr == null) continue;
+            GameObject go = mr.gameObject;
+            if (seen.Contains(go.GetInstanceID())) continue;
+            if (go.transform == mapRoot) continue;
+            if (go.transform.childCount > 0) continue;
+
+            Bounds b = mr.bounds;
+            float maxDim = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
+            if (maxDim > 1.4f) continue;
+            if (b.size.x < 0.05f && b.size.y < 0.05f && b.size.z < 0.05f) continue;
+
+            float bottomClearance = b.min.y - floorY;
+            if (bottomClearance < 0.7f) continue;
+            if (b.max.y - floorY > 3.5f) continue;
+
+            Vector3 castOrigin = b.center;
+            castOrigin.y = b.min.y - 0.02f;
+            bool hasSupport = false;
+            RaycastHit[] hits = Physics.RaycastAll(castOrigin, Vector3.down, bottomClearance + 0.15f,
+                ~0, QueryTriggerInteraction.Ignore);
+            for (int h = 0; h < hits.Length; h++)
+            {
+                if (hits[h].collider == null) continue;
+                if (hits[h].collider.transform.IsChildOf(go.transform)) continue;
+                if (hits[h].collider.gameObject == go) continue;
+                hasSupport = true;
+                break;
+            }
+            if (hasSupport) continue;
+
+            toRemove.Add(go);
+            seen.Add(go.GetInstanceID());
+        }
     }
 
     /// <summary>Scales the map so its largest horizontal dimension equals targetSize.</summary>
@@ -1359,6 +1500,119 @@ public class LevelBuilder : MonoBehaviour
     }
 
     /// <summary>
+    /// Map-wide scatter spawn. Picks a random point inside the arena bounds,
+    /// snaps it to the NavMesh via NavMesh.SamplePosition, and accepts it
+    /// only if it sits ≥ minEnemySpawnSpacing from every previously placed
+    /// enemy and ≥ minEnemyToPlayerDistance from the player.
+    ///
+    /// This is the primary distribution strategy and runs before the older
+    /// zone/anchor picker. It guarantees enemies are scattered across the
+    /// ENTIRE walkable map instead of clustering near a handful of
+    /// pre-defined anchor positions.
+    /// </summary>
+    private bool TryPickScatterSpawn(
+        Vector3 playerNavPos,
+        System.Collections.Generic.List<Vector3> placedSoFar,
+        out Vector3 spawnWorld)
+    {
+        spawnWorld = default;
+
+        float halfSize = arenaHalfSize > 0f ? arenaHalfSize : 80f;
+        float usableHalf = halfSize * 0.92f;
+        float minSep = Mathf.Max(MinEnemySpawnHardFloor, minEnemySpawnSpacing);
+        float minSepSq = minSep * minSep;
+        float playerMinSq = Mathf.Max(0f, minEnemyToPlayerDistance);
+        playerMinSq *= playerMinSq;
+
+        // Try many random samples. The hot loop is a single NavMesh sample +
+        // distance check, so this is cheap even when called per enemy. The higher
+        // attempt count (vs the old 64) gives the spacing filter more chances to
+        // find a well-separated point on dense maps before the best-effort fallback.
+        const int maxAttempts = 128;
+
+        // Best-effort fallback: track the valid candidate that is FARTHEST from
+        // every already-placed enemy. If no sample satisfies the strict spacing,
+        // we still return this most-spread-out point instead of failing — failing
+        // dropped the spawn into the emergency placer, which is exactly what made
+        // enemies cluster together. Returning the best-spaced candidate keeps the
+        // distribution spread across the whole map.
+        Vector3 bestCandidate = default;
+        float bestSeparationSq = -1f;
+        bool hasBestCandidate = false;
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            float x = Random.Range(-usableHalf, usableHalf);
+            float z = Random.Range(-usableHalf, usableHalf);
+            Vector3 seed = new Vector3(x, playerNavPos.y, z);
+
+            // Up to 12m search radius lets the sampler snap onto whatever
+            // walkable surface is nearest to the random point.
+            if (!NavMesh.SamplePosition(seed, out NavMeshHit hit, 12f, NavMesh.AllAreas))
+                continue;
+
+            Vector3 cand = hit.position;
+
+            // Reject rooftops / raised platforms — stranded enemies up there
+            // never engage. Reuse the existing geometry validator.
+            if (IsAboveArenaFloor(cand, playerNavPos))
+                continue;
+            if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: true))
+                continue;
+
+            // Enforce min distance to player (always — never spawn on the player).
+            if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
+                continue;
+
+            // Track the most spread-out valid candidate for the fallback.
+            float nearestSq = NearestPlacedDistanceSq(cand, placedSoFar);
+            if (nearestSq > bestSeparationSq)
+            {
+                bestSeparationSq = nearestSq;
+                bestCandidate = cand;
+                hasBestCandidate = true;
+            }
+
+            // Strict spacing satisfied — take it immediately.
+            if (nearestSq >= minSepSq)
+            {
+                spawnWorld = cand;
+                return true;
+            }
+        }
+
+        if (hasBestCandidate)
+        {
+            spawnWorld = bestCandidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Squared horizontal distance from <paramref name="cand"/> to the nearest
+    /// already-placed enemy. Returns float.MaxValue when nothing is placed yet
+    /// (the first enemy can go anywhere).
+    /// </summary>
+    private static float NearestPlacedDistanceSq(Vector3 cand, System.Collections.Generic.List<Vector3> placedSoFar)
+    {
+        if (placedSoFar == null || placedSoFar.Count == 0)
+            return float.MaxValue;
+
+        float nearestSq = float.MaxValue;
+        for (int i = 0; i < placedSoFar.Count; i++)
+        {
+            Vector3 d = placedSoFar[i] - cand;
+            d.y = 0f;
+            float sq = d.sqrMagnitude;
+            if (sq < nearestSq)
+                nearestSq = sq;
+        }
+        return nearestSq;
+    }
+
+    /// <summary>
     /// Zone-first spawn: each enemy tries a different arena zone before any zone
     /// gets a third occupant. Tier A enforces spacing + player distance + path.
     /// Tier B relaxes spacing to the hard floor but keeps zone caps.
@@ -1529,6 +1783,24 @@ public class LevelBuilder : MonoBehaviour
 
     private void SpawnEnemies(Transform enemyRoot)
     {
+        _enemyRoot = enemyRoot;
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.BeginWaves(GameManager.Instance.WavesPerLevel);
+
+        SpawnEnemyWave(enemyRoot);
+    }
+
+    public void SpawnNextWave()
+    {
+        if (_enemyRoot == null)
+            return;
+
+        SpawnEnemyWave(_enemyRoot);
+    }
+
+    private void SpawnEnemyWave(Transform enemyRoot)
+    {
         int   enemyCount  = GameManager.Instance != null ? GameManager.Instance.GetEnemyCount() : 12;
         float enemyDamage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() : 10f;
         int   currentLvl  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
@@ -1599,11 +1871,23 @@ public class LevelBuilder : MonoBehaviour
             string spawnZoneName = "Unknown";
             string spawnTier = "Emergency";
             Vector3 agentSpawn;
-            if (TryPickEnemySpawnPosition(playerNavPos, playerPos, placedPositions, spawnZones, zoneCounts,
+
+            // Strategy 1 — map-wide random scatter. This is the only strategy
+            // that actually distributes enemies across the entire NavMesh; the
+            // zone picker below is kept as a fallback for the rare case where
+            // the random sampler can't satisfy spacing (e.g. very small maps).
+            if (TryPickScatterSpawn(playerNavPos, placedPositions, out agentSpawn))
+            {
+                spawnZoneName = "Scatter";
+                spawnTier = "Scatter";
+            }
+            // Strategy 2 — legacy zone picker, kept as a safety net.
+            else if (TryPickEnemySpawnPosition(playerNavPos, playerPos, placedPositions, spawnZones, zoneCounts,
                     spawnPath, i, out agentSpawn, out spawnZoneName, out spawnTier))
             {
                 // picked
             }
+            // Strategy 3 — emergency placement, never fails but may relax spacing.
             else
             {
                 agentSpawn = EmergencyEnemySpawn(playerNavPos, playerPos, placedPositions, spawnZones,
@@ -1623,14 +1907,14 @@ public class LevelBuilder : MonoBehaviour
             // these per-frame (sprint chase, stuck recovery) but these are the
             // baseline at spawn so the very first second of contact already feels
             // aggressive instead of dragging up to chaseSpeed.
-            agent.speed                  = 5.8f;   // was 5.2 — base chase
-            agent.acceleration           = 20f;    // was 14 — snappier accel
-            agent.angularSpeed           = 720f;   // was 540 — kills spin / hesitation
-            agent.stoppingDistance       = 1.2f;   // was 1.7 — close in tighter for melee
-            agent.radius                 = 0.45f;
+            agent.speed                  = 5.2f;
+            agent.acceleration           = 19.6f;
+            agent.angularSpeed           = 702f;
+            agent.stoppingDistance       = 0.08f;
+            agent.radius                 = 0.35f;
             agent.height                 = 2f;
             agent.avoidancePriority      = 30 + (i * 3) % 40;
-            agent.obstacleAvoidanceType  = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+            agent.obstacleAvoidanceType  = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
             agent.updateRotation         = false;
 
             // Main collider — ensure a CapsuleCollider is present for hit detection.
@@ -1666,6 +1950,12 @@ public class LevelBuilder : MonoBehaviour
             controller.agentAngularSpeed  = 540f;
             controller.attackDamage       = enemyDamage;
             controller.maxHealth          = 55 + Mathf.RoundToInt((currentLvl - 1) * 5f);
+
+            // Localized aggro window — replaces the old global "see everyone
+            // on the map" behaviour. Tactical pacing comes from this single
+            // number; enemies outside this radius patrol and ignore us.
+            controller.aggroRadius        = 18f;
+            controller.detectionRadius    = Mathf.Min(controller.detectionRadius, controller.aggroRadius);
 
             agent.speed            = controller.chaseSpeed;
             agent.stoppingDistance = Mathf.Max(0.05f, controller.meleeAttackRange * 0.08f);
@@ -1727,11 +2017,8 @@ public class LevelBuilder : MonoBehaviour
             CorrectEnemySpawnPlacement(spawned.transform, spawnedAgent, playerNavPos);
         }
 
-        // ── Issue #5: register the authoritative count with GameManager ──────
-        // InitializeEnemyCount() sets BOTH enemiesRemaining AND totalEnemiesSpawned
-        // so EnemyKilled() can compare against the real number of spawned enemies.
         if (GameManager.Instance != null)
-            GameManager.Instance.InitializeEnemyCount(enemyCount);
+            GameManager.Instance.RegisterWaveSpawned(enemyCount);
     }
 
     /// <summary>
@@ -3495,12 +3782,42 @@ public class LevelBuilder : MonoBehaviour
             go.isStatic = true;
 
             // Collider — guarantee one exists so NavMesh + physics work.
-            if (go.GetComponent<Collider>() == null)
+            Collider existingEnvCol = go.GetComponent<Collider>();
+            if (existingEnvCol == null)
             {
-                if (go.GetComponent<MeshFilter>() != null)
-                    go.AddComponent<MeshCollider>();
+                MeshFilter envMf = go.GetComponent<MeshFilter>();
+                if (envMf != null && envMf.sharedMesh != null && envMf.sharedMesh.isReadable)
+                {
+                    MeshCollider envMc = go.AddComponent<MeshCollider>();
+                    envMc.sharedMesh = envMf.sharedMesh;
+                    envMc.convex = false;
+                }
+                else if (envMf != null)
+                {
+                    BoxCollider envBox = go.AddComponent<BoxCollider>();
+                    if (envMf.sharedMesh != null)
+                    {
+                        envBox.center = envMf.sharedMesh.bounds.center;
+                        envBox.size = envMf.sharedMesh.bounds.size;
+                    }
+                }
                 else
+                {
                     go.AddComponent<BoxCollider>();
+                }
+            }
+            else
+            {
+                existingEnvCol.enabled = true;
+                if (existingEnvCol.isTrigger)
+                    existingEnvCol.isTrigger = false;
+                MeshCollider envMcExisting = existingEnvCol as MeshCollider;
+                if (envMcExisting != null && envMcExisting.sharedMesh == null)
+                {
+                    MeshFilter envMf = go.GetComponent<MeshFilter>();
+                    if (envMf != null && envMf.sharedMesh != null && envMf.sharedMesh.isReadable)
+                        envMcExisting.sharedMesh = envMf.sharedMesh;
+                }
             }
 
             // Rigidbody — environment must never move. Prefer to remove; if other

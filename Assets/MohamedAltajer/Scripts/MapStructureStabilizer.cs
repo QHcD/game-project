@@ -163,7 +163,15 @@ public static class MapStructureStabilizer
         }
 
         if (existing != null)
+        {
+            existing.enabled = true;
+            existing.isTrigger = false;
+            MeshCollider existMc = existing as MeshCollider;
+            if (existMc != null && existMc.sharedMesh == null && mf.sharedMesh.isReadable)
+                existMc.sharedMesh = mf.sharedMesh;
+            TagStructureLayer(mf.gameObject);
             return upgraded;
+        }
 
         if (mf.sharedMesh.isReadable)
         {
@@ -186,6 +194,13 @@ public static class MapStructureStabilizer
             col.isTrigger = false;
             col.enabled = true;
             TagStructureLayer(mf.gameObject);
+        }
+
+        Rigidbody structRb = mf.GetComponent<Rigidbody>();
+        if (structRb != null)
+        {
+            structRb.isKinematic = true;
+            structRb.useGravity = false;
         }
 
         return upgraded || added;
