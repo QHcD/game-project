@@ -759,6 +759,18 @@ public class EnemyController : MonoBehaviour, IDamageable
             StopCoroutine(_scanCoroutine);
             _scanCoroutine = null;
         }
+
+        if (_attackHitboxRoutine != null)
+        {
+            StopCoroutine(_attackHitboxRoutine);
+            _attackHitboxRoutine = null;
+        }
+
+        if (_katanaAttackResolveRoutine != null)
+        {
+            StopCoroutine(_katanaAttackResolveRoutine);
+            _katanaAttackResolveRoutine = null;
+        }
     }
 
     public static void CopyAliveEnemies(List<EnemyController> buffer)

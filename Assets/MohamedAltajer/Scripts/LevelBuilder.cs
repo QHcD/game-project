@@ -463,7 +463,7 @@ public class LevelBuilder : MonoBehaviour
             Debug.LogWarning(errorMsg);
             // Also write to file so we can read it even if console logs are unreachable
             try { System.IO.File.WriteAllText(Application.dataPath + "/../build_error.log", errorMsg); }
-            catch { }
+            catch (System.Exception fileEx) { Debug.LogError("[LevelBuilder] Failed to write error log: " + fileEx.Message); }
         }
     }
 

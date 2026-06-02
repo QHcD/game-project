@@ -443,9 +443,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         return _cachedGroundMask;
     }
 
+    private void OnDisable()
+    {
+        if (mantleCoroutine != null) { StopCoroutine(mantleCoroutine); mantleCoroutine = null; }
+        if (flipCoroutine != null) { StopCoroutine(flipCoroutine); flipCoroutine = null; }
+        if (weaponHitboxRoutine != null) { StopCoroutine(weaponHitboxRoutine); weaponHitboxRoutine = null; }
+    }
+
     private void RefreshCachedGameplayCamera()
     {
-        _cachedGameplayCamera = ActiveCamera != null ? ActiveCamera : GetComponentInChildren<Camera>(true);
+        Camera cam = ActiveCamera != null ? ActiveCamera : GetComponentInChildren<Camera>(true);
+        if (cam != null)
+            _cachedGameplayCamera = cam;
     }
 
     private Camera GetGameplayCamera()

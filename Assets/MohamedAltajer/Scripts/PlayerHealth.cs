@@ -27,11 +27,18 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     private string _lastAttackerStatsId;
     private bool _deathHandled;
 
+    private PhotonView _cachedPhotonView;
+
     private void Awake()
     {
         currentHealth = Mathf.Clamp(currentHealth, 0f, maxHealth);
         if (currentHealth <= 0f)
             currentHealth = maxHealth;
+
+#if PUN_2_OR_NEWER
+        if (MultiplayerMode.IsMultiplayer)
+            _cachedPhotonView = GetComponent<PhotonView>();
+#endif
 
         timeSinceLastDamage = regenDelay + 1f;
 
@@ -322,7 +329,8 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         if (MultiplayerMode.IsMultiplayer)
         {
-            bool isFriendly = attackerRoot != null && attackerRoot.GetComponentInParent<PlayerHealth>() != null && attackerRoot.GetComponentInParent<PlayerHealth>().gameObject != gameObject;
+            PlayerHealth attackerHealth = attackerRoot != null ? attackerRoot.GetComponentInParent<PlayerHealth>() : null;
+            bool isFriendly = attackerHealth != null && attackerHealth.gameObject != gameObject;
             if (isFriendly)
             {
                 bool ff = true;
