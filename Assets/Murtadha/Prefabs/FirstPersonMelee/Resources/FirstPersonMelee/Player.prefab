@@ -1545,7 +1545,7 @@ MonoBehaviour:
   flipDuration: 0.42
   flipCooldown: 0.9
   proneCrawlBodyYOffset: -0.05
-  firstPersonCam: {fileID: 0}
+  firstPersonCam: {fileID: 1788623315372294392}
   thirdPersonCam: {fileID: 0}
   sensitivity: 100
   lookSmoothing: 22
@@ -1758,8 +1758,8 @@ MonoBehaviour:
   OwnershipTransfer: 0
   observableSearch: 2
   ObservedComponents:
-  - {fileID: 2034129960462587585}
   - {fileID: 9023456789012345678}
+  - {fileID: 2034129960462587585}
   sceneViewId: 0
   InstantiationId: 0
   isRuntimeInstantiated: 0
