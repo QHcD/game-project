@@ -4546,6 +4546,8 @@ GameObject:
   m_Component:
   - component: {fileID: 6509177680179163719}
   - component: {fileID: 915658201490729021}
+  - component: {fileID: 7918365174264961750}
+  - component: {fileID: 3750837573417354925}
   m_Layer: 0
   m_Name: Crosby
   m_TagString: Enemy
@@ -4606,6 +4608,30 @@ Animator:
   m_AllowConstantClipSamplingOptimization: 1
   m_KeepAnimatorStateOnDisable: 0
   m_WriteDefaultValuesOnDisable: 0
+--- !u!114 &7918365174264961750
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5845371258250373373}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a3d363e13bbe14b2faab08e8e964f234, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+--- !u!114 &3750837573417354925
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5845371258250373373}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e66f1a30748a045b58bfa0b9f80b63ba, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &5851332071005853648
 GameObject:
   m_ObjectHideFlags: 0

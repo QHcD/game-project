@@ -27683,15 +27683,15 @@ AnimationClip:
   m_Events:
   - time: 0.26666668
     functionName: EnableRightUnarmedHitboxes
-    data: 
+    data:
     objectReferenceParameter: {fileID: 0}
     floatParameter: 0
     intParameter: 0
-    messageOptions: 0
+    messageOptions: 1
   - time: 0.53333336
     functionName: DisableUnarmedHitboxes
-    data: 
+    data:
     objectReferenceParameter: {fileID: 0}
     floatParameter: 0
     intParameter: 0
-    messageOptions: 0
+    messageOptions: 1

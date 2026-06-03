@@ -164,6 +164,9 @@ public class LevelBuilder : MonoBehaviour
         if (Application.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode)
             return;
 
+        if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            return;
+
         Scene activeScene = SceneManager.GetActiveScene();
         if (!activeScene.IsValid() || !activeScene.isLoaded || activeScene.name != "GameScene")
             return;
@@ -440,6 +443,8 @@ public class LevelBuilder : MonoBehaviour
             EnsureMinimapCamera();
             Debug.Log("[LevelBuilder] Step 5: Minimap camera");
 
+            AddNavMeshObstaclesToWalls(arenaRoot);
+
             _navMeshReady = Application.isPlaying && TryBuildNavMesh();
             Debug.Log(_navMeshReady
                 ? "[LevelBuilder] Step 6: NavMesh built"
@@ -610,6 +615,57 @@ public class LevelBuilder : MonoBehaviour
         Transform closure = arenaRoot.Find("ArenaVisualClosure");
         if (closure != null)
             MapVisibilityStabilizer.Install(closure, debugArenaVisualBounds || debugSpawnValidation);
+    }
+
+    /// <summary>
+    /// Adds NavMeshObstacle (Carve=true) to all wall/boundary colliders in the arena so
+    /// enemies cannot path through them regardless of NavMesh bake accuracy.
+    /// Searches the full arenaRoot including PhysicsWall boundary objects and FbxMap interior walls.
+    /// </summary>
+    private static void AddNavMeshObstaclesToWalls(Transform arenaRoot)
+    {
+        if (arenaRoot == null) return;
+
+        Collider[] colliders = arenaRoot.GetComponentsInChildren<Collider>(true);
+        int added = 0;
+        foreach (Collider c in colliders)
+        {
+            if (c == null || c.isTrigger) continue;
+
+            string n = c.name.ToLowerInvariant();
+            bool isWall = n.Contains("wall") || n.Contains("fence") || n.Contains("pillar")
+                       || n.Contains("column") || n.Contains("door") || n.Contains("barrier")
+                       || n.Contains("corner") || n.Contains("physicscorner");
+            if (!isWall) continue;
+
+            // Skip if already has one
+            if (c.GetComponent<UnityEngine.AI.NavMeshObstacle>() != null) continue;
+
+            UnityEngine.AI.NavMeshObstacle obs = c.gameObject.AddComponent<UnityEngine.AI.NavMeshObstacle>();
+            obs.carving = true;
+            obs.carveOnlyStationary = true;
+            obs.shape = UnityEngine.AI.NavMeshObstacleShape.Box;
+
+            // Use local-space size from BoxCollider, not world-space bounds
+            if (c is BoxCollider box)
+            {
+                obs.center = box.center;
+                obs.size   = box.size;
+            }
+            else
+            {
+                // Fallback: convert world bounds to local space
+                Vector3 worldSize = c.bounds.size;
+                Vector3 localSize = new Vector3(
+                    worldSize.x / Mathf.Max(0.001f, c.transform.lossyScale.x),
+                    worldSize.y / Mathf.Max(0.001f, c.transform.lossyScale.y),
+                    worldSize.z / Mathf.Max(0.001f, c.transform.lossyScale.z));
+                obs.center = Vector3.zero;
+                obs.size   = localSize;
+            }
+            added++;
+        }
+        Debug.Log($"[LevelBuilder] NavMeshObstacle carvers added to {added} wall objects.");
     }
 
     // Arena half-size for the RPG/FPS industrial map (larger than the old 44×44 primitive arenas)
@@ -1855,6 +1911,14 @@ public class LevelBuilder : MonoBehaviour
                     {
                         Debug.LogWarning("[LevelBuilder] CrosbyAnimator controller not found in Resources/Enemy/");
                     }
+
+                    // Add animation event receivers directly so animation events
+                    // like EnableRightUnarmedHitboxes always have a handler
+                    GameObject animHost = anim.gameObject;
+                    if (animHost.GetComponent<AnimationEventSink>() == null)
+                        animHost.AddComponent<AnimationEventSink>();
+                    if (animHost.GetComponent<MeleeAnimationEventSink>() == null)
+                        animHost.AddComponent<MeleeAnimationEventSink>();
                 }
             }
             else

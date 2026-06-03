@@ -804,6 +804,17 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         foreach (Animator childAnimator in GetComponentsInChildren<Animator>(true))
             ConfigureAnimatorBinding(childAnimator, forceControllerAssignment: false);
 
+        // Ensure animation event receivers are present on every animator host
+        // so events like EnableRightUnarmedHitboxes always have a handler
+        foreach (Animator a in GetComponentsInChildren<Animator>(true))
+        {
+            if (a == null) continue;
+            if (a.gameObject.GetComponent<MeleeAnimationEventSink>() == null)
+                a.gameObject.AddComponent<MeleeAnimationEventSink>();
+            if (a.gameObject.GetComponent<AnimationEventSink>() == null)
+                a.gameObject.AddComponent<AnimationEventSink>();
+        }
+
         // Do NOT call Rebind() here — it resets the state machine before the
         // controller has finished initialising, which can freeze it permanently.
         // The Entry → default-state transition fires automatically on the first Update.

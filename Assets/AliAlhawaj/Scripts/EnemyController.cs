@@ -201,13 +201,13 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     [Header("Flocking (group steering on NavMesh)")]
     [Tooltip("Steer away from other enemies / player when closer than this (horizontal).")]
-    public float separationRadius = 0.9f;
+    public float separationRadius = 1.4f;
     [Tooltip("Neighbour enemies within this radius contribute to alignment.")]
     public float alignmentRadius = 3f;
     [Tooltip("Neighbour enemies within this radius contribute to cohesion centroid.")]
     public float cohesionRadius = 4f;
     [Tooltip("Weight for separation steering.")]
-    public float separationWeight = 0.8f;
+    public float separationWeight = 1.6f;
     [Tooltip("Weight for alignment steering (match neighbour velocity).")]
     public float alignmentWeight = 0.4f;
     [Tooltip("Weight for cohesion steering toward group centroid.")]
@@ -264,6 +264,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     private Vector3 _watchdogLastPosition;
     private float _aiBuildLogTimer;
     private float _noPathReacquireSince = -1f;
+    private float _noPathCooldownEnd = -1f;
+    private const float NoPathCooldown = 2.5f; // seconds between reposition attempts when target is unreachable
     private bool _authorityLogged;
     private bool _destinationSuccessLogged;
     private int _staticFrameCount;
@@ -591,6 +593,11 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void Start()
     {
+        // Re-fetch animator in case body was attached after Awake (LevelBuilder spawns body post-AddComponent)
+        if (_anim == null)
+            _anim = GetComponentInChildren<Animator>();
+        EnsureAnimationEventSink();
+
         CombatVoiceSfx voice = CombatVoiceSfx.GetOrAdd(gameObject);
         voice.ApplyInspectorClips(hurtSounds, deathSounds, hitSound, deathSound);
 
@@ -1529,15 +1536,32 @@ public class EnemyController : MonoBehaviour, IDamageable
 
             if (_pathScratch.status != NavMeshPathStatus.PathInvalid)
             {
+                _noPathCooldownEnd = -1f; // reset cooldown when path is valid again
                 _agent.SetDestination(dest);
                 LogMoveDestination(dest);
             }
             else
             {
-                Debug.Log("[AIMove] no path, reacquiring target");
-                RepositionOnInvalidPath();
-                if (debugAI)
-                    Debug.Log($"[EnemyAI] {name} chase path {_pathScratch.status}, repositioning.", this);
+                // Player is on unreachable surface (e.g. crate) — throttle reposition attempts
+                if (Time.time < _noPathCooldownEnd)
+                    return;
+
+                _noPathCooldownEnd = Time.time + NoPathCooldown;
+
+                // Try to navigate to the nearest reachable point below the player
+                Vector3 fallbackDest = dest;
+                fallbackDest.y = _spawnY;
+                if (NavMesh.SamplePosition(fallbackDest, out NavMeshHit fallbackHit, 8f, NavMesh.AllAreas))
+                {
+                    _agent.SetDestination(fallbackHit.position);
+                    if (debugAI)
+                        Debug.Log($"[EnemyAI] {name} target unreachable — moving to nearest floor point.", this);
+                }
+                else
+                {
+                    Debug.Log("[AIMove] no path, reacquiring target");
+                    RepositionOnInvalidPath();
+                }
             }
 
             return;
@@ -3976,8 +4000,23 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
-        Debug.Log("[AIMove] no path, reacquiring target");
-        RepositionOnInvalidPath();
+        // Throttle reposition spam when player is on unreachable surface
+        if (Time.time < _noPathCooldownEnd)
+            return;
+
+        _noPathCooldownEnd = Time.time + NoPathCooldown;
+
+        Vector3 fallbackFloor = dest;
+        fallbackFloor.y = _spawnY;
+        if (NavMesh.SamplePosition(fallbackFloor, out NavMeshHit fb, 8f, NavMesh.AllAreas))
+        {
+            _agent.SetDestination(fb.position);
+        }
+        else
+        {
+            Debug.Log("[AIMove] no path, reacquiring target");
+            RepositionOnInvalidPath();
+        }
         if (debugAI)
             Debug.Log($"[EnemyAI] {name} initial chase path {_pathScratch.status}, repositioned.", this);
     }
@@ -4111,7 +4150,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         _agent.acceleration          = agentAcceleration * 1.4f;
         _agent.angularSpeed          = agentAngularSpeed * 1.3f;
         _agent.avoidancePriority     = Random.Range(30, 70);
-        _agent.obstacleAvoidanceType = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
+        _agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
         _agent.radius                = 0.35f;
         _agent.height                = Mathf.Max(1.7f, _agent.height);
         _agent.baseOffset            = 0f;
