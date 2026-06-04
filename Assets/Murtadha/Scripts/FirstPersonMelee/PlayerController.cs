@@ -351,6 +351,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private Camera runtimeThirdPersonCamera;
     private bool isThirdPersonActive;
     private bool _bodyFeetAligned;          // true once feet have been snapped to ground
+    private bool _remoteSystemsDisabled;    // true once remote-player cameras/audio have been disabled (one-shot)
     private int _postSpawnGroundSnapFrames; // extra snaps after load/restart
     private Animator _bodyAnimatorCached;   // cached animator from thirdPersonBody
     private GameObject _lastThirdPersonBodyRef; // tracks when to invalidate the cache
@@ -3522,6 +3523,12 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (!IsRemoteNetworkPlayer())
             return;
 
+        // One-shot: remote players never recreate their cameras/audio after setup,
+        // so running this every frame from Update() only burned GC + flooded the
+        // build log (9k+ identical lines). Disable once, then skip.
+        if (_remoteSystemsDisabled)
+            return;
+
         StanceTestController stanceTest = GetComponent<StanceTestController>();
         if (stanceTest != null)
             stanceTest.enabled = false;
@@ -3545,6 +3552,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         for (int i = 0; i < listeners.Length; i++)
             if (listeners[i] != null) listeners[i].enabled = false;
 
+        _remoteSystemsDisabled = true;
         Debug.Log($"[MPDebug] remote camera disabled ({gameObject.name})");
 #endif
     }

@@ -514,6 +514,13 @@ public class PhotonLauncher : MonoBehaviour
             if (PhotonNetwork.IsMasterClient && PhotonNetwork.InRoom && PhotonNetwork.IsConnectedAndReady)
                 PhotonNetwork.LoadLevel(multiplayerSceneName);
         }
+
+        // Late-joiner safety net: if the master has ALREADY published the
+        // gameplay scene before we joined, OnRoomPropertiesUpdate won't fire for
+        // that pre-existing property, so start the watchdog here. (The master
+        // starting the match AFTER we joined is handled by OnRoomPropertiesUpdate.)
+        if (!PhotonNetwork.IsMasterClient && MasterScenePropertyIs(multiplayerSceneName))
+            StartClientSceneSyncWatchdog();
     }
 
     private void ShowMultiplayerLoadingScreen()
@@ -583,6 +590,104 @@ public class PhotonLauncher : MonoBehaviour
         {
             HideLobbyUI();
         }
+    }
+
+    // ---- Client scene-sync watchdog -------------------------------------
+    // PUN2's room-property key holding the master's current scene (see
+    // PhotonNetworkPart.LoadLevelIfSynced). Non-master clients normally follow
+    // it automatically via AutomaticallySyncScene; this watchdog is a bounded
+    // fallback for when that silently doesn't happen and the client would
+    // otherwise sit on the lobby/menu while the host enters the map.
+    private const string PunCurrentSceneProperty = "curScn";
+    private Coroutine _clientSceneSyncWatchdog;
+
+    public override void OnRoomPropertiesUpdate(ExitGames.Client.Photon.Hashtable propertiesThatChanged)
+    {
+        // Master published / changed the gameplay scene after we were already in
+        // the room (covers both quick-play timing and the lobby Start button).
+        if (propertiesThatChanged != null &&
+            propertiesThatChanged.ContainsKey(PunCurrentSceneProperty) &&
+            !PhotonNetwork.IsMasterClient &&
+            MasterScenePropertyIs(multiplayerSceneName))
+        {
+            StartClientSceneSyncWatchdog();
+        }
+    }
+
+    private bool MasterScenePropertyIs(string sceneName)
+    {
+        if (PhotonNetwork.CurrentRoom == null || PhotonNetwork.CurrentRoom.CustomProperties == null)
+            return false;
+        if (!PhotonNetwork.CurrentRoom.CustomProperties.ContainsKey(PunCurrentSceneProperty))
+            return false;
+        return PhotonNetwork.CurrentRoom.CustomProperties[PunCurrentSceneProperty] as string == sceneName;
+    }
+
+    private void StartClientSceneSyncWatchdog()
+    {
+        if (PhotonNetwork.IsMasterClient)
+            return; // the master drives the load itself
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == multiplayerSceneName)
+            return; // already in the gameplay scene
+        if (_clientSceneSyncWatchdog != null)
+            return; // already watching
+        _clientSceneSyncWatchdog = StartCoroutine(ClientSceneSyncWatchdog());
+    }
+
+    private System.Collections.IEnumerator ClientSceneSyncWatchdog()
+    {
+        const float checkInterval  = 1.5f;  // how often we re-check
+        const float forceLoadGrace = 4f;    // let normal PUN sync work first
+        const float giveUpAfter    = 30f;   // never spin forever
+
+        Debug.Log("[MPFlow] client scene-sync watchdog armed");
+        float elapsed = 0f;
+        float lastForceLoad = -10f;
+
+        while (true)
+        {
+            // Success: we made it into the gameplay scene.
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == multiplayerSceneName)
+            {
+                Debug.Log("[MPFlow] client scene sync confirmed (entered gameplay scene)");
+                break;
+            }
+
+            // No longer a non-master client in a room -> nothing to recover.
+            if (!PhotonNetwork.InRoom || PhotonNetwork.IsMasterClient)
+                break;
+
+            // The flag can be left off by a previous match's teardown; keep it on.
+            if (!PhotonNetwork.AutomaticallySyncScene)
+            {
+                PhotonNetwork.AutomaticallySyncScene = true;
+                Debug.Log("[MPFlow] watchdog re-enabled AutomaticallySyncScene");
+            }
+
+            // After a short grace window, if the master has published the scene
+            // but normal sync still hasn't pulled us in, force the load. Throttled
+            // so we never issue overlapping LoadLevel calls.
+            if (elapsed >= forceLoadGrace &&
+                (Time.realtimeSinceStartup - lastForceLoad) >= (checkInterval * 2f) &&
+                PhotonNetwork.IsConnectedAndReady &&
+                MasterScenePropertyIs(multiplayerSceneName))
+            {
+                Debug.LogWarning("[MPFlow] client stuck syncing; forcing LoadLevel fallback");
+                lastForceLoad = Time.realtimeSinceStartup;
+                PhotonNetwork.LoadLevel(multiplayerSceneName);
+            }
+
+            if (elapsed >= giveUpAfter)
+            {
+                Debug.LogWarning("[MPFlow] client scene-sync watchdog gave up after " + giveUpAfter + "s");
+                break;
+            }
+
+            yield return new WaitForSecondsRealtime(checkInterval);
+            elapsed += checkInterval;
+        }
+
+        _clientSceneSyncWatchdog = null;
     }
 
     private void ShowLobbyUI()

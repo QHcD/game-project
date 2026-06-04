@@ -26,6 +26,16 @@ public class NetworkPlayerSync : MonoBehaviour
     private Quaternion holdRotation;
     private CharacterController characterController;
 
+    // Throttled runtime diagnostics for the "remote player frozen" bug. The
+    // sync wiring is correct by static analysis, so these confirm at RUNTIME
+    // whether (a) OnPhotonSerializeView reads actually fire and (b) the remote
+    // instance applies the incoming position. Throttled to 1 line/sec/instance
+    // (tagged [MPSync]) to avoid flooding Player.log.
+    private float _readDiagLogAt;
+    private float _applyDiagLogAt;
+    private Vector3 _lastDiagNetworkPosition;
+    private bool _diagHasBaseline;
+
     private string CombatantId
     {
         get
@@ -118,6 +128,8 @@ public class NetworkPlayerSync : MonoBehaviour
 #if PUN_2_OR_NEWER
         if (photonView != null && !photonView.IsMine)
         {
+            EmitRemoteApplyDiagnostic();
+
             if (!syncReleased)
             {
                 transform.position = holdPosition;
@@ -248,6 +260,8 @@ public class NetworkPlayerSync : MonoBehaviour
             int weaponLevel = (int)stream.ReceiveNext();
             string weaponName = (string)stream.ReceiveNext();
 
+            EmitReadDiagnostic();
+
             if (playerHealth != null && photonView != null && !photonView.IsMine)
                 playerHealth.ApplySyncedHealth(syncedHealth, fromNetworkStream: true);
             if (playerController != null)
@@ -258,6 +272,33 @@ public class NetworkPlayerSync : MonoBehaviour
     private float maxHealthFallback()
     {
         return playerHealth != null ? playerHealth.maxHealth : 100f;
+    }
+
+    // Logs once/sec that the read path fired and what position arrived —
+    // distinguishes "reads never arrive" from "reads arrive but never change".
+    private void EmitReadDiagnostic()
+    {
+        if (Time.realtimeSinceStartup < _readDiagLogAt)
+            return;
+        _readDiagLogAt = Time.realtimeSinceStartup + 1f;
+        Debug.Log($"[MPSync] read fired actor={GetActorNumber()} mine={(photonView != null && photonView.IsMine)} netPos={networkPosition}");
+    }
+
+    // Logs once/sec what this remote instance does with the synced pose: whether
+    // sync is released, how far the target moved since last log, and whether the
+    // transform is actually tracking it.
+    private void EmitRemoteApplyDiagnostic()
+    {
+        if (Time.realtimeSinceStartup < _applyDiagLogAt)
+            return;
+        _applyDiagLogAt = Time.realtimeSinceStartup + 1f;
+
+        float moved = _diagHasBaseline ? Vector3.Distance(networkPosition, _lastDiagNetworkPosition) : 0f;
+        _lastDiagNetworkPosition = networkPosition;
+        _diagHasBaseline = true;
+
+        Debug.Log($"[MPSync] remote apply actor={GetActorNumber()} released={syncReleased} " +
+                  $"netPos={networkPosition} targetDelta={moved:F3} transform={transform.position}");
     }
 #endif
 

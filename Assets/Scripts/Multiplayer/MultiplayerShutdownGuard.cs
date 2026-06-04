@@ -24,6 +24,17 @@ public static class MultiplayerShutdownGuard
     {
         if (IsLeavingMultiplayer)
             IsLeavingMultiplayer = false;
+#if PUN_2_OR_NEWER
+        // BeginLeave() turns scene sync OFF during teardown, and it is only
+        // turned back ON in PhotonLauncher's fresh-connect path (skipped when
+        // the player is already connected). A non-master client that starts a
+        // second match on a warm connection would otherwise never follow the
+        // master into the gameplay scene and sit on the lobby/menu forever.
+        // Every new MP session routes through SetMultiplayer() -> here, so this
+        // is the reliable place to restore it.
+        if (PhotonNetwork.IsConnected)
+            PhotonNetwork.AutomaticallySyncScene = true;
+#endif
     }
 
     public static bool CanWriteProperties(string context = "PhotonPropertyWrite", bool requireRoom = true)
