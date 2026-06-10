@@ -1,0 +1,58 @@
+﻿Total slides: 19
+--- SLIDE 1 ---
+IT8101 · GAMES DEVELOPMENT · VIVA VOCE | PRISM-7 | WEAPON TRIALS | Master a new weapon every trial — then take the arena online. | TEAM | Hamed Ahmed   ·   Murtadha Sarhan   ·   Mohamed Altajer | Ali Alhawaj   ·   Mohamed Aman | Supervisor — Dr. Haetham Alhaddad | PRISM-7  ·  Weapon Trials | 01
+
+--- SLIDE 2 ---
+01 · THE GAME | Game Concept | A third-person, melee-first combat arena where each “trial” hands you a single signature weapon and asks one question: can you master it before the timer runs out? | GENRE | 3rd-Person Melee Arena | PLATFORM | PC · Windows (Unity) | MODE | Single-Player + Online Co-op / PvP | STRUCTURE | 16 Weapon Trials + Endless MP | PRISM-7  ·  Weapon Trials | 02
+
+--- SLIDE 3 ---
+02 · ORIGIN | Where the Idea Came From | “ | Nine years ago we used to set up custom matches in shooters and ban every gun — melee only. Free-for-all, or teams: 2v2, 4v4, 6v6. The whole lobby chasing each other with knives and bats. That chaos was the most fun we ever had. | PRISM-7 is that memory rebuilt as its own game: pure close-quarters combat, a different weapon every trial, and an online lobby that brings back the team-vs-team mayhem. | HOW IT SHAPED THE DESIGN | Melee identity — weapons over guns, timing over spray | Weapon variety — 16 distinct trials keep it fresh | Team modes — FFA, co-op and PvP echo those old lobbies | Up to 8 operators — the full custom-lobby feeling | PRISM-7  ·  Weapon Trials | 03
+
+--- SLIDE 4 ---
+03 · GAMEPLAY | The Core Loop | 1 | ENTER TRIAL | Drop into an arena armed with that level’s weapon. | → | 2 | CLEAR THE ARENA | Defeat all enemy operators before TIME hits zero. | → | 3 | EARN REWARDS | Score, Stars (★0–3) and PRISM Credits on victory. | → | 4 | UNLOCK &amp; UPGRADE | Next trial unlocks; spend Credits in the PRISM Store. | ON-SCREEN HUD | SCORE | Points earned per kill | ENEMIES | Remaining targets | TIME | Countdown to fail | KILLS | Your eliminations | MINI-MAP | Live enemy radar | PRISM-7  ·  Weapon Trials | 04
+
+--- SLIDE 5 ---
+04 · CONTENT | 16 Weapon Trials | Each level is built around one weapon — progression is gated, so clearing a trial unlocks the next. Stars reward speed and skill. | 1 | Tactical Knife | 2 | Razor Katana | 3 | Shovel | 4 | Baseball Bat | 5 | Nunchucks | 6 | Wrench | 7 | Crowbar | 8 | Hammer | 9 | Axe | 10 | Spear | 11 | Nailed Plank | 12 | Saw | 13 | Sickle | 14 | Morgenstern | 15 | L3FTE | 16 | Riot Shield | PRISM-7  ·  Weapon Trials | 05
+
+--- SLIDE 6 ---
+05 · COMBAT FEEL | Melee Combat System | HOW A HIT LANDS | Swing fires a hitbox check in front of the player — radius + a forward cone so only what you’re facing is hit. | Each target is registered once per swing (de-duplication) so a single attack can’t multi-hit the same enemy. | Damage, range and swing speed are tuned per weapon, so a knife feels nothing like a Morgenstern. | Enemies react with hit + death animations and drop from the ENEMIES counter. | Player, enemy and weapon logic are driven by dedicated C# controllers (PlayerController, EnemyController, weapon + HUD scripts). | PRISM-7  ·  Weapon Trials | 06
+
+--- SLIDE 7 ---
+06 · PROGRESSION &amp; ECONOMY | Placement, Stars &amp; Credits | Win and the arena ranks you — battle-royale style placement, a star rating, and PRISM Credits that feed the game’s economy. | #1 | Placement — Champion ranking on victory | ★ / 3 | Star rating earned per trial | 9,620 | PRISM Credits spendable in the Store | Challenges | Optional objectives for extra rewards | PRISM-7  ·  Weapon Trials | 07
+
+--- SLIDE 8 ---
+07 · ONLINE | Multiplayer — Up to 8 Operators | Deploy online and bring the arena to other players. A host creates a room and shares a code; friends join by code — no server browser needed. | CO-OP SURVIVAL | Team up against waves of enemy operators. | HYBRID CHAOS | Enemies + players — fight the arena and each other. | PURE PVP | Players only. The classic melee free-for-all / team brawl. | PRISM-7  ·  Weapon Trials | 08
+
+--- SLIDE 9 ---
+08 · NETWORKING | How Multiplayer Works — Photon | PRISM-7 networks players with Photon (PUN). One player acts as host / master client; everyone else connects into the same room. | ROOMS &amp; CODES | Create Room opens a session on Photon’s cloud and returns a short code. Join by Code drops a player straight into that room — up to 8 operators. | NETWORKED PLAYERS | Each player is a networked prefab with a PhotonView. Position, rotation and animation state are synced so everyone sees the same arena in real time. | HITS OVER THE NETWORK | Melee hits are sent as networked events / RPCs so damage and deaths register consistently on every client, not just the attacker’s screen. | MODES &amp; STATE | The host owns the match state — mode (Co-op / Hybrid / PvP), level, enemy spawns and scoring — and shares it with everyone in the room. | PRISM-7  ·  Weapon Trials | 09
+
+--- SLIDE 10 ---
+09 · ENEMIES | AI &amp; Enemy Operators | ENEMY BEHAVIOUR | Enemies navigate the arena with Unity’s NavMesh — agents path around walls and crates toward the player. | A simple state machine drives them: idle / patrol → chase when the player is near → attack in range. | Counts and toughness scale per level, so later trials throw more operators at you. | Enemies share the melee, animation and damage systems used by the player for consistent combat. | Owned by Ali Alhawaj (AI &amp; Enemies). | PRISM-7  ·  Weapon Trials | 10
+
+--- SLIDE 11 ---
+10 · PRESENTATION | Animation Pipeline | FROM MIXAMO TO THE ARENA | Humanoid character rigs and motion clips are sourced from Mixamo — idle, run, attack, hit-react and death. | Clips are imported as Humanoid so they retarget cleanly onto our characters. | An Animator controller blends states (locomotion → attack → hit → die) driven by code from the player / enemy controllers. | Attack animations are timed to the hitbox window so the swing visually matches the damage. | Owned by Mohamed Aman (Audio &amp; VFX) with the combat scripting. | PRISM-7  ·  Weapon Trials | 11
+
+--- SLIDE 12 ---
+11 · SYSTEMS | Weapon System | 16 weapons, one shared framework. Each weapon is data-driven — its damage, range and swing speed are configurable values rather than hard-coded numbers, so adding or balancing a weapon is fast. | DATA-DRIVEN | Damage / range / speed defined per weapon and read by the combat code. | WEAPON CHESTS | Pickups in the arena let the player equip / swap the trial weapon. | EQUIP LOGIC | Equipping swaps the model, animations and stats together as one set. | 16 DISTINCT FEELS | From a fast knife to a heavy Morgenstern — every trial plays differently. | Owned by Murtadha Sarhan (Weapon System). | PRISM-7  ·  Weapon Trials | 12
+
+--- SLIDE 13 ---
+12 · ENGINE | Unity Systems We Used | Colliders | Box / Capsule / Mesh colliders on players, enemies and the arena for hits &amp; blocking. | Rigidbody + Physics | Movement, collisions and knock interactions handled by Unity physics. | NavMesh | Baked navigation so enemy agents path through the level. | Animator | State machines that blend character animation. | Canvas UI / HUD | Score, enemies, time, kills and menus built on Unity UI. | Mini-Map Camera | A top-down camera feed rendered into the HUD radar. | Prefabs | Players, enemies, weapons and pickups as reusable prefabs. | Lighting &amp; VFX | Scene lighting and particle effects for combat impact. | PRISM-7  ·  Weapon Trials | 13
+
+--- SLIDE 14 ---
+13 · RESOURCES | Assets &amp; Where They Came From | All third-party assets are free / royalty-free and credited. Everything else — scripts, systems, UI and level design — is our own work. | CATEGORY | SOURCE | USED FOR | Characters / Models | Mixamo · Sketchfab | Operator &amp; enemy character models | Animations | Mixamo | Idle, run, attack, hit &amp; death clips (Humanoid) | Environment / Props | Sketchfab · Unity Asset Store | Sci-fi arena pieces, crates, doors | Audio &amp; Music | Pixabay · Freesound | SFX (hits, UI) and background tracks | VFX / Particles | Unity built-in · Asset Store | Impact and combat effects | Networking | Photon (PUN) | Online rooms, sync &amp; multiplayer | Fonts / UI | Free game fonts | Menu and HUD typography | PRISM-7  ·  Weapon Trials | 14
+
+--- SLIDE 15 ---
+14 · ENGINEERING | Challenges &amp; How We Solved Them | Double / multi-hits | PROBLEM | One swing was hitting the same enemy several times. | FIX | De-duplicate targets per swing so each enemy is damaged once. | Hits landing behind the player | PROBLEM | Radius-only checks hit enemies you weren’t facing. | FIX | Added a forward cone so only what’s in front of the swing counts. | Animation retargeting | PROBLEM | Mixamo clips didn’t map cleanly onto our characters. | FIX | Imported as Humanoid and rebuilt the Animator transitions. | Enemy pathing | PROBLEM | Agents got stuck on arena geometry. | FIX | Re-baked the NavMesh and tuned agent radius / obstacles. | Network desync | PROBLEM | Hits / deaths didn’t match across players. | FIX | Sync transforms + send hits as networked events via Photon. | Git merge conflicts | PROBLEM | Five people editing the same Unity project. | FIX | Branch-per-feature workflow and disciplined merges. | PRISM-7  ·  Weapon Trials | 15
+
+--- SLIDE 16 ---
+15 · ROADMAP | Future Work &amp; Known Gaps | WHAT’S NEXT | Dedicated servers + ranked matchmaking | More arenas and environmental hazards | Weapon balancing pass across all 16 trials | Gamepad / controller support | Cosmetics &amp; deeper PRISM Store economy | Basic anti-cheat for online play | KNOWN GAPS / TO POLISH | Network smoothing under high latency | Edge-case hit detection on fast weapons | Audio mix and additional SFX coverage | Performance tuning on lower-end PCs | More enemy variety / behaviours | PRISM-7  ·  Weapon Trials | 16
+
+--- SLIDE 17 ---
+16 · LIVE DEMO | Demo Walkthrough | The order we’ll show it on screen — roughly 5–10 minutes. | 1 | Main Menu | Brand, PRISM Credits, and the full feature menu. | 2 | Select Level | Show the 16-trial progression — cleared vs current. | 3 | Play a Trial | Live combat on Level 16: HUD, melee, enemies, kills. | 4 | Victory Screen | Placement, stars, score and Credits payout. | 5 | Multiplayer | Create Room / Join by Code and the three modes. | 6 | Impressive Moment | A clean multi-enemy clear to close the demo. | PRISM-7  ·  Weapon Trials | 17
+
+--- SLIDE 18 ---
+17 · THE TEAM | Who Built What | Hamed Ahmed | UI &amp; Menus | Murtadha Sarhan | Weapon System | Mohamed Altajer | Level Design &amp; Core | Ali Alhawaj | AI &amp; Enemies | Mohamed Aman | Audio &amp; VFX | Supervisor — Dr. Haetham Alhaddad | PRISM-7  ·  Weapon Trials | 18
+
+--- SLIDE 19 ---
+PRISM-7 | WEAPON TRIALS | Thank you — we’re ready for your questions. | Q &amp; A | IT8101 · Games Development · Viva Voce Examination
+
